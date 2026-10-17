@@ -12,7 +12,7 @@ interface ConversationManagerProps {
 
 export const ConversationManager: React.FC<ConversationManagerProps> = ({ onSelectConversation }) => {
   const dispatch = useAppDispatch();
-  const { conversations, selectedTags } = useAppSelector((state) => state.chat);
+  const { conversations, selectedTags, currentConversation } = useAppSelector((state) => state.chat);
   const [newTag, setNewTag] = useState('');
   const [editingConvId, setEditingConvId] = useState<string | null>(null);
 
@@ -68,11 +68,10 @@ export const ConversationManager: React.FC<ConversationManagerProps> = ({ onSele
               <button
                 key={tag}
                 onClick={() => toggleTagFilter(tag)}
-                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-                  selectedTags.includes(tag)
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${selectedTags.includes(tag)
                     ? 'bg-purple-600 text-white'
                     : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                }`}
+                  }`}
               >
                 {tag}
               </button>
@@ -93,16 +92,17 @@ export const ConversationManager: React.FC<ConversationManagerProps> = ({ onSele
             </p>
           </div>
         ) : (
-          <div className="space-y-2 max-h-96 overflow-y-auto">
+          <ul aria-label="Conversations" className="space-y-2 max-h-96 overflow-y-auto">
             {filteredConversations.map(conversation => (
-              <div
+              <li
                 key={conversation.id}
                 className="bg-gray-800/40 rounded-lg p-3 border border-gray-700 hover:border-gray-600 transition-colors"
               >
                 <div className="flex justify-between items-start mb-2">
                   <button
                     onClick={() => onSelectConversation?.(conversation)}
-                    className="text-left flex-1"
+                    aria-current={conversation.id === currentConversation?.id ? "page" : undefined}
+                    className="text-left flex-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
                   >
                     <h4 className="text-sm font-medium text-white hover:text-purple-400 transition-colors truncate">
                       {conversation.title}
@@ -171,9 +171,9 @@ export const ConversationManager: React.FC<ConversationManagerProps> = ({ onSele
                     Add tag
                   </button>
                 )}
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
       </div>
     </div>

@@ -53,7 +53,7 @@ export default function ConversationPage() {
   return (
     <ClientOnlyChatLayout>
       {notFound ? (
-        <main className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
+        <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
           <h1 className="text-xl font-semibold text-white">Conversation not found</h1>
           <p className="text-gray-400">This conversation may have been deleted or the link may be incorrect.</p>
           <button
@@ -63,7 +63,7 @@ export default function ConversationPage() {
           >
             Start a new chat
           </button>
-        </main>
+        </div>
       ) : (
         <>
           <header className="border-b border-gray-700 px-6 py-3 text-white">

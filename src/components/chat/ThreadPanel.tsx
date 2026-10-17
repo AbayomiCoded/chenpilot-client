@@ -10,6 +10,7 @@ import { useSocket } from '@/hooks/useSocket';
 import { ChatMessage } from '@/types';
 import toast from 'react-hot-toast';
 import { cn } from '@/utils/cn';
+import { useReducedMotion } from '@/hooks/useReducedMotion';
 
 interface ThreadPanelProps {
   /** Called so ChatEngine can update its own layout when panel opens/closes */
@@ -22,6 +23,7 @@ export default function ThreadPanel({ onClose }: ThreadPanelProps) {
   const { activeThread } = useAppSelector((state) => state.chat);
   const { user } = useAppSelector((state) => state.auth);
   const { emit } = useSocket();
+  const prefersReducedMotion = useReducedMotion();
 
   const [replyInput, setReplyInput] = useState('');
   const [collapsed, setCollapsed] = useState(false);
@@ -33,8 +35,8 @@ export default function ThreadPanel({ onClose }: ThreadPanelProps) {
 
   // Auto-scroll to bottom when new replies arrive
   useEffect(() => {
-    repliesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [activeThread?.replies.length, activeThread?.isTyping]);
+    repliesEndRef.current?.scrollIntoView({ behavior: prefersReducedMotion ? 'auto' : 'smooth' });
+  }, [activeThread?.replies.length, activeThread?.isTyping, prefersReducedMotion]);
 
   // Focus input when panel opens
   useEffect(() => {
@@ -189,13 +191,13 @@ export default function ThreadPanel({ onClose }: ThreadPanelProps) {
               <div className="flex justify-start">
                 <div className="bg-gray-900/80 border border-gray-800 rounded-2xl px-4 py-3">
                   <div className="flex items-center space-x-1">
-                    <div className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce" />
+                    <div className={`w-1.5 h-1.5 bg-purple-400 rounded-full ${prefersReducedMotion ? '' : 'animate-bounce'}`} />
                     <div
-                      className="w-1.5 h-1.5 bg-pink-400 rounded-full animate-bounce"
+                      className={`w-1.5 h-1.5 bg-pink-400 rounded-full ${prefersReducedMotion ? '' : 'animate-bounce'}`}
                       style={{ animationDelay: '0.1s' }}
                     />
                     <div
-                      className="w-1.5 h-1.5 bg-purple-400 rounded-full animate-bounce"
+                      className={`w-1.5 h-1.5 bg-purple-400 rounded-full ${prefersReducedMotion ? '' : 'animate-bounce'}`}
                       style={{ animationDelay: '0.2s' }}
                     />
                   </div>

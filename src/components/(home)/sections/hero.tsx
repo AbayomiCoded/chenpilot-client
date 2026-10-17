@@ -4,11 +4,13 @@ import { Button } from "@/components/ui/Button";
 import { ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/hooks/useAuth";
+import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { motion } from "framer-motion";
 
 export default function Hero() {
   const router = useRouter();
   const { isAuthenticated, isClient } = useAuth();
+  const prefersReducedMotion = useReducedMotion();
 
   return (
     <section className="relative min-h-screen flex items-center justify-center bg-black overflow-hidden mt-30 px-6">
@@ -18,11 +20,11 @@ export default function Hero() {
       {/* Animated background circle */}
       <motion.div
         className="absolute top-1/3 right-1/4 w-[500px] h-[500px] bg-purple-500/5 rounded-full"
-        animate={{
+        animate={prefersReducedMotion ? undefined : {
           scale: [1, 1.2, 1],
           opacity: [0.3, 0.5, 0.3],
         }}
-        transition={{
+        transition={prefersReducedMotion ? undefined : {
           duration: 8,
           repeat: Infinity,
           ease: "easeInOut",
@@ -33,9 +35,9 @@ export default function Hero() {
         {/* Headline left-aligned */}
         <motion.h1
           className="text-7xl md:text-8xl lg:text-9xl font-thin tracking-tight mb-8 text-left mx-auto"
-          initial={{ opacity: 0, y: 30 }}
+          initial={prefersReducedMotion ? false : { opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 1, ease: "easeOut", delay: 0.2 }}
+          transition={prefersReducedMotion ? { duration: 0 } : { duration: 1, ease: "easeOut", delay: 0.2 }}
         >
           <span className="block text-white/90">Your Crypto</span>
           <span className="block text-purple-500">Agent</span>
@@ -44,9 +46,9 @@ export default function Hero() {
         {/* Description - centered */}
         <motion.p
           className="text-lg md:text-xl text-white/40 max-w-xl mx-auto mb-6 font-thin leading-relaxed"
-          initial={{ opacity: 0 }}
+          initial={prefersReducedMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ duration: 0.8, delay: 0.4 }}
+          transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.8, delay: 0.4 }}
         >
           Trade, swap, and manage your portfolio across multiple chains through
           natural conversation.
@@ -54,9 +56,9 @@ export default function Hero() {
 
         <motion.p
           className="text-base text-white/30 max-w-lg mx-auto mb-16 font-thin"
-          initial={{ opacity: 0 }}
+          initial={prefersReducedMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ duration: 0.8, delay: 0.5 }}
+          transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.8, delay: 0.5 }}
         >
           No dashboards. No complexity. Just you and your AI agent working
           together.
@@ -64,9 +66,9 @@ export default function Hero() {
 
         {/* Get Started button */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={prefersReducedMotion ? false : { opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.8, delay: 0.6 }}
+          transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.8, delay: 0.6 }}
           className="flex justify-center"
         >
           <Button
@@ -85,9 +87,9 @@ export default function Hero() {
         {/* Stats row */}
         <motion.div
           className="flex items-center justify-center gap-8 mt-20"
-          initial={{ opacity: 0 }}
+          initial={prefersReducedMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ duration: 0.8, delay: 0.8 }}
+          transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.8, delay: 0.8 }}
         >
           <div className="text-center">
             <div className="text-2xl font-thin text-white/80 mb-1">$300</div>
@@ -114,9 +116,9 @@ export default function Hero() {
         {/* Supported chains */}
         <motion.div
           className="flex items-center justify-center gap-6 mt-12"
-          initial={{ opacity: 0 }}
+          initial={prefersReducedMotion ? false : { opacity: 0 }}
           animate={{ opacity: 1 }}
-          transition={{ duration: 0.8, delay: 1 }}
+          transition={prefersReducedMotion ? { duration: 0 } : { duration: 0.8, delay: 1 }}
         >
           <span className="text-xs text-white/30 font-thin tracking-wider">
             BITCOIN
@@ -139,9 +141,9 @@ export default function Hero() {
       {/* Bottom line */}
       <motion.div
         className="absolute bottom-0 left-0 right-0"
-        initial={{ opacity: 0 }}
+        initial={prefersReducedMotion ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
-        transition={{ duration: 1, delay: 1 }}
+        transition={prefersReducedMotion ? { duration: 0 } : { duration: 1, delay: 1 }}
       >
         <div className="h-px bg-white/10 w-full"></div>
       </motion.div>

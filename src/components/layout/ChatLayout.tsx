@@ -144,7 +144,37 @@ export function ChatLayout({ children }: ChatLayoutProps) {
   };
 
   return (
-    <div className="h-screen flex bg-gray-50 dark:bg-gray-900">
+    <div className="h-screen flex flex-col lg:flex-row bg-gray-50 dark:bg-gray-900">
+      {/* Mobile header with menu button */}
+      <div className="lg:hidden flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
+        <button
+          id="mobile-menu-button"
+          onClick={() => setSidebarOpen(true)}
+          aria-label="Open navigation menu"
+          className="p-2 rounded-lg text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800 transition-colors"
+        >
+          <Menu className="h-6 w-6" />
+        </button>
+        <div className="flex items-center space-x-2">
+          <div className="relative">
+            <Image
+              src="/chenpilot.png"
+              alt="ChenPilot Logo"
+              width={24}
+              height={24}
+              className="rounded-full object-cover"
+            />
+          </div>
+          <h1
+            className="text-lg font-thin text-gray-900 dark:text-white"
+            style={{ fontFamily: "Manrope" }}
+          >
+            ChenPilot
+          </h1>
+        </div>
+        <div className="w-10" />
+      </div>
+
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div
@@ -156,10 +186,13 @@ export function ChatLayout({ children }: ChatLayoutProps) {
       )}
 
       {/* Sidebar */}
-      <div
+      <nav
+        aria-label="Sidebar navigation"
         className={cn(
           "fixed inset-y-0 left-0 z-50 bg-[#2D1B69] shadow-lg transform transition-all duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0",
-          sidebarOpen ? "translate-x-0" : "-translate-x-full",
+          sidebarOpen
+            ? "visible translate-x-0"
+            : "invisible -translate-x-full lg:visible",
           sidebarCollapsed ? "w-16" : "w-72",
         )}
       >
@@ -212,7 +245,10 @@ export function ChatLayout({ children }: ChatLayoutProps) {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => setSidebarOpen(false)}
+                onClick={() => {
+                  setSidebarOpen(false);
+                  document.getElementById("mobile-menu-button")?.focus();
+                }}
                 className="lg:hidden text-gray-400 hover:text-white"
               >
                 <X className="h-5 w-5" />
@@ -250,20 +286,23 @@ export function ChatLayout({ children }: ChatLayoutProps) {
               />
             )}
             {sidebarCollapsed && (
-              <div className="space-y-1">
+              <ul aria-label="Recent conversations" className="space-y-1">
                 {chatHistoryList.slice(0, 5).map((chat) => (
-                  <button
-                    key={chat.id}
-                    onClick={() => handleLoadChat(chat.id)}
-                    className="w-full p-1 rounded-lg hover:bg-gray-800/30 transition-all duration-200"
-                    title={typeof chat.title === "string" ? chat.title : "Chat"}
-                  >
-                    <div className="w-full h-8 bg-gray-700/30 rounded flex items-center justify-center text-xs text-gray-400">
-                      •
-                    </div>
-                  </button>
+                  <li key={chat.id}>
+                    <button
+                      onClick={() => handleLoadChat(chat.id)}
+                      aria-label={chat.title}
+                      aria-current={currentConversation?.id === chat.id ? "page" : undefined}
+                      className="w-full p-1 rounded-lg hover:bg-gray-800/30 transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-300"
+                      title={typeof chat.title === "string" ? chat.title : "Chat"}
+                    >
+                      <div className="w-full h-8 bg-gray-700/30 rounded flex items-center justify-center text-xs text-gray-400">
+                        •
+                      </div>
+                    </button>
+                  </li>
                 ))}
-              </div>
+              </ul>
             )}
           </div>
 
@@ -340,40 +379,19 @@ export function ChatLayout({ children }: ChatLayoutProps) {
             </div>
           </div>
         </div>
-      </div>
+      </nav>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Mobile header with menu button */}
-        <div className="lg:hidden flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900">
-          <button
-            onClick={() => setSidebarOpen(true)}
-            className="p-2 rounded-lg text-gray-600 hover:text-gray-900 hover:bg-gray-100 dark:text-gray-400 dark:hover:text-white dark:hover:bg-gray-800 transition-colors"
-          >
-            <Menu className="h-6 w-6" />
-          </button>
-          <div className="flex items-center space-x-2">
-            <div className="relative">
-              <Image
-                src="/chenpilot.png"
-                alt="ChenPilot Logo"
-                width={24}
-                height={24}
-                className="rounded-full object-cover"
-              />
-            </div>
-            <h1
-              className="text-lg font-thin text-gray-900 dark:text-white"
-              style={{ fontFamily: "Manrope" }}
-            >
-              ChenPilot
-            </h1>
-          </div>
-          <div className="w-10" /> {/* Spacer for centering */}
-        </div>
-
+      <div className="min-h-0 flex-1 flex flex-col overflow-hidden">
         {/* Page content */}
-        <main className="flex-1 overflow-hidden">{children}</main>
+        <main
+          id="main-content"
+          tabIndex={-1}
+          aria-label="Main content"
+          className="flex-1 overflow-hidden"
+        >
+          {children}
+        </main>
       </div>
     </div>
   );
