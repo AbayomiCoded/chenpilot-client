@@ -29,3 +29,19 @@ You MUST submit a new ADR PR when proposing or implementing:
 1. **Branching**: Create a feature branch off main/build (e.g., `feat/my-feature` or `fix/issue-description`).
 2. **Code Style & Linting**: Run `npm run lint` before committing code changes. Ensure TypeScript types are exact.
 3. **Testing**: Run `npm run test` to verify unit and integration tests pass.
+
+# Contributing to Chenpilot Client
+
+Thank you for your interest in contributing to **Chenpilot Client (`gear5labs/chenpilot-client`)**! We appreciate bug reports, feature proposals, documentation improvements, and pull requests from the community.
+
+---
+
+## 1. Local Development Setup & Commands
+
+Ensure you have Node.js (v18+) and **pnpm** installed on your system.
+
+1. **Clone the repository and install dependencies:**
+   ```bash
+   git clone [https://github.com/gear5labs/chenpilot-client.git](https://github.com/gear5labs/chenpilot-client.git)
+   cd chenpilot-client
+   pnpm install
