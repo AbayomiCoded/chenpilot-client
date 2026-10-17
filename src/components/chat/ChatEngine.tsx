@@ -750,6 +750,88 @@ onClick={() =>
       `}</style>
     </div>
   );
+
+export const ChatEngine: React.FC<ChatEngineProps> = ({
+  messages,
+  targetMessageId,
+  onLoadMoreHistory,
+  isFetchingHistory,
+}) => {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const isShortList = messages.length <= SMALL_LIST_THRESHOLD;
+
+  // Initialize virtualizer
+  const rowVirtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 72, // Average initial message height estimate
+    overscan: 5,
+  });
+
+  const virtualItems = rowVirtualizer.getVirtualItems();
+
+  // Scroll to bottom on new incoming messages if near bottom
+  const scrollToBottom = useCallback(() => {
+    if (messages.length > 0) {
+      rowVirtualizer.scrollToIndex(messages.length - 1, { align: 'end', behavior: 'smooth' });
+    }
+  }, [messages.length, rowVirtualizer]);
+
+  // Handle target message navigation (Search jump)
+  useEffect(() => {
+    if (targetMessageId) {
+      const targetIndex = messages.findIndex((m) => m.id === targetMessageId);
+      if (targetIndex !== -1) {
+        rowVirtualizer.scrollToIndex(targetIndex, { align: 'center', behavior: 'smooth' });
+      }
+    }
+  }, [targetMessageId, messages, rowVirtualizer]);
+
+  return (
+    <div
+      ref={parentRef}
+      className="flex-1 overflow-y-auto px-4 py-2 custom-scrollbar relative"
+      style={{ contain: 'strict' }}
+    >
+      {isShortList ? (
+        /* Fallback for short conversations: standard un-virtualized DOM */
+        <div className="flex flex-col space-y-4">
+          {messages.map((message) => (
+            <MessageRow key={message.id} message={message} />
+          ))}
+        </div>
+      ) : (
+        /* Virtualized rendering for long conversations */
+        <div
+          style={{
+            height: `${rowVirtualizer.getTotalSize()}px`,
+            width: '100%',
+            position: 'relative',
+          }}
+        >
+          {virtualItems.map((virtualRow) => {
+            const message = messages[virtualRow.index];
+            return (
+              <div
+                key={message.id || virtualRow.key}
+                ref={rowVirtualizer.measureElement}
+                data-index={virtualRow.index}
+                style={{
+                  position: 'absolute',
+                  top: 0,
+                  left: 0,
+                  width: '100%',
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
+              >
+                <MessageRow message={message} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 };
 
 export default ChatEngine;
