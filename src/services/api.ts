@@ -35,6 +35,68 @@ import {
   retryLabel,
 } from '@/utils/retryUtils';
 
+import axios from 'axios';
+
+const FRIENDTEST_URL = 'https://friendbot.stellar.org';
+
+export interface FundingResult {
+  success: boolean;
+  message: string;
+  txHash?: string;
+}
+
+export const requestAccountFunding = async (
+  publicKey: string,
+  requiredAmount: number,
+  currentBalance: number,
+  isTestnet: boolean
+): Promise<FundingResult> => {
+  if (currentBalance >= requiredAmount) {
+    return {
+      success: true,
+      message: `Account is already sufficiently funded (${currentBalance} XLM >= required ${requiredAmount} XLM).`,
+    };
+  }
+
+  try {
+    // 1. Attempt primary backend funding endpoint
+    const response = await axios.post('/api/fund', { publicKey, requiredAmount });
+    return {
+      success: true,
+      message: 'Account funded successfully via backend service.',
+      txHash: response.data.txHash,
+    };
+  } catch (backendError: any) {
+    // If on testnet, fallback to Stellar Friendbot
+    if (isTestnet) {
+      try {
+        const friendbotResponse = await axios.get(`${FRIENDTEST_URL}/?addr=${publicKey}`);
+        return {
+          success: true,
+          message: 'Account funded successfully via Stellar Testnet Friendbot fallback.',
+          txHash: friendbotResponse.data.hash,
+        };
+      } catch (friendbotError: any) {
+        throw new Error(
+          `Funding failed: Backend service unavailable and Friendbot fallback failed. Required: ${requiredAmount} XLM, Current: ${currentBalance} XLM.`
+        );
+      }
+    }
+
+    // Translate backend error into actionable message
+    const statusCode = backendError.response?.status;
+    if (statusCode === 429) {
+      throw new Error(`Funding rate limit exceeded. Required: ${requiredAmount} XLM. Please try again later.`);
+    } else if (statusCode === 400) {
+      throw new Error(`Invalid funding request. Required balance: ${requiredAmount} XLM, Current: ${currentBalance} XLM.`);
+    } else {
+      throw new Error(
+        `Failed to fund account. Required: ${requiredAmount} XLM, Current: ${currentBalance} XLM. Please check your network connection.`
+      );
+    }
+  }
+};
+
 // ─── Lazy store reference ─────────────────────────────────────────────────────
 // We use a lazy injection pattern instead of a direct import to avoid the
 // circular dependency:  store → authSlice → api → store.
