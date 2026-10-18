@@ -66,7 +66,7 @@ export const requestAccountFunding = async (
       message: 'Account funded successfully via backend service.',
       txHash: response.data.txHash,
     };
-  } catch (backendError: any) {
+  } catch (backendError: unknown) {
     // If on testnet, fallback to Stellar Friendbot
     if (isTestnet) {
       try {
@@ -76,7 +76,7 @@ export const requestAccountFunding = async (
           message: 'Account funded successfully via Stellar Testnet Friendbot fallback.',
           txHash: friendbotResponse.data.hash,
         };
-      } catch (friendbotError: any) {
+      } catch (friendbotError: unknown) {
         throw new Error(
           `Funding failed: Backend service unavailable and Friendbot fallback failed. Required: ${requiredAmount} XLM, Current: ${currentBalance} XLM.`
         );

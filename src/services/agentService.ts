@@ -1,11 +1,12 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
 import { logger } from "../utils/logger";
-import { 
-  AgentQueryRequest, 
+import {
+  AgentQueryRequest,
   AgentQueryResponse,
   AgentStatus,
   AgentCapabilities,
-  AgentHealthCheck
+  AgentHealthCheck,
+  AgentTool
 } from '@/types/agent';
 import agentConfig from '@/config/agent';
 
@@ -216,12 +217,13 @@ class AgentService {
           error: null
         }
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('[AgentService] Query failed:', error);
-      
+
       // Convert technical errors to user-friendly messages
       let friendlyMessage = 'Agent service is currently unavailable. Please try again later.';
-      const errorMsg = error.response?.data?.message || error.message || 'Unknown error';
+      const axiosError = error as { response?: { data?: { message?: string } }; message?: string };
+      const errorMsg = axiosError.response?.data?.message || axiosError.message || 'Unknown error';
       
       if (errorMsg.includes('invalid query')) {
         friendlyMessage = "I didn't understand that. Could you please rephrase your question?";
@@ -281,9 +283,9 @@ class AgentService {
    *
    * @returns Promise resolving to array of tool definitions.
    */
-  async getTools(): Promise<any[]> {
+  async getTools(): Promise<AgentTool[]> {
     try {
-      const response = await this.api.get<any[]>('/tools');
+      const response = await this.api.get<AgentTool[]>('/tools');
       return response.data;
     } catch (error) {
       console.error('[AgentService] Failed to get tools:', error);
@@ -299,7 +301,7 @@ class AgentService {
    * @returns Promise resolving to tool execution response output.
    * @throws {Error} Throws Error if tool execution fails.
    */
-  async executeTool(toolName: string, params: any): Promise<any> {
+  async executeTool(toolName: string, params: Record<string, unknown>): Promise<unknown> {
     try {
       const response = await this.api.post(`/tools/${toolName}/execute`, params);
       return response.data;
