@@ -42,6 +42,7 @@ export const Button: React.FC<ButtonProps> = ({
       )}
       disabled={disabled || loading}
       onClick={onClick}
+      aria-disabled={disabled || loading}
       {...props}
     >
       {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}

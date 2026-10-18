@@ -24,6 +24,20 @@ export function Providers({ children }: ProvidersProps) {
     store.dispatch(initializeAuth());
     // Initialize UI state (theme, language, etc.)
     store.dispatch(initializeUI());
+
+    // Sync auth state across browser tabs
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'auth_token' || e.key === 'user_data') {
+        // Re-initialize auth state when it changes in another tab
+        store.dispatch(initializeAuth());
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
   }, []);
 
   return (

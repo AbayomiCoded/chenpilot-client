@@ -11,8 +11,14 @@ export function useSessionManagement() {
   const dispatch = useAppDispatch();
 
   useEffect(() => {
+    // Sync with any existing session from other tabs
+    sessionService.syncWithStoredSession();
+
     // Start the session when component mounts (i.e., when user logs in)
     sessionService.startSession(DEFAULT_SESSION_CONFIG);
+
+    // Setup cross-tab synchronization
+    const cleanupCrossTabSync = sessionService.setupCrossTabSync();
 
     // Handle warning trigger
     const unsubscribeWarning = sessionService.onWarning(() => {
@@ -34,6 +40,7 @@ export function useSessionManagement() {
     return () => {
       unsubscribeWarning();
       unsubscribeExtend();
+      cleanupCrossTabSync?.();
     };
   }, [dispatch]);
 }

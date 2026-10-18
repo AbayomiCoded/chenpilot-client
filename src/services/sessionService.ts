@@ -154,6 +154,55 @@ class SessionService {
       this.expirationTime = storedTime;
     }
   }
+
+  // Setup cross-tab synchronization
+  setupCrossTabSync() {
+    if (typeof window === 'undefined') return;
+
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'session_expiration') {
+        if (e.newValue === null) {
+          // Session was cleared in another tab
+          this.clearSession();
+          this.callbacks.onExpiration.forEach((cb) => cb());
+        } else {
+          // Session was updated in another tab
+          const newExpirationTime = parseInt(e.newValue, 10);
+          if (!isNaN(newExpirationTime)) {
+            this.expirationTime = newExpirationTime;
+            // Restart timers with new expiration time
+            const now = Date.now();
+            const timeUntilExpiration = newExpirationTime - now;
+            const warningTriggerTime = timeUntilExpiration - DEFAULT_SESSION_CONFIG.warningTime;
+
+            this.clearTimers();
+
+            if (warningTriggerTime > 0) {
+              this.warningTimeoutId = setTimeout(() => {
+                this.triggerWarning();
+              }, warningTriggerTime);
+            }
+
+            if (timeUntilExpiration > 0) {
+              this.timeoutId = setTimeout(() => {
+                this.triggerExpiration();
+              }, timeUntilExpiration);
+            } else {
+              // Session already expired
+              this.triggerExpiration();
+            }
+          }
+        }
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+
+    // Return cleanup function
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+    };
+  }
 }
 
 export const sessionService = new SessionService();

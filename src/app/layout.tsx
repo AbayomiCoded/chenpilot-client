@@ -6,6 +6,8 @@ import { Providers } from "@/components/providers/Providers";
 const manrope = Manrope({
   subsets: ["latin"],
   variable: "--font-manrope",
+  display: "swap",
+  preload: true,
 });
 
 export const metadata: Metadata = {

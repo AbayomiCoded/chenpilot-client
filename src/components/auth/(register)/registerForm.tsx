@@ -55,19 +55,23 @@ export function RegisterForm() {
     }
   };
 
+  const onInvalid = () => {
+    toast.error("Please fix the errors in the form");
+  };
+
   return (
     <div className="w-full max-w-md mt-20">
       <div className="mb-12">
         <span className="text-xs text-white/40 font-light tracking-[0.3em] uppercase block mb-6">
           Get Started
         </span>
-      
+
         <p className="text-base text-white/40 font-light leading-relaxed">
           Join thousands trading smarter with AI-powered assistance
         </p>
       </div>
 
-      <div className="space-y-6">
+      <form onSubmit={handleSubmit(onSubmit, onInvalid)} noValidate className="space-y-6">
         <div>
           <label
             htmlFor="name"
@@ -79,11 +83,15 @@ export function RegisterForm() {
             {...register("name")}
             type="text"
             id="name"
+            name="name"
+            autoComplete="name"
             placeholder="John Doe"
+            aria-invalid={errors.name ? "true" : "false"}
+            aria-describedby={errors.name ? "name-error" : undefined}
             className="w-full bg-transparent border border-white/10 text-white placeholder-white/30 px-4 py-3 font-light focus:border-white/30 focus:outline-none transition-colors duration-300"
           />
           {errors.name && (
-            <p className="mt-2 text-xs text-red-400 font-light">
+            <p id="name-error" className="mt-2 text-xs text-red-400 font-light" role="alert">
               {errors.name.message}
             </p>
           )}
@@ -100,11 +108,16 @@ export function RegisterForm() {
             {...register("email")}
             type="email"
             id="email"
+            name="email"
+            autoComplete="email"
             placeholder="your@email.com"
+            aria-required="true"
+            aria-invalid={errors.email ? "true" : "false"}
+            aria-describedby={errors.email ? "email-error" : undefined}
             className="w-full bg-transparent border border-white/10 text-white placeholder-white/30 px-4 py-3 font-light focus:border-white/30 focus:outline-none transition-colors duration-300"
           />
           {errors.email && (
-            <p className="mt-2 text-xs text-red-400 font-light">
+            <p id="email-error" className="mt-2 text-xs text-red-400 font-light" role="alert">
               {errors.email.message}
             </p>
           )}
@@ -122,13 +135,20 @@ export function RegisterForm() {
               {...register("password")}
               type={showPassword ? "text" : "password"}
               id="password"
+              name="password"
+              autoComplete="new-password"
               placeholder="Create a strong password"
+              aria-required="true"
+              aria-invalid={errors.password ? "true" : "false"}
+              aria-describedby={errors.password ? "password-error" : "password-hint"}
               className="w-full bg-transparent border border-white/10 text-white placeholder-white/30 px-4 py-3 pr-12 font-light focus:border-white/30 focus:outline-none transition-colors duration-300"
             />
             <button
               type="button"
               className="absolute inset-y-0 right-0 pr-4 flex items-center"
               onClick={() => setShowPassword(!showPassword)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
             >
               {showPassword ? (
                 <EyeOff className="h-4 w-4 text-white/40 hover:text-white/60 transition-colors" />
@@ -138,7 +158,7 @@ export function RegisterForm() {
             </button>
           </div>
           {errors.password && (
-            <p className="mt-2 text-xs text-red-400 font-light">
+            <p id="password-error" className="mt-2 text-xs text-red-400 font-light" role="alert">
               {errors.password.message}
             </p>
           )}
@@ -152,13 +172,17 @@ export function RegisterForm() {
             name="terms"
             type="checkbox"
             required
+            aria-required="true"
+            aria-describedby="terms-desc"
             className="w-4 h-4 mt-0.5 border border-white/10 bg-transparent"
           />
-          <label htmlFor="terms" className="text-white/40 font-light">
+          <label htmlFor="terms" id="terms-desc" className="text-white/40 font-light">
             I agree to the{" "}
             <a
               href="#"
               className="text-white hover:text-white/80 transition-colors"
+              target="_blank"
+              rel="noopener noreferrer"
             >
               Terms of Service
             </a>{" "}
@@ -166,6 +190,8 @@ export function RegisterForm() {
             <a
               href="#"
               className="text-white hover:text-white/80 transition-colors"
+              target="_blank"
+              rel="noopener noreferrer"
             >
               Privacy Policy
             </a>
@@ -173,7 +199,7 @@ export function RegisterForm() {
         </div>
 
         <Button
-          onClick={handleSubmit(onSubmit)}
+          type="submit"
           disabled={isSubmitting}
           className="group w-full px-10 py-4 text-base font-light rounded-full bg-white text-black hover:bg-white/90 transition-all duration-500 flex items-center justify-center gap-3"
         >
@@ -189,7 +215,7 @@ export function RegisterForm() {
             </>
           )}
         </Button>
-      </div>
+      </form>
 
       <div className="mt-8">
         <div className="relative">
