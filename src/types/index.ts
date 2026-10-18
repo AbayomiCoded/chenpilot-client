@@ -184,7 +184,7 @@ export interface ExecutionStep {
   timestamp: string;
   duration: number;
   description: string;
-  details?: any;
+  details?: Record<string, unknown>;
   substeps?: ExecutionStep[];
 }
 
@@ -232,7 +232,7 @@ export interface ChatMessage {
     asset?: string;
     requiresConfirmation?: boolean;
     executionTrace?: ExecutionTrace;
-    rawData?: any;
+    rawData?: Record<string, unknown>;
     serverTimestamp?: number | string;
     clientTimestamp?: number | string;
     optimisticId?: string;
@@ -323,7 +323,7 @@ export interface FormField {
   type: "text" | "email" | "password" | "number" | "select";
   placeholder?: string;
   required?: boolean;
-  validation?: any;
+  validation?: { required?: boolean; min?: number; max?: number; pattern?: string; message?: string };
   options?: { value: string; label: string }[];
 }
 
@@ -417,14 +417,10 @@ export interface ButtonProps {
   className?: string;
 }
 
-export interface InputProps {
+export interface InputProps extends React.InputHTMLAttributes<HTMLInputElement> {
   label?: string;
   error?: string;
   helperText?: string;
-  required?: boolean;
-  disabled?: boolean;
-  className?: string;
-  [key: string]: any;
 }
 
 export interface ModalProps {
