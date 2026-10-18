@@ -1,12 +1,27 @@
 "use client";
 import React, { useEffect, useState } from "react";
-import Footer from "@/components/(home)/layout/footer";
-import CTA from "@/components/(home)/sections/CTA";
-import Capabilities from "@/components/(home)/sections/capabilities";
-import Logos from "@/components/(home)/sections/logos";
-import Features from "@/components/(home)/sections/features";
-import Hero from "@/components/(home)/sections/hero";
+import dynamic from "next/dynamic";
 import Header from "@/components/(home)/layout/header";
+
+// Dynamically import sections to reduce initial bundle size
+const Hero = dynamic(() => import("@/components/(home)/sections/hero"), {
+  loading: () => <div className="h-screen flex items-center justify-center">Loading...</div>,
+});
+const Features = dynamic(() => import("@/components/(home)/sections/features"), {
+  loading: () => <div className="h-96 flex items-center justify-center">Loading...</div>,
+});
+const Logos = dynamic(() => import("@/components/(home)/sections/logos"), {
+  loading: () => <div className="h-64 flex items-center justify-center">Loading...</div>,
+});
+const Capabilities = dynamic(() => import("@/components/(home)/sections/capabilities"), {
+  loading: () => <div className="h-96 flex items-center justify-center">Loading...</div>,
+});
+const CTA = dynamic(() => import("@/components/(home)/sections/CTA"), {
+  loading: () => <div className="h-96 flex items-center justify-center">Loading...</div>,
+});
+const Footer = dynamic(() => import("@/components/(home)/layout/footer"), {
+  loading: () => <div className="h-64 flex items-center justify-center">Loading...</div>,
+});
 
 export default function Home() {
   const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });

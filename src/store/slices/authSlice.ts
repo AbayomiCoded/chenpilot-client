@@ -194,6 +194,10 @@ const authSlice = createSlice({
       state.error = null;
       state.sessionExpirationTime = null;
       state.isSessionWarningActive = false;
+      // Clear session from localStorage
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("session_expiration");
+      }
     },
     setSessionExpirationTime: (state, action: PayloadAction<number | null>) => {
       state.sessionExpirationTime = action.payload;
@@ -305,10 +309,13 @@ const authSlice = createSlice({
         state.token = null;
         state.isAuthenticated = false;
         state.error = null;
+        state.sessionExpirationTime = null;
+        state.isSessionWarningActive = false;
         // Clear localStorage on logout
         if (typeof window !== "undefined") {
           localStorage.removeItem("auth_token");
           localStorage.removeItem("user_data");
+          localStorage.removeItem("session_expiration");
         }
       })
       // Load User

@@ -42,16 +42,20 @@ export default function LoginForm() {
     }
   };
 
+  const onInvalid = () => {
+    toast.error("Please fix the errors in the form");
+  };
+
   return (
     <div className="w-full max-w-md">
       <div className="mb-12">
         <span className="text-xs text-white/40 font-light tracking-[0.3em] uppercase block mb-6">
           Welcome Back
         </span>
-      
+
       </div>
 
-      <div className="space-y-6">
+      <form onSubmit={handleSubmit(onSubmit, onInvalid)} noValidate className="space-y-6">
         <div>
           <label
             htmlFor="email"
@@ -63,11 +67,16 @@ export default function LoginForm() {
             {...register("email")}
             type="email"
             id="email"
+            name="email"
+            autoComplete="email"
             placeholder="your@email.com"
+            aria-required="true"
+            aria-invalid={errors.email ? "true" : "false"}
+            aria-describedby={errors.email ? "email-error" : undefined}
             className="w-full bg-transparent border border-white/10 text-white placeholder-white/30 px-4 py-3 font-light focus:border-white/30 focus:outline-none transition-colors duration-300"
           />
           {errors.email && (
-            <p className="mt-2 text-xs text-red-400 font-light">
+            <p id="email-error" className="mt-2 text-xs text-red-400 font-light" role="alert">
               {errors.email.message}
             </p>
           )}
@@ -85,13 +94,20 @@ export default function LoginForm() {
               {...register("password")}
               type={showPassword ? "text" : "password"}
               id="password"
+              name="password"
+              autoComplete="current-password"
               placeholder="Enter your password"
+              aria-required="true"
+              aria-invalid={errors.password ? "true" : "false"}
+              aria-describedby={errors.password ? "password-error" : undefined}
               className="w-full bg-transparent border border-white/10 text-white placeholder-white/30 px-4 py-3 pr-12 font-light focus:border-white/30 focus:outline-none transition-colors duration-300"
             />
             <button
               type="button"
               className="absolute inset-y-0 right-0 pr-4 flex items-center"
               onClick={() => setShowPassword(!showPassword)}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              aria-pressed={showPassword}
             >
               {showPassword ? (
                 <EyeOff className="h-4 w-4 text-white/40 hover:text-white/60 transition-colors" />
@@ -101,7 +117,7 @@ export default function LoginForm() {
             </button>
           </div>
           {errors.password && (
-            <p className="mt-2 text-xs text-red-400 font-light">
+            <p id="password-error" className="mt-2 text-xs text-red-400 font-light" role="alert">
               {errors.password.message}
             </p>
           )}
@@ -111,10 +127,12 @@ export default function LoginForm() {
           <label className="flex items-center gap-2 text-white/40 font-light cursor-pointer">
             <input
               id="remember-me"
+              name="remember-me"
               type="checkbox"
               className="w-4 h-4 border border-white/10 bg-transparent"
+              aria-describedby="remember-me-desc"
             />
-            Remember me
+            <span id="remember-me-desc">Remember me</span>
           </label>
           <Link
             href="/auth/forgot-password"
@@ -125,7 +143,7 @@ export default function LoginForm() {
         </div>
 
         <Button
-          onClick={handleSubmit(onSubmit)}
+          type="submit"
           disabled={isLoading}
           className="group w-full px-10 py-4 text-base font-light rounded-full bg-white text-black hover:bg-white/90 transition-all duration-500 flex items-center justify-center gap-3"
         >
@@ -141,7 +159,7 @@ export default function LoginForm() {
             </>
           )}
         </Button>
-      </div>
+      </form>
 
       <div className="mt-8">
         <div className="relative">

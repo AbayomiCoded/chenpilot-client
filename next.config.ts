@@ -3,10 +3,25 @@ import { buildSecurityHeaders } from "./src/security/securityHeaders";
 
 const nextConfig: NextConfig = {
   eslint: {
-    ignoreDuringBuilds: true,
+    ignoreDuringBuilds: false,
   },
   typescript: {
-    ignoreBuildErrors: true,
+    ignoreBuildErrors: false,
+  },
+  // Optimize bundle size
+  swcMinify: true,
+  compress: true,
+  // Improve production build performance
+  productionBrowserSourceMaps: false,
+  // Optimize images
+  images: {
+    formats: ['image/avif', 'image/webp'],
+    deviceSizes: [640, 750, 828, 1080, 1200, 1920, 2048, 3840],
+    imageSizes: [16, 32, 48, 64, 96, 128, 256, 384],
+  },
+  // Optimize chunk splitting
+  experimental: {
+    optimizePackageImports: ['lucide-react', 'framer-motion'],
   },
   async rewrites() {
     const backendUrl = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:2333';
