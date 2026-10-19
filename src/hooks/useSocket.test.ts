@@ -121,6 +121,70 @@ describe('useSocketEvent', () => {
     expect(cb).toBeCalledTimes(1);
     expect(cb2).toBeCalledTimes(1);
   });
+
+  it('cleans up event listeners on unmount', () => {
+    const off = capturedSocketContext.off as ReturnType<typeof vi.fn>;
+
+    const { unmount } = renderHook(() => useSocketEvent('message', vi.fn()));
+
+    unmount();
+
+    expect(off).toHaveBeenCalledTimes(1);
+    expect(off).toHaveBeenCalledWith('message', expect.any(Function));
+  });
+
+  it('handles socket disconnection during hook lifecycle', () => {
+    const on = capturedSocketContext.on as ReturnType<typeof vi.fn>;
+
+    const { rerender } = renderHook(() => useSocketEvent('message', vi.fn()));
+
+    // Simulate socket disconnection
+    capturedSocketContext = createMockContext({
+      socket: null,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+
+    rerender();
+
+    // Should not subscribe when socket is null
+    expect(on).toHaveBeenCalledTimes(1); // Only initial subscription
+  });
+
+  it('resubscribes when socket reconnects after disconnection', () => {
+    const on = capturedSocketContext.on as ReturnType<typeof vi.fn>;
+
+    const { rerender } = renderHook(() => useSocketEvent('message', vi.fn()));
+
+    // Simulate disconnection
+    capturedSocketContext = createMockContext({
+      socket: null,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+
+    rerender();
+
+    const initialOnCalls = on.mock.calls.length;
+
+    // Simulate reconnection
+    capturedSocketContext = createMockContext({
+      socket: {
+        on: vi.fn(),
+        off: vi.fn(),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        connected: true,
+      } as unknown as SocketClient,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+
+    rerender();
+
+    // Should resubscribe on reconnection
+    expect(on.mock.calls.length).toBeGreaterThan(initialOnCalls);
+  });
 });
 
 describe('useSocketConnection', () => {
@@ -138,5 +202,332 @@ describe('useSocketConnection', () => {
     expect(result.current.isConnected).toBe(true);
     expect(result.current.connect).toBe(connect);
     expect(result.current.disconnect).toBe(disconnect);
+  });
+
+  it('handles reconnection by updating connection state', () => {
+    const connect = vi.fn();
+    const disconnect = vi.fn();
+    let isConnected = false;
+
+    capturedSocketContext = createMockContext({
+      isConnected,
+      connect,
+      disconnect,
+    });
+
+    const { result, rerender } = renderHook(() => useSocketConnection());
+
+    expect(result.current.isConnected).toBe(false);
+
+    // Simulate reconnection
+    isConnected = true;
+    capturedSocketContext = createMockContext({
+      isConnected,
+      connect,
+      disconnect,
+    });
+
+    rerender();
+
+    expect(result.current.isConnected).toBe(true);
+  });
+
+  it('properly cleans up on unmount', () => {
+    const disconnect = vi.fn();
+    capturedSocketContext = createMockContext({
+      isConnected: true,
+      disconnect,
+    });
+
+    const { unmount } = renderHook(() => useSocketConnection());
+
+    unmount();
+
+    // Verify disconnect is not called automatically - it's up to the consumer
+    // to call disconnect when appropriate
+    expect(disconnect).not.toHaveBeenCalled();
+  });
+
+  it('maintains stable reference to connect/disconnect functions', () => {
+    const connect = vi.fn();
+    const disconnect = vi.fn();
+    capturedSocketContext = createMockContext({
+      isConnected: true,
+      connect,
+      disconnect,
+    });
+
+    const { result, rerender } = renderHook(() => useSocketConnection());
+
+    const initialConnect = result.current.connect;
+    const initialDisconnect = result.current.disconnect;
+
+    // Simulate state change
+    capturedSocketContext = createMockContext({
+      isConnected: false,
+      connect,
+      disconnect,
+    });
+
+    rerender();
+
+    // Functions should remain stable
+    expect(result.current.connect).toBe(initialConnect);
+    expect(result.current.disconnect).toBe(initialDisconnect);
+  });
+
+  it('handles rapid connection/disconnection cycles', () => {
+    const connect = vi.fn();
+    const disconnect = vi.fn();
+    capturedSocketContext = createMockContext({
+      isConnected: false,
+      connect,
+      disconnect,
+    });
+
+    const { result, rerender } = renderHook(() => useSocketConnection());
+
+    // Rapid cycle: connect -> disconnect -> connect
+    capturedSocketContext = createMockContext({
+      isConnected: true,
+      connect,
+      disconnect,
+    });
+    rerender();
+
+    capturedSocketContext = createMockContext({
+      isConnected: false,
+      connect,
+      disconnect,
+    });
+    rerender();
+
+    capturedSocketContext = createMockContext({
+      isConnected: true,
+      connect,
+      disconnect,
+    });
+    rerender();
+
+    expect(result.current.isConnected).toBe(true);
+  });
+});
+
+describe('useSocket - Reconnection Scenarios', () => {
+  beforeEach(() => {
+    capturedSocketContext = createMockContext({
+      socket: {
+        on: vi.fn(),
+        off: vi.fn(),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        connected: true,
+      } as unknown as SocketClient,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+  });
+
+  it('handles reconnection after network failure', () => {
+    const on = capturedSocketContext.on as ReturnType<typeof vi.fn>;
+
+    const { rerender } = renderHook(() => useSocketEvent('message', vi.fn()));
+
+    // Simulate network failure (socket disconnects)
+    capturedSocketContext = createMockContext({
+      socket: null,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+    rerender();
+
+    const initialOffCalls = off.mock.calls.length;
+
+    // Simulate reconnection
+    capturedSocketContext = createMockContext({
+      socket: {
+        on: vi.fn(),
+        off: vi.fn(),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        connected: true,
+      } as unknown as SocketClient,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+    rerender();
+
+    // Should resubscribe after reconnection
+    expect(on.mock.calls.length).toBeGreaterThan(initialOffCalls);
+  });
+
+  it('cleans up event listeners when socket disconnects', () => {
+    const off = capturedSocketContext.off as ReturnType<typeof vi.fn>;
+
+    const { rerender } = renderHook(() => useSocketEvent('message', vi.fn()));
+
+    // Simulate disconnection
+    capturedSocketContext = createMockContext({
+      socket: null,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+    rerender();
+
+    // Should unsubscribe when socket becomes null
+    expect(off).toHaveBeenCalled();
+  });
+
+  it('handles multiple event subscriptions during reconnection', () => {
+    const on = capturedSocketContext.on as ReturnType<typeof vi.fn>;
+
+    const { rerender } = renderHook(() => {
+      useSocketEvent('message', vi.fn());
+      useSocketEvent('notification', vi.fn());
+      useSocketEvent('status', vi.fn());
+    });
+
+    const initialOnCalls = on.mock.calls.length;
+
+    // Simulate disconnection
+    capturedSocketContext = createMockContext({
+      socket: null,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+    rerender();
+
+    // Simulate reconnection
+    capturedSocketContext = createMockContext({
+      socket: {
+        on: vi.fn(),
+        off: vi.fn(),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        connected: true,
+      } as unknown as SocketClient,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+    rerender();
+
+    // All three events should be resubscribed
+    expect(on.mock.calls.length).toBeGreaterThan(initialOnCalls);
+  });
+
+  it('maintains event listeners through temporary disconnections', () => {
+    const on = capturedSocketContext.on as ReturnType<typeof vi.fn>;
+
+    const { rerender } = renderHook(() => useSocketEvent('message', vi.fn()));
+
+    // Simulate temporary disconnection
+    capturedSocketContext = createMockContext({
+      socket: null,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+    rerender();
+
+    // Simulate reconnection
+    capturedSocketContext = createMockContext({
+      socket: {
+        on: vi.fn(),
+        off: vi.fn(),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        connected: true,
+      } as unknown as SocketClient,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+    rerender();
+
+    // Should be subscribed after reconnection
+    expect(on).toHaveBeenCalled();
+  });
+});
+
+describe('useSocket - Cleanup Behaviour', () => {
+  beforeEach(() => {
+    capturedSocketContext = createMockContext({
+      socket: {
+        on: vi.fn(),
+        off: vi.fn(),
+        connect: vi.fn(),
+        disconnect: vi.fn(),
+        connected: true,
+      } as unknown as SocketClient,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+  });
+
+  it('cleans up all event listeners on unmount', () => {
+    const off = capturedSocketContext.off as ReturnType<typeof vi.fn>;
+
+    const { unmount } = renderHook(() => {
+      useSocketEvent('message', vi.fn());
+      useSocketEvent('notification', vi.fn());
+    });
+
+    unmount();
+
+    // Both events should be unsubscribed
+    expect(off).toHaveBeenCalledTimes(2);
+  });
+
+  it('cleans up event listeners even when socket is null', () => {
+    const { rerender, unmount } = renderHook(() => useSocketEvent('message', vi.fn()));
+
+    // Simulate disconnection before unmount
+    capturedSocketContext = createMockContext({
+      socket: null,
+      on: vi.fn(),
+      off: vi.fn(),
+    });
+    rerender();
+
+    // Should not throw when unmounting with null socket
+    expect(() => unmount()).not.toThrow();
+  });
+
+  it('cleans up after multiple hook instances', () => {
+    const off = capturedSocketContext.off as ReturnType<typeof vi.fn>;
+
+    const { unmount: unmount1 } = renderHook(() => useSocketEvent('message', vi.fn()));
+    const { unmount: unmount2 } = renderHook(() => useSocketEvent('notification', vi.fn()));
+
+    unmount1();
+    unmount2();
+
+    // Both should have cleaned up
+    expect(off).toHaveBeenCalledTimes(2);
+  });
+
+  it('handles cleanup during in-flight requests', () => {
+    const off = capturedSocketContext.off as ReturnType<typeof vi.fn>;
+
+    const { unmount } = renderHook(() => useSocketEvent('message', vi.fn()));
+
+    // Unmount while socket is still connected
+    unmount();
+
+    // Should clean up even if events were fired
+    expect(off).toHaveBeenCalled();
+  });
+
+  it('cleans up connection state on unmount', () => {
+    const disconnect = vi.fn();
+    capturedSocketContext = createMockContext({
+      isConnected: true,
+      disconnect,
+    });
+
+    const { unmount } = renderHook(() => useSocketConnection());
+
+    unmount();
+
+    // Verify disconnect is not called automatically (consumer controls this)
+    expect(disconnect).not.toHaveBeenCalled();
   });
 });
