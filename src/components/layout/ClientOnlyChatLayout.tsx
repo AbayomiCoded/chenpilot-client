@@ -21,9 +21,14 @@ export function ClientOnlyChatLayout({ children }: ClientOnlyChatLayoutProps) {
           <div className="flex-1 overflow-hidden flex flex-col">
             <div className="flex-1 overflow-y-auto">
               <div className="h-full flex flex-col items-center justify-center p-8">
-                <div className="text-center">
+                <main
+                  id="main-content"
+                  tabIndex={-1}
+                  aria-label="Main content"
+                  className="text-center"
+                >
                   <p className="text-gray-300">Loading...</p>
-                </div>
+                </main>
               </div>
             </div>
           </div>

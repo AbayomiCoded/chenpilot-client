@@ -1,12 +1,15 @@
 "use client";
 import React from "react";
+import { useReducedMotion } from "@/hooks/useReducedMotion";
 
 export function FloatingElements() {
+  const prefersReducedMotion = useReducedMotion();
+
   return (
     <div className="absolute inset-0 pointer-events-none">
-      <div className="absolute top-20 left-20 animate-float" />
-      <div className="absolute top-32 right-32 animate-float-delayed" />
-      <div className="absolute bottom-20 left-1/3 animate-float-slow" />
+      <div className={`absolute top-20 left-20 ${prefersReducedMotion ? "" : "animate-float"}`} />
+      <div className={`absolute top-32 right-32 ${prefersReducedMotion ? "" : "animate-float-delayed"}`} />
+      <div className={`absolute bottom-20 left-1/3 ${prefersReducedMotion ? "" : "animate-float-slow"}`} />
 
       <style jsx>{`
         @keyframes float {

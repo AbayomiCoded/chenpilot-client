@@ -32,7 +32,10 @@ export default function Header() {
             </span>
           </div>
 
-          <nav className="hidden md:flex items-center space-x-1">
+          <nav
+            aria-label="Primary navigation"
+            className="hidden md:flex items-center space-x-1"
+          >
             {[
               { name: "Features", href: "#features" },
               { name: "Pricing", href: "#pricing" },
