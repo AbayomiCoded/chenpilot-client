@@ -153,6 +153,8 @@ export interface WalletBalance {
 }
 
 // Stellar Transaction Types
+export type TransactionDirection = 'incoming' | 'outgoing' | 'self' | 'unknown';
+
 export interface StellarOperation {
   id: string;
   type: string; // e.g., 'payment', 'create_account', 'trust', etc.
@@ -161,6 +163,7 @@ export interface StellarOperation {
   from?: string;
   to?: string;
   source_account: string;
+  direction?: TransactionDirection;
 }
 
 export interface StellarTransaction {
@@ -173,6 +176,7 @@ export interface StellarTransaction {
   operation_count: number;
   successful: boolean;
   operations: StellarOperation[];
+  direction?: TransactionDirection;
 }
 
 /**
