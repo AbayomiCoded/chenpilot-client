@@ -1,16 +1,18 @@
 "use client";
 
-import React, { useEffect } from "react";
+import React, { FormEvent, useEffect, useState } from "react";
 import { useAppDispatch, useAppSelector } from "@/store";
 import { fetchProfile } from "@/store/slices/authSlice";
 import { setLanguage } from "@/store/slices/uiSlice";
-import axios from "axios";
 import { ChatLayout } from "@/components/layout/ChatLayout";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import apiService from "@/services/api";
-import { t, LANGUAGES } from "@/lib/i18n/i18n";
+import authService from "@/services/auth.service";
+import { t } from "@/lib/i18n/i18n";
+import { LANGUAGES } from "@/lib/i18n/translations";
+import toast from "react-hot-toast";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
@@ -21,12 +23,25 @@ export default function SettingsPage() {
     mode: "dark",
     language: "en",
   };
+  const [passwordChangeStage, setPasswordChangeStage] = useState<
+    "reauthenticate" | "change-password" | null
+  >(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [securityError, setSecurityError] = useState("");
+  const [isSecurityActionLoading, setIsSecurityActionLoading] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated) {
       dispatch(fetchProfile());
     }
   }, [isAuthenticated, dispatch]);
+
+  useEffect(() => {
+    authService.clearRecentAuthentication();
+    return () => authService.clearRecentAuthentication();
+  }, [isAuthenticated]);
 
   if (!isAuthenticated) {
     return (
@@ -50,6 +65,70 @@ export default function SettingsPage() {
 
   const handleLanguageChange = (lang: "en" | "ar" | "es" | "fr") => {
     dispatch(setLanguage(lang));
+  };
+
+  const closePasswordChange = () => {
+    authService.clearRecentAuthentication();
+    setPasswordChangeStage(null);
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setSecurityError("");
+  };
+
+  const handleReauthentication = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSecurityError("");
+    setIsSecurityActionLoading(true);
+
+    try {
+      await authService.reauthenticate(user?.email ?? "", currentPassword);
+      setPasswordChangeStage("change-password");
+    } catch (error) {
+      setSecurityError(
+        error instanceof Error ? error.message : "Re-authentication failed",
+      );
+    } finally {
+      setIsSecurityActionLoading(false);
+    }
+  };
+
+  const handlePasswordChange = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSecurityError("");
+
+    if (!authService.hasRecentAuthentication()) {
+      setCurrentPassword("");
+      setPasswordChangeStage("reauthenticate");
+      setSecurityError(
+        "Your verification expired. Please verify your identity again.",
+      );
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setSecurityError("The new passwords do not match.");
+      return;
+    }
+
+    setIsSecurityActionLoading(true);
+    try {
+      const response = await apiService.changePassword(
+        currentPassword,
+        newPassword,
+      );
+      if (!response.success) {
+        throw new Error(response.message || "Password change failed");
+      }
+      toast.success("Password changed successfully");
+      closePasswordChange();
+    } catch (error) {
+      setSecurityError(
+        error instanceof Error ? error.message : "Password change failed",
+      );
+    } finally {
+      setIsSecurityActionLoading(false);
+    }
   };
 
   return (
@@ -227,7 +306,17 @@ export default function SettingsPage() {
                     {t(language, "settings.security")}
                   </h3>
                   <div className="space-y-4">
-                    <Button variant="ghost" className="w-full justify-start">
+                    <Button
+                      variant="ghost"
+                      className="w-full justify-start"
+                      onClick={() => {
+                        setCurrentPassword("");
+                        setNewPassword("");
+                        setConfirmPassword("");
+                        setSecurityError("");
+                        setPasswordChangeStage("reauthenticate");
+                      }}
+                    >
                       Change Password
                     </Button>
                     <Button
@@ -242,6 +331,105 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
+        {passwordChangeStage && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+            role="presentation"
+          >
+            <section
+              aria-labelledby="password-change-title"
+              aria-modal="true"
+              className="w-full max-w-md rounded-lg border border-gray-700 bg-gray-900 p-6 shadow-xl"
+              role="dialog"
+            >
+              <h2
+                className="mb-4 text-lg font-semibold text-white"
+                id="password-change-title"
+              >
+                {passwordChangeStage === "reauthenticate"
+                  ? "Verify your identity"
+                  : "Change password"}
+              </h2>
+              <form
+                onSubmit={
+                  passwordChangeStage === "reauthenticate"
+                    ? handleReauthentication
+                    : handlePasswordChange
+                }
+              >
+                <div className="space-y-4">
+                  {passwordChangeStage === "reauthenticate" ? (
+                    <Input
+                      autoComplete="current-password"
+                      autoFocus
+                      aria-label="Current password"
+                      label="Current password"
+                      onChange={(event) =>
+                        setCurrentPassword(event.target.value)
+                      }
+                      placeholder="Enter your current password"
+                      required
+                      type="password"
+                      value={currentPassword}
+                    />
+                  ) : (
+                    <>
+                      <p className="text-sm text-gray-300">
+                        Identity verified. This verification expires after five
+                        minutes.
+                      </p>
+                      <Input
+                        autoComplete="new-password"
+                        aria-label="New password"
+                        label="New password"
+                        onChange={(event) => setNewPassword(event.target.value)}
+                        placeholder="Enter a new password"
+                        required
+                        type="password"
+                        value={newPassword}
+                      />
+                      <Input
+                        autoComplete="new-password"
+                        aria-label="Confirm new password"
+                        label="Confirm new password"
+                        onChange={(event) =>
+                          setConfirmPassword(event.target.value)
+                        }
+                        placeholder="Confirm your new password"
+                        required
+                        type="password"
+                        value={confirmPassword}
+                      />
+                    </>
+                  )}
+                  {securityError && (
+                    <p className="text-sm text-red-400" role="alert">
+                      {securityError}
+                    </p>
+                  )}
+                  <div className="flex justify-end gap-3">
+                    <Button
+                      disabled={isSecurityActionLoading}
+                      onClick={closePasswordChange}
+                      variant="ghost"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      disabled={isSecurityActionLoading}
+                      loading={isSecurityActionLoading}
+                      type="submit"
+                    >
+                      {passwordChangeStage === "reauthenticate"
+                        ? "Verify identity"
+                        : "Save password"}
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
       </div>
     </ChatLayout>
   );

@@ -64,6 +64,8 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | `POST /auth/change-password` | `{"currentPassword":"Example123!","newPassword":"NewExample123!"}` | `{"success":true,"data":{"message":"Password changed"}}` | Service method only; no direct screen caller found. |
 | `DELETE /auth/account` | No body; bearer token when available. | `{"success":true,"data":{"message":"Account deleted"}}` | Service method only; clears the in-memory/local token after the request resolves. |
 
+Protected settings actions are password changes, MFA changes, and device management. Only password change currently has a settings control or API contract. Its flow re-verifies the current email/password with `POST /auth/login` before allowing the change, discards the login response token, and keeps the verification grant in memory for at most five minutes (and only while the settings page remains active). The subsequent `POST /auth/change-password` still sends `currentPassword` as required by its existing contract. No MFA or device-management routes are defined in this client; when those operations are added, the backend must enforce recent authentication itself (a client-side gate is not an authorization boundary) and the API contract must describe the corresponding verification and mutation requests.
+
 ### Data Export Fallbacks
 
 `exportUserData()` tries these paths in order, moving to the next only on HTTP 404. Each successful response is consumed as a binary `Blob`, not JSON.

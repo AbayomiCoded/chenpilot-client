@@ -35,8 +35,6 @@ import {
   retryLabel,
 } from '@/utils/retryUtils';
 
-import axios from 'axios';
-
 const FRIENDTEST_URL = 'https://friendbot.stellar.org';
 
 export interface FundingResult {
@@ -311,6 +309,21 @@ class ApiService {
       this.setToken((response.data as { data: { token: string } }).data.token);
     }
     return response.data;
+  }
+
+  /**
+   * Verify current credentials without changing the active session token.
+   */
+  async reauthenticate(email: string, password: string): Promise<void> {
+    const response = await axios.post<LoginResponse>(
+      this.api.getUri({ url: '/auth/login' }),
+      { email, password },
+      { headers: { 'Content-Type': 'application/json' } },
+    );
+
+    if (!response.data?.success) {
+      throw new Error(response.data?.message || 'Re-authentication failed');
+    }
   }
 
   /**
