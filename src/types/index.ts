@@ -105,6 +105,7 @@ export interface UpdateContactRequest {
   name?: string;
   address?: string;
   tokenType?: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  isFavorite?: boolean;
 }
 
 // Balance and Wallet Types
