@@ -2,7 +2,12 @@
 
 import React, { useContext } from 'react';
 import { ReactReduxContext } from 'react-redux';
-import { StellarTransaction, StellarOperation, TransactionDirection } from '@/types';
+import {
+  StellarTransaction,
+  StellarOperation,
+  TransactionDirection,
+  AssetIdentifier,
+} from '@/types';
 import {
   formatAddress,
   formatTokenAmount,
@@ -64,6 +69,109 @@ const OPERATION_TYPE_LABELS: { [key: string]: string } = {
  */
 function normalizeAddress(address?: string | null): string {
   return address ? address.trim().toLowerCase() : '';
+}
+
+/**
+ * Resolves an asset's code, issuer, and canonical representation from operation metadata.
+ *
+ * Rules:
+ * - Native assets ('XLM' or 'native'): canonical is 'XLM', isNative is true.
+ * - Issued assets with issuer: canonical is '<CODE>:<ISSUER>', isNative is false.
+ * - Issued assets without issuer (incomplete metadata): canonical is '<CODE>', hasIncompleteMetadata is true.
+ * - Missing/empty metadata: safely falls back to native 'XLM'.
+ */
+export function resolveAssetIdentifier(
+  asset?: string | null,
+  issuer?: string | null,
+  assetType?: string | null
+): AssetIdentifier {
+  if (assetType === 'native' || asset === 'native') {
+    return {
+      code: 'XLM',
+      issuer: undefined,
+      isNative: true,
+      canonical: 'XLM',
+      hasIncompleteMetadata: false,
+    };
+  }
+
+  // Handle canonical string format "CODE:ISSUER"
+  if (asset && asset.includes(':')) {
+    const [rawCode, ...rest] = asset.split(':');
+    const parsedIssuer = rest.join(':').trim();
+    const cleanCode = rawCode.trim().toUpperCase() || 'UNKNOWN';
+
+    if (parsedIssuer) {
+      return {
+        code: cleanCode,
+        issuer: parsedIssuer,
+        isNative: false,
+        canonical: `${cleanCode}:${parsedIssuer}`,
+        hasIncompleteMetadata: false,
+      };
+    }
+
+    return {
+      code: cleanCode,
+      issuer: undefined,
+      isNative: cleanCode === 'XLM',
+      canonical: cleanCode,
+      hasIncompleteMetadata: cleanCode !== 'XLM',
+    };
+  }
+
+  const cleanCode = asset ? asset.trim().toUpperCase() : 'XLM';
+  const cleanIssuer = issuer ? issuer.trim() : undefined;
+
+  if (cleanCode === 'XLM' && !cleanIssuer) {
+    return {
+      code: 'XLM',
+      issuer: undefined,
+      isNative: true,
+      canonical: 'XLM',
+      hasIncompleteMetadata: false,
+    };
+  }
+
+  if (cleanIssuer) {
+    return {
+      code: cleanCode,
+      issuer: cleanIssuer,
+      isNative: false,
+      canonical: `${cleanCode}:${cleanIssuer}`,
+      hasIncompleteMetadata: false,
+    };
+  }
+
+  // Issued code is present, but issuer metadata is incomplete
+  return {
+    code: cleanCode,
+    issuer: undefined,
+    isNative: false,
+    canonical: cleanCode,
+    hasIncompleteMetadata: true,
+  };
+}
+
+/**
+ * Formats an asset identifier for display, distinguishing same-code distinct issuers.
+ */
+export function formatAssetDisplay(
+  asset?: string | null,
+  issuer?: string | null,
+  options?: { compact?: boolean }
+): string {
+  const info = resolveAssetIdentifier(asset, issuer);
+  if (info.isNative) {
+    return info.code;
+  }
+  if (info.issuer) {
+    if (options?.compact) {
+      return `${info.code} (${formatAddress(info.issuer, 4, 4)})`;
+    }
+    return info.canonical;
+  }
+  return `${info.code} (unverified)`;
 }
 
 /**
@@ -155,7 +263,7 @@ export function getTransactionDirection(
 }
 
 /**
- * Formats a transaction amount consistently with directional prefix and asset symbol.
+ * Formats a transaction amount consistently with directional prefix and asset symbol/identifier.
  * - incoming: "+<amount> <asset>"
  * - outgoing: "-<amount> <asset>"
  * - self: "<amount> <asset>"
@@ -166,21 +274,34 @@ export function formatTransactionAmount(
   direction: TransactionDirection = 'unknown',
   asset: string = 'XLM',
   decimals?: number,
-  options?: FormatAmountOptions
+  options?: FormatAmountOptions & {
+    issuer?: string | null;
+    showCanonical?: boolean;
+    compactIssuer?: boolean;
+  }
 ): string {
   if (amount === undefined || amount === null || amount === '') {
     return '-';
   }
 
+  const assetInfo = resolveAssetIdentifier(asset, options?.issuer);
+
+  let assetLabel = assetInfo.code;
+  if (options?.showCanonical) {
+    assetLabel = assetInfo.canonical;
+  } else if (options?.compactIssuer && assetInfo.issuer) {
+    assetLabel = `${assetInfo.code} (${formatAddress(assetInfo.issuer, 4, 4)})`;
+  }
+
   if (options?.language || options?.locale) {
     const rawFormatted = formatLocaleAmount(amount, {
       ...options,
-      asset,
+      asset: assetLabel,
       decimals:
         decimals !== undefined
           ? decimals
-          : asset
-          ? ASSET_PRECISION[asset.toUpperCase()]
+          : assetInfo.code
+          ? ASSET_PRECISION[assetInfo.code.toUpperCase()]
           : undefined,
     });
     if (rawFormatted === '-') return '-';
@@ -195,7 +316,7 @@ export function formatTransactionAmount(
   }
 
   const tokenFormatted = formatTokenAmount(amount, decimals !== undefined ? decimals : 2);
-  const assetSuffix = asset ? ` ${asset}` : '';
+  const assetSuffix = assetLabel ? ` ${assetLabel}` : '';
 
   if (direction === 'incoming') {
     return `+${tokenFormatted}${assetSuffix}`;
@@ -206,6 +327,54 @@ export function formatTransactionAmount(
   }
 
   return `${tokenFormatted}${assetSuffix}`;
+}
+
+/**
+ * Formats an asset amount without directional prefixes, with optional canonical/compact issuer format.
+ */
+export function formatAssetAmount(
+  amount?: string | number | null,
+  asset?: string | null,
+  issuer?: string | null,
+  decimals: number = 2,
+  options?: {
+    showCanonical?: boolean;
+    compactIssuer?: boolean;
+    language?: Language;
+    locale?: string;
+  }
+): string {
+  if (amount === undefined || amount === null || amount === '') {
+    return '-';
+  }
+
+  const assetInfo = resolveAssetIdentifier(asset, issuer);
+
+  if (options?.language || options?.locale) {
+    const formatted = formatLocaleAmount(amount, {
+      language: options.language,
+      locale: options.locale,
+      decimals: assetInfo.code ? ASSET_PRECISION[assetInfo.code.toUpperCase()] : decimals,
+    });
+    if (options?.showCanonical) {
+      return `${formatted} ${assetInfo.canonical}`;
+    }
+    if (options?.compactIssuer && assetInfo.issuer) {
+      return `${formatted} ${assetInfo.code} (${formatAddress(assetInfo.issuer, 4, 4)})`;
+    }
+    return `${formatted} ${assetInfo.code}`;
+  }
+
+  const formatted = formatTokenAmount(amount, decimals);
+
+  if (options?.showCanonical) {
+    return `${formatted} ${assetInfo.canonical}`;
+  }
+  if (options?.compactIssuer && assetInfo.issuer) {
+    return `${formatted} ${assetInfo.code} (${formatAddress(assetInfo.issuer, 4, 4)})`;
+  }
+
+  return `${formatted} ${assetInfo.code}`;
 }
 
 export default function TransactionTable({
@@ -316,7 +485,10 @@ export default function TransactionTable({
     return (
       <Card className="p-12">
         <div className="text-center">
-          <p className="text-gray-400">No transactions found</p>
+          <p className="text-gray-400 mb-2">No transactions found</p>
+          <p className="text-xs text-gray-500">
+            Your on-chain transaction history will appear here
+          </p>
         </div>
       </Card>
     );
@@ -329,7 +501,7 @@ export default function TransactionTable({
           Transaction History
         </h2>
 
-        {/* Transaction Table */}
+        {/* Transactions Table */}
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -363,15 +535,26 @@ export default function TransactionTable({
             <tbody>
               {transactions.map((tx) => {
                 const direction = getTransactionDirection(tx, resolvedActiveAddress);
-                const primaryOp =
-                  tx.operations && tx.operations.length > 0 ? tx.operations[0] : null;
-                const formattedAmount = formatTransactionAmount(
-                  primaryOp?.amount,
-                  direction,
-                  primaryOp?.asset || 'XLM',
-                  undefined,
-                  { language: currentLanguage, locale }
+                const mainOp =
+                  tx.operations && tx.operations.length > 0
+                    ? tx.operations.find((o) => o.amount || o.to || o.from) || tx.operations[0]
+                    : null;
+
+                const assetInfo = resolveAssetIdentifier(
+                  mainOp?.asset || mainOp?.asset_code,
+                  mainOp?.asset_issuer,
+                  mainOp?.asset_type
                 );
+
+                const formattedAmount = mainOp?.amount
+                  ? formatTransactionAmount(
+                      mainOp.amount,
+                      direction,
+                      assetInfo.code,
+                      undefined,
+                      { language: currentLanguage, locale }
+                    )
+                  : '-';
 
                 return (
                   <tr
@@ -425,25 +608,46 @@ export default function TransactionTable({
                       </button>
                     </td>
                     <td className="py-3 px-4">
-                      <span
-                        data-testid={`tx-amount-${tx.id}`}
-                        className={`font-mono text-sm block ${
-                          direction === 'incoming'
-                            ? 'text-emerald-400 font-medium'
-                            : direction === 'outgoing'
-                            ? 'text-rose-400 font-medium'
-                            : direction === 'self'
-                            ? 'text-purple-300 font-medium'
-                            : 'text-gray-300'
-                        }`}
-                      >
-                        {formattedAmount}
-                      </span>
-                      {tx.fee_charged && (
-                        <span className="text-xs text-gray-500 block">
-                          Fee: {formatTransactionFee(tx.fee_charged, { language: currentLanguage, locale, asset: 'XLM' })}
+                      <div className="flex flex-col items-start space-y-0.5">
+                        <span
+                          data-testid={`tx-amount-${tx.id}`}
+                          className={`font-mono text-sm block ${
+                            direction === 'incoming'
+                              ? 'text-emerald-400 font-medium'
+                              : direction === 'outgoing'
+                              ? 'text-rose-400 font-medium'
+                              : direction === 'self'
+                              ? 'text-purple-300 font-medium'
+                              : 'text-gray-300'
+                          }`}
+                        >
+                          {formattedAmount}
                         </span>
-                      )}
+                        {assetInfo.issuer ? (
+                          <span
+                            data-testid={`tx-asset-issuer-${tx.id}`}
+                            className="font-mono text-[11px] text-gray-400 hover:text-gray-300 cursor-pointer inline-flex items-center gap-1"
+                            title={`Canonical Asset: ${assetInfo.canonical}`}
+                          >
+                            <span className="text-gray-500">issuer:</span>
+                            <span>{formatAddress(assetInfo.issuer, 4, 4)}</span>
+                          </span>
+                        ) : assetInfo.hasIncompleteMetadata ? (
+                          <span
+                            data-testid={`tx-asset-fallback-${tx.id}`}
+                            className="text-[11px] text-amber-400/90 inline-flex items-center gap-1"
+                            title="Asset issuer metadata is missing or unverified"
+                          >
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400"></span>
+                            <span>unverified issuer</span>
+                          </span>
+                        ) : null}
+                        {tx.fee_charged && (
+                          <span className="text-xs text-gray-500 block">
+                            Fee: {formatTransactionFee(tx.fee_charged, { language: currentLanguage, locale, asset: 'XLM' })}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="py-3 px-4">
                       <span className="text-gray-300">#{tx.ledger}</span>
