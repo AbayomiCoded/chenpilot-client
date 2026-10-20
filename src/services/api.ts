@@ -35,8 +35,6 @@ import {
   retryLabel,
 } from '@/utils/retryUtils';
 
-import axios from 'axios';
-
 const FRIENDTEST_URL = 'https://friendbot.stellar.org';
 
 export interface FundingResult {
