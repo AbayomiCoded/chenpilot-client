@@ -20,13 +20,15 @@ import apiService from "@/services/api";
 import authService from "@/services/auth.service";
 import toast from "react-hot-toast";
 
+const mockAuth = vi.hoisted(() => ({ authProvider: "email" }));
+
 vi.mock("@/store", () => ({
   useAppDispatch: () => vi.fn(),
   useAppSelector: (
     selector: (state: {
       auth: {
         isAuthenticated: boolean;
-        user: { name: string; email: string };
+        user: { name: string; email: string; authProvider: string };
         isLoading: boolean;
       };
       ui: { theme: { mode: string }; language: "en" };
@@ -35,7 +37,11 @@ vi.mock("@/store", () => ({
     selector({
       auth: {
         isAuthenticated: true,
-        user: { name: "Test User", email: "test@example.com" },
+        user: {
+          name: "Test User",
+          email: "test@example.com",
+          authProvider: mockAuth.authProvider,
+        },
         isLoading: false,
       },
       ui: { theme: { mode: "dark" }, language: "en" },
@@ -62,6 +68,7 @@ vi.mock("react-hot-toast", () => ({
 
 describe("SettingsPage password re-authentication", () => {
   beforeEach(() => {
+    mockAuth.authProvider = "email";
     authService.clearRecentAuthentication();
   });
 
@@ -121,6 +128,66 @@ describe("SettingsPage password re-authentication", () => {
     expect(screen.queryByRole("button", { name: "Save password" })).toBeNull();
   });
 
+  it("blocks a password that does not meet the shared password schema", async () => {
+    vi.spyOn(apiService, "reauthenticate").mockResolvedValue();
+    const changePassword = vi.spyOn(apiService, "changePassword");
+    render(<SettingsPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change Password" }));
+    fireEvent.change(
+      screen.getByPlaceholderText("Enter your current password"),
+      { target: { value: "current-password" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Verify identity" }));
+    await screen.findByRole("button", { name: "Save password" });
+    fireEvent.change(screen.getByPlaceholderText("Enter a new password"), {
+      target: { value: "weak-password" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Confirm your new password"), {
+      target: { value: "weak-password" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save password" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Password must contain at least one uppercase letter, one lowercase letter, and one number",
+    );
+    expect(changePassword).not.toHaveBeenCalled();
+  });
+
+  it("requires the new password and confirmation to match", async () => {
+    vi.spyOn(apiService, "reauthenticate").mockResolvedValue();
+    const changePassword = vi.spyOn(apiService, "changePassword");
+    render(<SettingsPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Change Password" }));
+    fireEvent.change(
+      screen.getByPlaceholderText("Enter your current password"),
+      { target: { value: "current-password" } },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Verify identity" }));
+    await screen.findByRole("button", { name: "Save password" });
+    fireEvent.change(screen.getByPlaceholderText("Enter a new password"), {
+      target: { value: "NewPassword1" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Confirm your new password"), {
+      target: { value: "DifferentPassword1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save password" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Passwords don't match",
+    );
+    expect(changePassword).not.toHaveBeenCalled();
+  });
+
+  it("does not offer password changes for Google-only accounts", () => {
+    mockAuth.authProvider = "google";
+    render(<SettingsPage />);
+
+    expect(screen.getByRole("button", { name: "Change Password" })).toBeDisabled();
+    expect(screen.getByText(/unavailable for Google sign-in accounts/i)).toBeInTheDocument();
+  });
+
   it("allows the protected form only after successful re-authentication", async () => {
     vi.spyOn(apiService, "reauthenticate").mockResolvedValue();
     render(<SettingsPage />);
@@ -158,17 +225,17 @@ describe("SettingsPage password re-authentication", () => {
     fireEvent.click(screen.getByRole("button", { name: "Verify identity" }));
     await screen.findByRole("button", { name: "Save password" });
     fireEvent.change(screen.getByPlaceholderText("Enter a new password"), {
-      target: { value: "new-password" },
+      target: { value: "NewPassword1" },
     });
     fireEvent.change(screen.getByPlaceholderText("Confirm your new password"), {
-      target: { value: "new-password" },
+      target: { value: "NewPassword1" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save password" }));
 
     await waitFor(() => {
       expect(changePassword).toHaveBeenCalledWith(
         "current-password",
-        "new-password",
+        "NewPassword1",
       );
     });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

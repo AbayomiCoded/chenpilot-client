@@ -13,6 +13,8 @@ import authService from "@/services/auth.service";
 import { t } from "@/lib/i18n/i18n";
 import { LANGUAGES } from "@/lib/i18n/translations";
 import toast from "react-hot-toast";
+import { PasswordStrengthMeter } from "@/components/auth/(register)/passwordStrengthMeter";
+import { changePasswordSchema } from "@/utils/validation";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
@@ -106,8 +108,13 @@ export default function SettingsPage() {
       return;
     }
 
-    if (newPassword !== confirmPassword) {
-      setSecurityError("The new passwords do not match.");
+    const validation = changePasswordSchema.safeParse({
+      currentPassword,
+      newPassword,
+      confirmPassword,
+    });
+    if (!validation.success) {
+      setSecurityError(validation.error.issues[0]?.message ?? "Invalid password");
       return;
     }
 
@@ -306,19 +313,35 @@ export default function SettingsPage() {
                     {t(language, "settings.security")}
                   </h3>
                   <div className="space-y-4">
-                    <Button
-                      variant="ghost"
-                      className="w-full justify-start"
-                      onClick={() => {
-                        setCurrentPassword("");
-                        setNewPassword("");
-                        setConfirmPassword("");
-                        setSecurityError("");
-                        setPasswordChangeStage("reauthenticate");
-                      }}
-                    >
-                      Change Password
-                    </Button>
+                    {user?.authProvider === "google" ? (
+                      <div>
+                        <Button
+                          disabled
+                          variant="ghost"
+                          className="w-full justify-start"
+                        >
+                          Change Password
+                        </Button>
+                        <p className="mt-2 text-sm text-gray-400">
+                          Password changes are unavailable for Google sign-in
+                          accounts.
+                        </p>
+                      </div>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        className="w-full justify-start"
+                        onClick={() => {
+                          setCurrentPassword("");
+                          setNewPassword("");
+                          setConfirmPassword("");
+                          setSecurityError("");
+                          setPasswordChangeStage("reauthenticate");
+                        }}
+                      >
+                        Change Password
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       className="w-full justify-start text-red-600 hover:text-red-700"
@@ -400,6 +423,7 @@ export default function SettingsPage() {
                         type="password"
                         value={confirmPassword}
                       />
+                      <PasswordStrengthMeter password={newPassword} />
                     </>
                   )}
                   {securityError && (
