@@ -6,6 +6,11 @@ import {
   stellarAddressSchema,
   tokenAmountSchema,
   createContactSchema,
+  updateContactSchema,
+  validateContactAddress,
+  normalizeContactAddress,
+  validateContact,
+  validateUpdateContact,
 } from "../validation";
 
 // #141 — table-driven tests for validation schemas.
@@ -69,7 +74,7 @@ describe("nameSchema", () => {
 });
 
 describe("stellarAddressSchema", () => {
-  const validAddr = "GABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB";
+  const validAddr = "G" + "A".repeat(55); // 56-char G + uppercase alphanum
   it("accepts a valid G... 56-char address", () => {
     expect(stellarAddressSchema.safeParse(validAddr).success).toBe(true);
   });
@@ -111,7 +116,7 @@ describe("tokenAmountSchema", () => {
 describe("createContactSchema", () => {
   const valid = {
     name: "Alice",
-    address: "GABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB",
+    address: "G" + "A".repeat(55),
     tokenType: "XLM" as const,
   };
   it("accepts a valid contact", () => {
@@ -128,5 +133,88 @@ describe("createContactSchema", () => {
   it("rejects invalid address", () => {
     const r = createContactSchema.safeParse({ ...valid, address: "bad" });
     expect(r.success).toBe(false);
+  });
+});
+
+// #216 — contact address validation and normalization
+
+const VALID_STELLAR = "GABC" + "A".repeat(52); // G + 55 uppercase alphanum = 56 chars
+describe("normalizeContactAddress", () => {
+  it("trims leading and trailing whitespace", () => {
+    expect(normalizeContactAddress("  " + VALID_STELLAR + "  ")).toBe(VALID_STELLAR);
+  });
+  it("uppercases the string", () => {
+    expect(normalizeContactAddress(VALID_STELLAR.toLowerCase())).toBe(VALID_STELLAR);
+  });
+  it("trims and uppercases together", () => {
+    expect(normalizeContactAddress("  " + VALID_STELLAR.toLowerCase() + "\t")).toBe(VALID_STELLAR);
+  });
+});
+
+describe("validateContactAddress", () => {
+  it("returns null for a valid address", () => {
+    expect(validateContactAddress(VALID_STELLAR)).toBeNull();
+  });
+  it("returns null for whitespace-padded valid address (normalizes first)", () => {
+    expect(validateContactAddress("  " + VALID_STELLAR + "  ")).toBeNull();
+  });
+  it("returns an error string for an empty address", () => {
+    expect(validateContactAddress("")).not.toBeNull();
+  });
+  it("returns an error string for a malformed address (too short)", () => {
+    expect(validateContactAddress("GABC")).not.toBeNull();
+  });
+  it("returns an error string for a non-G prefix", () => {
+    expect(validateContactAddress("X" + "A".repeat(55))).not.toBeNull();
+  });
+  it("returns an error string for special characters", () => {
+    expect(validateContactAddress("G!" + "A".repeat(54))).not.toBeNull();
+  });
+  it("returns an error string for pure whitespace", () => {
+    expect(validateContactAddress("   ")).not.toBeNull();
+  });
+});
+
+describe("validateContact", () => {
+  const valid = { name: "Alice", address: VALID_STELLAR, tokenType: "XLM" };
+
+  it("accepts a valid contact", () => {
+    expect(validateContact(valid).isValid).toBe(true);
+  });
+  it("accepts whitespace-padded valid address", () => {
+    expect(validateContact({ ...valid, address: "  " + VALID_STELLAR + "  " }).isValid).toBe(true);
+  });
+  it("rejects malformed address and sets address error", () => {
+    const r = validateContact({ ...valid, address: "not-an-address" });
+    expect(r.isValid).toBe(false);
+    expect(r.errors.address).toBeDefined();
+  });
+  it("rejects empty address", () => {
+    const r = validateContact({ ...valid, address: "" });
+    expect(r.isValid).toBe(false);
+    expect(r.errors.address).toBeDefined();
+  });
+  it("rejects invalid name", () => {
+    const r = validateContact({ ...valid, name: "" });
+    expect(r.isValid).toBe(false);
+    expect(r.errors.name).toBeDefined();
+  });
+});
+
+describe("updateContactSchema / validateUpdateContact", () => {
+  it("accepts partial update with only name", () => {
+    expect(updateContactSchema.safeParse({ name: "Bob" }).success).toBe(true);
+  });
+  it("rejects malformed address in update", () => {
+    const r = validateUpdateContact({ address: "bad" });
+    expect(r.isValid).toBe(false);
+    expect(r.errors.address).toBeDefined();
+  });
+  it("accepts whitespace-padded address in update", () => {
+    const r = validateUpdateContact({ address: "  " + VALID_STELLAR + "  " });
+    expect(r.isValid).toBe(true);
+  });
+  it("accepts empty update object (all fields optional)", () => {
+    expect(validateUpdateContact({}).isValid).toBe(true);
   });
 });

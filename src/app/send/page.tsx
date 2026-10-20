@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { getContacts } from '@/store/slices/contactsSlice';
 import { ChatLayout } from '@/components/layout/ChatLayout';
@@ -13,6 +13,8 @@ import toast from 'react-hot-toast';
 
 export default function SendPaymentPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialContactId = searchParams.get('contactId') ?? undefined;
   const dispatch = useAppDispatch();
   const { isAuthenticated } = useAppSelector((state) => state.auth);
   const { list: contacts, isLoading: contactsLoading } = useAppSelector((state) => state.contacts);
@@ -93,6 +95,7 @@ export default function SendPaymentPage() {
               onSubmit={handleSendPayment}
               contacts={contacts}
               isLoading={contactsLoading}
+              initialContactId={initialContactId}
             />
           </div>
         </div>

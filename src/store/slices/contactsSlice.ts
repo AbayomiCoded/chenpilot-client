@@ -1,6 +1,7 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { Contact, CreateContactRequest, UpdateContactRequest } from '@/types';
 import apiService from '@/services/api';
+import { normalizeContactAddress, validateContact, validateUpdateContact } from '@/utils/validation';
 
 interface ContactsState {
   list: Contact[];
@@ -45,13 +46,34 @@ export const getContacts = createAsyncThunk(
 
 export const createContact = createAsyncThunk(
   'contacts/createContact',
-  async (contactData: CreateContactRequest, { rejectWithValue }) => {
+  async (contactData: CreateContactRequest, { rejectWithValue, getState }) => {
+    const validation = validateContact(contactData);
+    if (!validation.isValid) {
+      const firstError = Object.values(validation.errors)[0] ?? 'Invalid contact data';
+      return rejectWithValue(firstError);
+    }
+    const normalized: CreateContactRequest = {
+      ...contactData,
+      address: normalizeContactAddress(contactData.address),
+    };
+
+    // Duplicate check: same normalized address already exists
+    const state = getState() as { contacts: ContactsState };
+    const existing = state.contacts.list.find(
+      (c) => normalizeContactAddress(c.address) === normalized.address
+    );
+    if (existing) {
+      return rejectWithValue(
+        `"${existing.name}" already uses this address. Edit that contact instead.`
+      );
+    }
+
     // Mock create contact
     const mockContact: Contact = {
       id: `mock_${Date.now()}`,
-      name: contactData.name,
-      address: contactData.address,
-      tokenType: contactData.tokenType,
+      name: normalized.name,
+      address: normalized.address,
+      tokenType: normalized.tokenType,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -62,12 +84,20 @@ export const createContact = createAsyncThunk(
 export const updateContact = createAsyncThunk(
   'contacts/updateContact',
   async ({ id, data }: { id: string; data: UpdateContactRequest }, { rejectWithValue }) => {
+    const validation = validateUpdateContact(data);
+    if (!validation.isValid) {
+      const firstError = Object.values(validation.errors)[0] ?? 'Invalid contact data';
+      return rejectWithValue(firstError);
+    }
+    const normalized: UpdateContactRequest = data.address
+      ? { ...data, address: normalizeContactAddress(data.address) }
+      : data;
     // Mock update contact
     const mockContact: Contact = {
       id,
-      name: data.name || 'Updated Contact',
-      address: data.address || '0xupdatedaddress',
-      tokenType: data.tokenType || 'STRK',
+      name: normalized.name || 'Updated Contact',
+      address: normalized.address || '0xupdatedaddress',
+      tokenType: normalized.tokenType || 'STRK',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };

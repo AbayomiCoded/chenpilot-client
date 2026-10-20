@@ -19,9 +19,11 @@ import {
   Copy, 
   QrCode,
   ArrowLeft,
-  Sparkles
+  Sparkles,
+  Send
 } from 'lucide-react';
 import { formatAddress } from '@/utils/format';
+import { validateContactAddress, normalizeContactAddress } from '@/utils/validation';
 import { Contact, CreateContactRequest } from '@/types';
 import toast from 'react-hot-toast';
 
@@ -40,6 +42,7 @@ export default function ContactsPage() {
     address: '',
     tokenType: 'STRK',
   });
+  const [addressError, setAddressError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -57,14 +60,28 @@ export default function ContactsPage() {
 
   const handleCreateContact = async (e: React.FormEvent) => {
     e.preventDefault();
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) {
+      setAddressError(addrErr);
+      return;
+    }
+    setAddressError(null);
     try {
-      await dispatch(createContact(formData)).unwrap();
+      await dispatch(createContact({
+        ...formData,
+        address: normalizeContactAddress(formData.address),
+      })).unwrap();
       toast.success('Contact created successfully!');
       setIsCreateModalOpen(false);
       setFormData({ name: '', address: '', tokenType: 'STRK' });
     } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error || 'Failed to create contact');
-      toast.error(errorMessage);
+      const msg = error instanceof Error ? error.message : String(error || 'Failed to create contact');
+      // Duplicate-address errors are shown inline so the user can correct without losing their input
+      if (typeof msg === 'string' && msg.includes('already uses this address')) {
+        setAddressError(msg);
+      } else {
+        toast.error(msg);
+      }
     }
   };
 
@@ -72,10 +89,19 @@ export default function ContactsPage() {
     e.preventDefault();
     if (!editingContact) return;
 
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) {
+      setAddressError(addrErr);
+      return;
+    }
+    setAddressError(null);
     try {
       await dispatch(updateContact({
         id: editingContact.id,
-        data: formData,
+        data: {
+          ...formData,
+          address: normalizeContactAddress(formData.address),
+        },
       })).unwrap();
       toast.success('Contact updated successfully!');
       setIsEditModalOpen(false);
@@ -101,6 +127,7 @@ export default function ContactsPage() {
 
   const openEditModal = (contact: Contact) => {
     setEditingContact(contact);
+    setAddressError(null);
     setFormData({
       name: contact.name,
       address: contact.address,
@@ -192,6 +219,15 @@ export default function ContactsPage() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      onClick={() => router.push(`/send?contactId=${contact.id}`)}
+                      className="text-blue-400 hover:text-blue-300"
+                      title={`Pay ${contact.name}`}
+                    >
+                      <Send className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => openEditModal(contact)}
                     >
                       <Edit className="h-4 w-4" />
@@ -251,7 +287,7 @@ export default function ContactsPage() {
       {/* Create Contact Modal */}
       <Modal
         isOpen={isCreateModalOpen}
-        onClose={() => setIsCreateModalOpen(false)}
+        onClose={() => { setIsCreateModalOpen(false); setAddressError(null); }}
         title="Add New Contact"
       >
         <form onSubmit={handleCreateContact} className="space-y-4">
@@ -263,13 +299,25 @@ export default function ContactsPage() {
             required
           />
           
-          <Input
-            label="Address"
-            placeholder="Enter Stellar address"
-            value={formData.address}
-            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-            required
-          />
+          <div>
+            <Input
+              label="Address"
+              placeholder="Enter Stellar address (G...)"
+              value={formData.address}
+              onChange={(e) => {
+                setFormData({ ...formData, address: e.target.value });
+                setAddressError(null);
+              }}
+              required
+              aria-describedby={addressError ? 'create-address-error' : undefined}
+              aria-invalid={!!addressError}
+            />
+            {addressError && (
+              <p id="create-address-error" role="alert" className="mt-1 text-sm text-red-500">
+                {addressError}
+              </p>
+            )}
+          </div>
           
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -304,7 +352,7 @@ export default function ContactsPage() {
       {/* Edit Contact Modal */}
       <Modal
         isOpen={isEditModalOpen}
-        onClose={() => setIsEditModalOpen(false)}
+        onClose={() => { setIsEditModalOpen(false); setAddressError(null); }}
         title="Edit Contact"
       >
         <form onSubmit={handleUpdateContact} className="space-y-4">
@@ -316,13 +364,25 @@ export default function ContactsPage() {
             required
           />
           
-          <Input
-            label="Address"
-            placeholder="Enter Stellar address"
-            value={formData.address}
-            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-            required
-          />
+          <div>
+            <Input
+              label="Address"
+              placeholder="Enter Stellar address (G...)"
+              value={formData.address}
+              onChange={(e) => {
+                setFormData({ ...formData, address: e.target.value });
+                setAddressError(null);
+              }}
+              required
+              aria-describedby={addressError ? 'edit-address-error' : undefined}
+              aria-invalid={!!addressError}
+            />
+            {addressError && (
+              <p id="edit-address-error" role="alert" className="mt-1 text-sm text-red-500">
+                {addressError}
+              </p>
+            )}
+          </div>
           
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">

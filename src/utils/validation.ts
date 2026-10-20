@@ -138,6 +138,54 @@ export const sendPaymentSchema = z.object({
   path: ['memo'],
 });
 
+// Normalize a contact address: trim whitespace and uppercase
+export const normalizeContactAddress = (address: string): string =>
+  address.trim().toUpperCase();
+
+// Validate contact address after normalization; returns error string or null
+export const validateContactAddress = (raw: string): string | null => {
+  const normalized = normalizeContactAddress(raw);
+  const result = stellarAddressSchema.safeParse(normalized);
+  if (!result.success) {
+    const issues = (result.error as any).issues ?? (result.error as any).errors ?? [];
+    return issues[0]?.message ?? 'Invalid Stellar address';
+  }
+  return null;
+};
+
+// Full contact create/update validation utilities
+export const validateContact = (
+  data: { name: string; address: string; tokenType: string }
+): { isValid: boolean; errors: Record<string, string> } => {
+  const normalized = { ...data, address: normalizeContactAddress(data.address) };
+  const result = createContactSchema.safeParse(normalized);
+  if (result.success) return { isValid: true, errors: {} };
+  const issues = (result.error as any).issues ?? (result.error as any).errors ?? [];
+  const errors: Record<string, string> = {};
+  for (const issue of issues) {
+    const key = issue.path[0] as string;
+    if (!errors[key]) errors[key] = issue.message;
+  }
+  return { isValid: false, errors };
+};
+
+export const validateUpdateContact = (
+  data: { name?: string; address?: string; tokenType?: string }
+): { isValid: boolean; errors: Record<string, string> } => {
+  const normalized = data.address
+    ? { ...data, address: normalizeContactAddress(data.address) }
+    : data;
+  const result = updateContactSchema.safeParse(normalized);
+  if (result.success) return { isValid: true, errors: {} };
+  const issues = (result.error as any).issues ?? (result.error as any).errors ?? [];
+  const errors: Record<string, string> = {};
+  for (const issue of issues) {
+    const key = issue.path[0] as string;
+    if (!errors[key]) errors[key] = issue.message;
+  }
+  return { isValid: false, errors };
+};
+
 // Utility functions for validation
 export const validateEmail = (email: string): boolean => {
   try {

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { sendPaymentSchema, validateSendPayment, sanitizePaymentInput } from '@/utils/validation';
@@ -26,6 +26,7 @@ interface SendPaymentFormProps {
   contacts: any[];
   isLoading?: boolean;
   defaultTokenType?: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  initialContactId?: string;
 }
 
 export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
@@ -33,6 +34,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   contacts,
   isLoading = false,
   defaultTokenType = 'XLM',
+  initialContactId,
 }) => {
   const [selectedContact, setSelectedContact] = useState<ContactSelection | null>(null);
   const [isContactPickerOpen, setIsContactPickerOpen] = useState(false);
@@ -52,6 +54,26 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
       memoType: 'none',
     },
   });
+
+  // Preselect contact when initialContactId is provided and contacts are loaded
+  useEffect(() => {
+    if (!initialContactId || contacts.length === 0 || selectedContact) return;
+    const match = contacts.find((c) => c.id === initialContactId);
+    if (match) {
+      const selection: ContactSelection = {
+        id: match.id,
+        name: match.name,
+        address: match.address,
+        tokenType: match.tokenType,
+        avatar: match.avatar,
+        isFavorite: match.isFavorite,
+        lastUsed: match.lastUsed,
+      };
+      setSelectedContact(selection);
+      setValue('recipientAddress', selection.address);
+      setValue('tokenType', selection.tokenType);
+    }
+  }, [initialContactId, contacts, selectedContact, setValue]);
 
   const watchedToken = watch('tokenType');
   const watchedMemoType = watch('memoType');
