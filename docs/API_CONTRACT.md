@@ -89,6 +89,8 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
 | `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
 
+> **Client-side hash search (#241):** The transaction history page filters transactions in-memory against the full `hash` field using `filterTransactionsByHash` from `src/utils/format.ts`. No additional query parameters are sent to the backend; the search input post-filters whatever the current page already holds.
+
 ## Contacts Endpoints
 
 `Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed? }`. Create requires `name`, `address`, and a `tokenType` from `XLM | USDC | USDT | BTC | ETH`; update accepts those fields optionally.

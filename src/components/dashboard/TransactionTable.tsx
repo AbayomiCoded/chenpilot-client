@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { StellarTransaction } from '@/types';
-import { formatAddress, formatTokenAmount } from '@/utils/format';
+import { formatAddress, formatTokenAmount, formatRelativeTime, formatExactTime } from '@/utils/format';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import {
@@ -192,14 +192,19 @@ export default function TransactionTable({
                     <span className="text-gray-300">#{tx.ledger}</span>
                   </td>
                   <td className="py-3 px-4">
-                    <span className="text-gray-300">
-                      {new Date(tx.created_at).toLocaleDateString('en-US', {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
-                    </span>
+                    {(() => {
+                      const { iso, label } = formatExactTime(tx.created_at);
+                      return (
+                        <time
+                          dateTime={iso}
+                          title={label}
+                          aria-label={label}
+                          className="text-gray-300 cursor-default"
+                        >
+                          {formatRelativeTime(tx.created_at)}
+                        </time>
+                      );
+                    })()}
                   </td>
                   <td className="py-3 px-4">
                     {tx.successful ? (
