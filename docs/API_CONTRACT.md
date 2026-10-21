@@ -64,6 +64,29 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | `POST /auth/change-password` | `{"currentPassword":"Example123!","newPassword":"NewExample123!"}` | `{"success":true,"data":{"message":"Password changed"}}` | Service method only; no direct screen caller found. |
 | `DELETE /auth/account` | No body; bearer token when available. | `{"success":true,"data":{"message":"Account deleted"}}` | Service method only; clears the in-memory/local token after the request resolves. |
 
+### Multi-Factor Authentication (MFA) Specification & Contract Notes
+
+**Current Implementation Status:**
+- Authoritative backend MFA endpoints are currently **NOT implemented or deployed** on the backend.
+- The client provides typed service integration (`ApiService.getMfaStatus`, `ApiService.initiateMfaEnrollment`, `ApiService.verifyMfaEnrollment` and `AuthService`) that safely detects unsupported/missing backend routes (HTTP 404/501) and presents clear states without fabricating backend enrollment or falsely marking MFA as enabled.
+- The settings UI exposes explicit states: `Disabled`, `Enrollment in progress`, `Awaiting verification`, `Enabled`, `Recovery in progress` (when recovery codes are returned), and `Error / Unsupported`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /auth/mfa/status` | No body; bearer token required. | `{"success":true,"data":{"enabled":false,"method":"totp"}}` | Settings security panel; checks authoritative MFA status. 404 is treated as unsupported (disabled). |
+| `POST /auth/mfa/enroll` | `{}`; bearer token required. | `{"success":true,"data":{"secret":"JBSWY3DPEHPK3PXP","qrCodeUrl":"https://...","otpAuthUri":"otpauth://totp/ChenPilot:user?secret=...","recoveryCodes":["REC-1111","REC-2222"]}}` | Settings security panel; initiates enrollment. Returns secret key and TOTP URI. 404 displays unsupported capability error. |
+| `POST /auth/mfa/verify` | `{"code":"123456"}`; bearer token required. | `{"success":true,"data":{"enabled":true,"message":"MFA enabled successfully","recoveryCodes":["REC-1111","REC-2222"]}}` | Settings security panel; verifies 6-digit TOTP code. Authoritative confirmation is required before enabling MFA. |
+
+**MFA Challenge During Login:**
+- `POST /auth/login` currently returns full tokens immediately and does not issue an intermediate MFA challenge.
+- When MFA login enforcement is implemented on the backend, `POST /auth/login` must return a challenge state (e.g., `{ success: true, data: { mfaRequired: true, challengeToken: "<temp-token>", method: "totp" } }`) and a corresponding `POST /auth/mfa/challenge` endpoint must be established.
+
+**MFA Recovery and Cancellation:**
+- Recovery: The backend does not currently provide an endpoint for regenerating recovery codes or authenticating via recovery code. When recovery codes are provided during initial enrollment, the client displays them once and instructs the user to store them securely.
+- Cancellation: The user can cancel setup at any time prior to verification. Cancellation immediately purges all transient enrollment secrets and one-time codes from memory.
+- Storage & Security: The client **never** persists MFA secrets, temporary OTP codes, or recovery codes in `localStorage` or `sessionStorage`. All sensitive values reside in volatile React state and are cleared on component unmount, cancellation, or flow completion.
+- Blockers: Production MFA cannot be marked enabled for accounts until the backend implements and confirms the `/auth/mfa/enroll` and `/auth/mfa/verify` routes.
+
 ### Data Export Fallbacks
 
 `exportUserData()` tries these paths in order, moving to the next only on HTTP 404. Each successful response is consumed as a binary `Blob`, not JSON.
@@ -105,6 +128,35 @@ Behavioral contract the frontend relies on:
 - **Hashes are the reconciliation key.** Hashes are trimmed and lower-cased before use (`normalizeTransactionHash`). A record already present is updated in place; a new record is appended; records absent from a refresh are preserved. Records without a usable hash are kept but never merged together.
 - **Refresh failures preserve data.** A failed refresh sets `transactions.refreshError` and leaves the existing history, the pagination cursor, and `transactions.lastUpdatedAt` untouched; `lastUpdatedAt` only advances on an authoritative success. Overlapping refreshes are de-duplicated by `singleFlight` and the guard is released on both success and failure.
 - Beyond the lifecycle states above, no additional transaction statuses, confirmation endpoints, or server-side confirmation guarantees are assumed. Treat the three states as derived from the responses in the table, and verify the backend before relying on anything more.
+
+## Locale-Aware Transaction Formatting
+
+The application provides shared, locale-aware formatters in [`src/utils/format.ts`](../src/utils/format.ts) to eliminate inconsistent formatting and floating-point precision loss across transactions, dashboards, and views.
+
+### Language to Locale Resolution
+
+The user's selected application language directly determines the formatting locale:
+
+| Selected Language | Locale Code | Number Formatting | Date & Time Formatting |
+| --- | --- | --- | --- |
+| English (`en`) | `en-US` | Comma thousands separator, period decimal (`1,234.56`) | `MMM d, yyyy, h:mm a` (UTC) |
+| Arabic (`ar`) | `ar-SA` | Arabic grouping & decimal separators, RTL with LRM protection | Arabic calendar/date format (UTC) |
+| Spanish (`es`) | `es-ES` | Period thousands separator, comma decimal (`1.234,56`) | `d MMM yyyy, HH:mm` (UTC) |
+| French (`fr`) | `fr-FR` | Narrow space thousands separator, comma decimal (`1 234,56`) | `d MMM yyyy, HH:mm` (UTC) |
+
+### Asset Precision & Numeric Integrity
+
+- **Exact Decimal Arithmetic:** `formatTransactionAmount` processes numeric and decimal string values using string operations and `BigInt` for integer grouping. Values are **never converted to binary IEEE 754 floats**, preventing precision loss for numbers with more than 15 significant digits or large integer amounts.
+- **Explicit Asset Precisions:**
+  - `XLM`: 7 decimal places (1 stroop = 0.0000001 XLM)
+  - `USDC`: 7 decimal places
+  - `USDT`: 7 decimal places
+  - `AQUA`: 7 decimal places
+  - `BTC`: 8 decimal places
+  - `ETH`: 18 decimal places
+  - Custom assets: Preserves full explicit input precision without silent truncation to 2 decimals.
+- **Timezone Policy:** All transaction dates and times are formatted consistently using `timeZone: 'UTC'` to align with on-chain ledger timestamps and avoid client-side timezone drift.
+- **Safe Fallback:** Null, undefined, empty, or malformed inputs format as `'-'` to prevent misleading financial data.
 
 ## Contacts Endpoints
 

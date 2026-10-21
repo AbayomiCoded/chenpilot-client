@@ -82,6 +82,30 @@ export interface LoginResponse {
   };
 }
 
+// Multi-Factor Authentication (MFA) Types
+export interface MfaStatusData {
+  enabled: boolean;
+  enrolledAt?: string;
+  method?: "totp" | null;
+}
+
+export interface MfaEnrollmentData {
+  secret: string;
+  qrCodeUrl?: string;
+  otpAuthUri?: string;
+  recoveryCodes?: string[];
+}
+
+export interface MfaVerifyRequest {
+  code: string;
+}
+
+export interface MfaVerifyData {
+  enabled: boolean;
+  message?: string;
+  recoveryCodes?: string[];
+}
+
 // Contact Management Types
 export interface Contact {
   id: string;

@@ -14,10 +14,12 @@ import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
 import {
-  formatDate,
   formatRelativeTime,
-  formatTokenAmount,
+  formatTransactionAmount,
+  formatTransactionDate,
+  formatTransactionFee,
 } from "@/utils/format";
+import { Language } from "@/lib/i18n/i18n";
 import { RefreshCw, ReceiptText } from "lucide-react";
 
 /**
@@ -41,6 +43,7 @@ export default function TransactionsPage() {
   const { status, transactions } = useSelector(
     (state: RootState) => state.account,
   );
+  const language = useSelector((state: RootState) => state.ui?.language) as Language | undefined;
 
   const publicKey = status?.publicKey ?? null;
   const hasHistory = transactions.transactions.length > 0;
@@ -228,7 +231,7 @@ export default function TransactionsPage() {
                     Transaction {tx.hash.slice(0, 8)}...
                   </h3>
                   <p className="text-sm text-gray-600">
-                    {formatDate(tx.created_at)}
+                    {formatTransactionDate(tx.created_at, { language })}
                   </p>
                 </div>
                 <div
@@ -250,7 +253,7 @@ export default function TransactionsPage() {
                       </span>
                       {op.amount && (
                         <span className="ml-2 text-sm">
-                          {formatTokenAmount(op.amount)} {op.asset || "XLM"}
+                          {formatTransactionAmount(op.amount, { language, asset: op.asset || "XLM" })}
                         </span>
                       )}
                     </div>
@@ -263,7 +266,7 @@ export default function TransactionsPage() {
               </div>
 
               <div className="mt-2 text-xs text-gray-500">
-                Fee: {formatTokenAmount(tx.fee_charged)} XLM | Ledger:{" "}
+                Fee: {formatTransactionFee(tx.fee_charged, { language, asset: "XLM" })} | Ledger:{" "}
                 {tx.ledger}
               </div>
             </Card>

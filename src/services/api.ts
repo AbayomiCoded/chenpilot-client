@@ -13,17 +13,18 @@ import {
   AgentQueryRequest,
   AgentQueryResponse,
   ApiResponse,
-  ChatMessage,
-  Conversation,
   PromptVersionRecord,
-  LiquidityPool,
   LiquidityStats,
   LiquidityRequest,
   StellarTransaction,
   AuditLogEntry,
   AuditLogsQueryParams,
   AuditLogsResponse,
-  AuditLogStats
+  AuditLogStats,
+  MfaStatusData,
+  MfaEnrollmentData,
+  MfaVerifyRequest,
+  MfaVerifyData,
 } from '@/types';
 import agentService from './agentService';
 import { tokenRefreshService } from './tokenRefreshService';
@@ -113,7 +114,7 @@ export const requestAccountFunding = async (
           message: 'Account funded successfully via Stellar Testnet Friendbot fallback.',
           txHash: friendbotResponse.data.hash,
         };
-      } catch (friendbotError: unknown) {
+      } catch {
         throw new Error(
           `Funding failed: Backend service unavailable and Friendbot fallback failed. Required: ${requiredAmount} XLM, Current: ${currentBalance} XLM.`
         );
@@ -1119,6 +1120,73 @@ class ApiService {
       responseType: 'blob',
     });
     return response.data;
+  }
+
+  /**
+   * Fetch current MFA status for the authenticated user.
+   * Catches 404 from experimental backend and returns a fallback envelope.
+   *
+   * @returns Promise resolving to `ApiResponse<MfaStatusData>`.
+   */
+  async getMfaStatus(): Promise<ApiResponse<MfaStatusData>> {
+    try {
+      const response = await this.api.get<ApiResponse<MfaStatusData>>('/auth/mfa/status');
+      return response.data;
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } }).response?.status === 404) {
+        return {
+          success: false,
+          status: 404,
+          message: 'MFA endpoints are not currently supported by the backend service',
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Initiate MFA enrollment for the authenticated user.
+   * Catches 404 from experimental backend and returns a fallback envelope.
+   *
+   * @returns Promise resolving to `ApiResponse<MfaEnrollmentData>`.
+   */
+  async initiateMfaEnrollment(): Promise<ApiResponse<MfaEnrollmentData>> {
+    try {
+      const response = await this.api.post<ApiResponse<MfaEnrollmentData>>('/auth/mfa/enroll');
+      return response.data;
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } }).response?.status === 404) {
+        return {
+          success: false,
+          status: 404,
+          message: 'MFA enrollment is not currently supported by the backend service',
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Verify MFA enrollment code.
+   * Requires authoritative confirmation from backend before MFA is enabled.
+   *
+   * @param data - Payload containing 6-digit TOTP code.
+   * @returns Promise resolving to `ApiResponse<MfaVerifyData>`.
+   */
+  async verifyMfaEnrollment(data: MfaVerifyRequest): Promise<ApiResponse<MfaVerifyData>> {
+    try {
+      const response = await this.api.post<ApiResponse<MfaVerifyData>>('/auth/mfa/verify', data);
+      return response.data;
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } }).response?.status === 404) {
+        return {
+          success: false,
+          status: 404,
+          message: 'MFA verification is not currently supported by the backend service',
+        };
+      }
+      throw error;
+    }
   }
 
   /**
