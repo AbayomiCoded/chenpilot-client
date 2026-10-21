@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { useAppDispatch, useAppSelector } from "@/store";
-import { fetchProfile } from "@/store/slices/authSlice";
+import { fetchProfile, logout } from "@/store/slices/authSlice";
 import { setLanguage } from "@/store/slices/uiSlice";
 import { ChatLayout } from "@/components/layout/ChatLayout";
 import { Button } from "@/components/ui/Button";
@@ -10,6 +10,10 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { t, LANGUAGES } from "@/lib/i18n/i18n";
 import { MfaSettingsSection } from "@/components/settings/MfaSettingsSection";
+import { DangerZone } from "@/components/settings/DangerZone";
+import apiService from "@/services/api";
+import { t, LANGUAGES } from "@/lib/i18n/i18n";
+import { StellarNetworkBadge } from "@/components/wallet/StellarNetworkBadge";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
@@ -49,6 +53,37 @@ export default function SettingsPage() {
 
   const handleLanguageChange = (lang: "en" | "ar" | "es" | "fr") => {
     dispatch(setLanguage(lang));
+  };
+
+  const [deletionStatus, setDeletionStatus] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const handleDeleteAccount = async () => {
+    if (isDeleting) return;
+    setIsDeleting(true);
+    try {
+      const result = await apiService.deleteAccount();
+      const remaining = result.remaining.length
+        ? ` Remaining: ${result.remaining.join(", ")}.`
+        : "";
+      const removed = result.removed.length
+        ? ` Removed: ${result.removed.join(", ")}.`
+        : "";
+      if (!result.api) {
+        setDeletionStatus(`API deletion failed.${removed}${remaining} On-chain history cannot be deleted.`);
+      } else if (result.remaining.length) {
+        setDeletionStatus(`Account deletion partially completed.${removed}${remaining} On-chain history cannot be deleted.`);
+      } else {
+        setDeletionStatus("Account deleted. On-chain history cannot be deleted.");
+        await dispatch(logout());
+      }
+    } catch (error) {
+      setDeletionStatus(
+        error instanceof Error ? error.message : "Account deletion failed.",
+      );
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   return (
@@ -114,12 +149,18 @@ export default function SettingsPage() {
                       disabled
                       placeholder="Your email address"
                     />
-                    <Input
-                      label="Wallet Address"
-                      value={user?.address || ""}
-                      disabled
-                      placeholder="Your Stellar wallet address"
-                    />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-sm font-medium text-gray-300">Wallet Address</span>
+                        <StellarNetworkBadge />
+                      </div>
+                      <Input
+                        value={user?.address || ""}
+                        disabled
+                        aria-label="Wallet Address"
+                        placeholder="Your Stellar wallet address"
+                      />
+                    </div>
                   </div>
                 </div>
               </Card>
@@ -230,12 +271,14 @@ export default function SettingsPage() {
                     <Button variant="ghost" className="w-full justify-start">
                       Change Password
                     </Button>
-                    <Button
-                      variant="ghost"
-                      className="w-full justify-start text-red-600 hover:text-red-700"
-                    >
-                      Delete Account
-                    </Button>
+                    <DangerZone
+                      email={user?.email || ""}
+                      disabled={isDeleting}
+                      onDelete={handleDeleteAccount}
+                    />
+                    {deletionStatus ? (
+                      <p className="text-sm text-amber-400">{deletionStatus}</p>
+                    ) : null}
                   </div>
                 </div>
               </Card>

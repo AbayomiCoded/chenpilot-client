@@ -8,6 +8,7 @@ This document records the HTTP requests made by [`src/services/api.ts`](../src/s
 - `AgentService` uses `NEXT_PUBLIC_AGENT_API_URL`, also defaulting to `http://localhost:2333`. These clients are separate even when configured to the same host.
 - `ApiService` attaches `Authorization: Bearer <access-token>` when a token is present. Its explicit refresh call and the 401 interceptor send `POST /auth/refresh` with cookies (`withCredentials: true`).
 - Next.js rewrites `/horizon/:path*` to `${NEXT_PUBLIC_API_BASE_URL || 'http://localhost:2333'}/proxy/:path*`. `horizonFetch` calls the local `/horizon` path; keep the backend `/proxy/:path*` handler available. Stellar Horizon reads made through `horizonFetch` are in `src/store/slices/accountSlice.ts`, not these service endpoint lists.
+- `NEXT_PUBLIC_STELLAR_NETWORK` must be explicitly set to `mainnet` or `testnet` for the UI to identify the active network. Missing or unsupported values display `Network unknown`; do not infer it from `NODE_ENV`. The backend Horizon proxy and payment execution service must be configured for the same network. This frontend configuration does not itself switch backend networks.
 - `ApiResponse<T>` is the declared envelope for many methods:
 
 	```ts
@@ -112,51 +113,16 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
 | `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
 
-## Transaction History And Confirmation
+## Payment Submission And Status (Backend Support Required)
 
-The `/transactions` page does not use `GET /account/{userId}/transactions`. It reads the account's ledger history directly from Stellar Horizon through `horizonFetch`, so the requests below go to the local `/horizon` path and are rewritten to the backend `/proxy/:path*` handler (see [Base URLs And Authentication](#base-urls-and-authentication)).
+The send-payment UI now requires explicit confirmation before calling the payment service. The frontend declares the following backend contract, but no existing payment route was present in this repository; verify and implement these routes on the backend before enabling real payments.
 
-| Request | Purpose | Notes |
-| --- | --- | --- |
-| `GET /accounts/{publicKey}/transactions?order=desc&limit=50` | Newest history page. Used by the initial load (`getTransactionHistory`) and by the refresh action (`refreshTransactionHistory`). | A refresh intentionally omits the cursor so it reloads only the newest page and never drops pages the user already paged back to. |
-| `GET /accounts/{publicKey}/transactions?order=desc&limit=50&cursor={paging_token}` | Next older page (`getOlderTransactionHistory`). | The cursor is the Horizon `paging_token` of the oldest record on the previous page. It is only set when a full page was returned, so an exhausted history yields `nextCursor: null`. |
-| `GET /transactions/{hash}` | Authoritative confirmation lookup (`fetchTransactionConfirmation`). | The only source permitted to turn a submitted action into `confirmed`/`failed`. `404` means "not in the ledger yet" and is reported as `pending`; other non-2xx responses are treated as transient and leave the action pending. A `2xx` body must carry a boolean `successful`; anything else is treated as an unexpected payload. |
-
-Behavioral contract the frontend relies on:
-
-- **Submission is not confirmation.** Socket events (`transaction:completed`, `transaction:success`) and the send-payment flow describe a *submission*. They open a `pending` state only. No success notification is shown until `GET /transactions/{hash}` confirms the transaction.
-- **Hashes are the reconciliation key.** Hashes are trimmed and lower-cased before use (`normalizeTransactionHash`). A record already present is updated in place; a new record is appended; records absent from a refresh are preserved. Records without a usable hash are kept but never merged together.
-- **Refresh failures preserve data.** A failed refresh sets `transactions.refreshError` and leaves the existing history, the pagination cursor, and `transactions.lastUpdatedAt` untouched; `lastUpdatedAt` only advances on an authoritative success. Overlapping refreshes are de-duplicated by `singleFlight` and the guard is released on both success and failure.
-- Beyond the lifecycle states above, no additional transaction statuses, confirmation endpoints, or server-side confirmation guarantees are assumed. Treat the three states as derived from the responses in the table, and verify the backend before relying on anything more.
-
-## Locale-Aware Transaction Formatting
-
-The application provides shared, locale-aware formatters in [`src/utils/format.ts`](../src/utils/format.ts) to eliminate inconsistent formatting and floating-point precision loss across transactions, dashboards, and views.
-
-### Language to Locale Resolution
-
-The user's selected application language directly determines the formatting locale:
-
-| Selected Language | Locale Code | Number Formatting | Date & Time Formatting |
+| Endpoint | Request example | Expected success response | Client behavior |
 | --- | --- | --- | --- |
-| English (`en`) | `en-US` | Comma thousands separator, period decimal (`1,234.56`) | `MMM d, yyyy, h:mm a` (UTC) |
-| Arabic (`ar`) | `ar-SA` | Arabic grouping & decimal separators, RTL with LRM protection | Arabic calendar/date format (UTC) |
-| Spanish (`es`) | `es-ES` | Period thousands separator, comma decimal (`1.234,56`) | `d MMM yyyy, HH:mm` (UTC) |
-| French (`fr`) | `fr-FR` | Narrow space thousands separator, comma decimal (`1 234,56`) | `d MMM yyyy, HH:mm` (UTC) |
+| `POST /payments` | `{"recipientAddress":"G...","amount":"1.25","tokenType":"XLM","memoType":"none"}` with `Idempotency-Key: <uuid>` | `{"success":true,"data":{"status":"submitted","transactionHash":"<hash>"}}` (transaction reference optional while pending) | Payment operations are excluded from automatic retries. The backend must atomically deduplicate a key and return the original result for repeated submissions with that key. |
+| `GET /payments/status?idempotencyKey=<uuid>` | Same idempotency key from the original submit | `{"success":true,"data":{"status":"pending|submitted|confirmed|failed","transactionHash":"<hash>"}}` | A transport failure, timeout, or 5xx leaves the UI in an outcome-unknown state with a status-check action; it must not resubmit automatically. A definitive 4xx is shown as a failed submission. |
 
-### Asset Precision & Numeric Integrity
-
-- **Exact Decimal Arithmetic:** `formatTransactionAmount` processes numeric and decimal string values using string operations and `BigInt` for integer grouping. Values are **never converted to binary IEEE 754 floats**, preventing precision loss for numbers with more than 15 significant digits or large integer amounts.
-- **Explicit Asset Precisions:**
-  - `XLM`: 7 decimal places (1 stroop = 0.0000001 XLM)
-  - `USDC`: 7 decimal places
-  - `USDT`: 7 decimal places
-  - `AQUA`: 7 decimal places
-  - `BTC`: 8 decimal places
-  - `ETH`: 18 decimal places
-  - Custom assets: Preserves full explicit input precision without silent truncation to 2 decimals.
-- **Timezone Policy:** All transaction dates and times are formatted consistently using `timeZone: 'UTC'` to align with on-chain ledger timestamps and avoid client-side timezone drift.
-- **Safe Fallback:** Null, undefined, empty, or malformed inputs format as `'-'` to prevent misleading financial data.
+The backend should return an explicit `confirmed` result only after it has authoritative confirmation. A `not_found` or unavailable status is not permission to resubmit: the client retains the original key and asks the user to check again. Ensure `/payments/status` is scoped to the authenticated user and does not disclose another user's payment status.
 
 ## Contacts Endpoints
 
@@ -168,6 +134,10 @@ The user's selected application language directly determines the formatting loca
 | `POST /contacts` | `{"name":"Ada","address":"G...","tokenType":"XLM"}` | `{"success":true,"data":{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
 | `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
 | `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
+
+The contacts screen searches the complete loaded contact list and renders 24 matches per page. This is client-side pagination; the current contacts contract does not define page/limit parameters, so no paginated backend response is assumed.
+
+The payment screen may use `data.nativeBalance` as the total native balance and `data.required` as the minimum required reserve. It displays spendable XLM as `max(0, nativeBalance - required)` only when both values are finite numbers; this is a display estimate, not a payment authorization guarantee. Reserve-related payment failures are translated when the backend message mentions a reserve or minimum/insufficient native balance. No stable backend error code is currently declared.
 
 ## Liquidity Endpoint
 
