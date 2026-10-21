@@ -212,3 +212,14 @@ export interface AgentNotification {
   userId?: string;
   read: boolean;
 }
+
+/** Why agent memory could not be read (#267). Never confused with an empty memory. */
+export type AgentMemoryErrorKind = 'unavailable' | 'unauthorized' | 'not_found' | 'invalid_response';
+
+/**
+ * Result of reading agent memory (#267): `ok: true` with a possibly empty list is a real answer;
+ * `ok: false` means the memory could not be read.
+ */
+export type AgentMemoryResult =
+  | { ok: true; entries: string[] }
+  | { ok: false; error: { kind: AgentMemoryErrorKind; message: string; status?: number } };

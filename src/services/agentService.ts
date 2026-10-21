@@ -6,9 +6,23 @@ import {
   AgentStatus,
   AgentCapabilities,
   AgentHealthCheck,
-  AgentTool
+  AgentTool,
+  AgentMemoryResult,
+  AgentMemoryErrorKind
 } from '@/types/agent';
 import agentConfig from '@/config/agent';
+
+/** Normalize a failed memory request into a typed error (#267). */
+export function normalizeMemoryError(error: unknown): { kind: AgentMemoryErrorKind; message: string; status?: number } {
+  const status = (error as { response?: { status?: number } })?.response?.status;
+  if (status === 401 || status === 403) {
+    return { kind: 'unauthorized', message: 'You are not allowed to read this memory.', status };
+  }
+  if (status === 404) {
+    return { kind: 'not_found', message: 'Agent memory is not available for this account.', status };
+  }
+  return { kind: 'unavailable', message: 'Agent memory is temporarily unavailable.', status };
+}
 
 /**
  * Direct client service for communicating with the AI Agent backend.
@@ -247,19 +261,28 @@ class AgentService {
   }
 
   /**
-   * Get conversation memory entries for a specific user ID.
-   * Does NOT throw on HTTP failure; logs warning and returns an empty array.
+   * Get conversation memory entries for a specific user ID (#267).
+   * Never throws. Returns `{ ok: true, entries }` for a real answer, including an empty list,
+   * and `{ ok: false, error }` when memory could not be read, so an outage is never mistaken
+   * for "no saved memory".
    *
    * @param userId - Target user identifier string.
-   * @returns Promise resolving to array of string memory entries.
+   * @returns Promise resolving to a typed memory result.
    */
-  async getMemory(userId: string): Promise<string[]> {
+  async getMemory(userId: string): Promise<AgentMemoryResult> {
     try {
-      const response = await this.api.get<string[]>(`/memory/${userId}`);
-      return response.data;
+      const response = await this.api.get<unknown>(`/memory/${encodeURIComponent(userId)}`);
+      const body = response.data;
+      if (Array.isArray(body) && body.every((entry) => typeof entry === 'string')) {
+        return { ok: true, entries: body };
+      }
+      return {
+        ok: false,
+        error: { kind: 'invalid_response', message: 'Agent memory returned an unexpected format.', status: response.status },
+      };
     } catch (error) {
-      console.error('[AgentService] Failed to get memory:', error);
-      return [];
+      console.error('[AgentService] Failed to get memory:', (error as Error)?.message);
+      return { ok: false, error: normalizeMemoryError(error) };
     }
   }
 

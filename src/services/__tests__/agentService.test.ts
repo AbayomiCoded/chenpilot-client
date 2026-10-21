@@ -116,10 +116,10 @@ describe('AgentService', () => {
 
       const result = await agentService.getMemory('user123');
 
-      expect(result).toEqual(mockMemory);
+      expect(result).toEqual({ ok: true, entries: mockMemory });
     });
 
-    it('returns empty array on error', async () => {
+    it('reports an error instead of an empty list on failure (#267)', async () => {
       mockAxios.create.mockReturnValue({
         get: vi.fn().mockRejectedValue(new Error('Error')),
         interceptors: {
@@ -130,7 +130,7 @@ describe('AgentService', () => {
 
       const result = await agentService.getMemory('user123');
 
-      expect(result).toEqual([]);
+      expect(result).toMatchObject({ ok: false, error: { kind: 'unavailable' } });
     });
   });
 

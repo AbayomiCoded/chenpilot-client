@@ -950,18 +950,14 @@ class ApiService {
   }
 
   /**
-   * Retrieve stored agent memory records for a given user. Does NOT throw on failure; returns empty array on error.
+   * Retrieve stored agent memory records for a given user (#267). Never throws; returns a typed
+   * result so callers can tell an empty memory (`ok: true, entries: []`) from an outage (`ok: false`).
    *
    * @param userId - User ID string.
-   * @returns Promise resolving to array of memory record strings.
+   * @returns Promise resolving to `AgentMemoryResult`.
    */
   async getAgentMemory(userId: string) {
-    try {
-      return await agentService.getMemory(userId);
-    } catch (error) {
-      console.error('Failed to get agent memory:', error);
-      return [];
-    }
+    return agentService.getMemory(userId);
   }
 
   /**
