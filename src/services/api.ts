@@ -835,14 +835,24 @@ class ApiService {
    * }
    * ```
    */
-  async queryAgent(data: AgentQueryRequest): Promise<AgentQueryResponse> {
+  async queryAgent(data: AgentQueryRequest, options?: { signal?: AbortSignal }): Promise<AgentQueryResponse> {
+    const isAbort = (error: unknown) => {
+      const axiosError = error as { code?: string; name?: string };
+      return (
+        axiosError.code === 'ERR_CANCELED' ||
+        axiosError.name === 'CanceledError' ||
+        axiosError.name === 'AbortError'
+      );
+    };
+
     // First try the experimental agent service
     try {
       if (agentService.isAgentConnected()) {
         logger.debug('[ApiService] Using experimental agent service');
-        return await agentService.queryAgent(data);
+        return await agentService.queryAgent(data, options);
       }
     } catch (error) {
+      if (isAbort(error)) throw error;
       console.warn('[ApiService] Experimental agent service failed, falling back to backend:', error);
     }
 
@@ -853,7 +863,7 @@ class ApiService {
       }
 
       logger.debug('[ApiService] Querying backend /query endpoint');
-      const response = await this.api.post('/query', data);
+      const response = await this.api.post('/query', data, { signal: options?.signal });
       
       // The system returns response.data directly or wrapped in { result: ... }
       if (response.data && response.data.result) {
@@ -876,6 +886,7 @@ class ApiService {
         }
       };
     } catch (error: unknown) {
+      if (isAbort(error)) throw error;
       console.error('[ApiService] Backend query failed:', error);
       // Convert technical errors to user-friendly messages
       let friendlyMessage = 'Query failed. Please try again.';
@@ -1143,6 +1154,33 @@ class ApiService {
       responseType: 'blob',
     });
     return response.data;
+  }
+
+  /**
+   * Request account deletion. Local token, conversations and drafts are cleared
+   * even when the API call fails so the client does not keep private copies.
+   * On-chain history cannot be deleted from this client.
+   */
+  async deleteAccount(): Promise<{
+    api: boolean;
+    token: boolean;
+    conversations: boolean;
+    drafts: boolean;
+    removed: string[];
+    remaining: string[];
+    onChainHistoryDeleted: false;
+  }> {
+    const { clearAccountLocalStorage } = await import('@/lib/accountDeletion');
+    let api = false;
+    try {
+      await this.api.delete('/account');
+      api = true;
+    } catch {
+      api = false;
+    }
+    const local = clearAccountLocalStorage();
+    this.token = null;
+    return { api, ...local, onChainHistoryDeleted: false };
   }
 
   /**

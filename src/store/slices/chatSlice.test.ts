@@ -2,11 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { configureStore } from '@reduxjs/toolkit';
 import chatReducer, {
   sendMessage,
+  regenerateLastResponse,
+  ABORT_ERROR,
   addMessage,
   addUserMessage,
   addSystemMessage,
   setMessages,
   updateMessage,
+  setTyping,
   clearMessages,
   removeMessage,
   saveConversationLocally,
@@ -363,6 +366,69 @@ describe('chatSlice - Message Ordering & Race Conditions (#86)', () => {
       const messages = store.getState().chat.messages;
       expect(messages[0].id).toBe('a');
       expect(messages[1].id).toBe('b');
+    });
+  });
+
+  describe('Abort and regenerate', () => {
+    it('resets loading flags and marks the turn cancelled without an error bubble', async () => {
+      (apiService.queryAgent as any).mockImplementation(
+        (_data: unknown, options?: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            options?.signal?.addEventListener('abort', () => {
+              const error = Object.assign(new Error('canceled'), {
+                name: 'CanceledError',
+                code: 'ERR_CANCELED',
+              });
+              reject(error);
+            });
+          }),
+      );
+
+      const promise = store.dispatch(sendMessage({ query: 'stop me', tempId: 'abort-1' }));
+      promise.abort();
+      const result = await promise;
+
+      expect(result.payload).toBe(ABORT_ERROR);
+      const state = store.getState().chat;
+      expect(state.isLoading).toBe(false);
+      expect(state.isTyping).toBe(false);
+      expect(state.messages.some((message) => message.metadata?.status === 'cancelled')).toBe(true);
+      expect(state.messages.some((message) => message.metadata?.type === 'error')).toBe(false);
+    });
+
+    it('replaces the previous agent message without duplication', async () => {
+      store.dispatch(addMessage({
+        id: 'user-regen',
+        type: 'user',
+        content: '[Using vault tool] What is APY?',
+        timestamp: '2026-09-29T10:00:01.000Z',
+      }));
+      store.dispatch(addMessage({
+        id: 'agent-regen',
+        type: 'agent',
+        content: 'old answer',
+        timestamp: '2026-09-29T10:00:02.000Z',
+      }));
+      (apiService.queryAgent as any).mockResolvedValueOnce({
+        result: { success: true, data: 'new answer' },
+      });
+
+      await store.dispatch(regenerateLastResponse());
+
+      const agents = store.getState().chat.messages.filter((message) => message.type === 'agent');
+      expect(agents).toHaveLength(1);
+      expect(agents[0].id).toBe('agent-regen');
+      expect(agents[0].content).toBe('new answer');
+      expect(apiService.queryAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ query: '[Using vault tool] What is APY?' }),
+        expect.any(Object),
+      );
+    });
+
+    it('blocks regeneration while isTyping is true', async () => {
+      store.dispatch(setTyping(true));
+      await store.dispatch(regenerateLastResponse());
+      expect(apiService.queryAgent).not.toHaveBeenCalled();
     });
   });
 });
