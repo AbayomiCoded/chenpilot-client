@@ -87,7 +87,8 @@ export interface Contact {
   id: string;
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
   createdAt: string;
   updatedAt: string;
   avatar?: string;
@@ -98,13 +99,15 @@ export interface Contact {
 export interface CreateContactRequest {
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
 }
 
 export interface UpdateContactRequest {
   name?: string;
   address?: string;
-  tokenType?: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType?: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
 }
 
 // Balance and Wallet Types
@@ -583,10 +586,11 @@ export interface AuditLogStats {
 export interface SendPaymentRequest {
   recipientAddress: string;
   amount: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
   memo?: string;
   memoType?: 'none' | 'text' | 'id' | 'hash';
   recipientContactId?: string; // Optional reference to selected contact
+  idempotencyKey?: string;
 }
 
 export interface SendPaymentValidationResult {
@@ -600,7 +604,8 @@ export interface ContactSelection {
   id: string;
   name: string;
   address: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  note?: string;
   avatar?: string;
   isFavorite?: boolean;
   lastUsed?: string;

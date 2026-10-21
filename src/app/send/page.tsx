@@ -50,17 +50,13 @@ export default function SendPaymentPage() {
 
   const handleSendPayment = async (data: SendPaymentRequest) => {
     try {
-      // In a real implementation, this would call the payment API
-      console.log('Sending payment:', data);
-      
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      
+      await apiService.sendPayment(data);
       toast.success('Payment sent successfully!');
       router.push('/transactions');
     } catch (error: any) {
       console.error('Payment error:', error);
       toast.error(getPaymentFailureMessage(error));
+      throw error;
     }
   };
 

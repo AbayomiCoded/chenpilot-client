@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { sendPaymentSchema, validateSendPayment, sanitizePaymentInput, getPaymentFailureMessage } from '@/utils/validation';
+import { buildPaymentIdempotencyKey } from '@/utils/paymentIdempotency';
 import { SendPaymentRequest, ContactSelection } from '@/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -50,6 +51,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
     setValue,
     watch,
     reset,
+    setFocus,
   } = useForm<SendPaymentRequest>({
     resolver: zodResolver(sendPaymentSchema),
     defaultValues: {
@@ -60,6 +62,8 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
   const watchedToken = watch('tokenType');
   const watchedMemoType = watch('memoType');
+  const paymentAttemptSignatureRef = useRef<string | null>(null);
+  const paymentAttemptKeyRef = useRef<string | null>(null);
   const nativeBalanceValue = Number(nativeBalance);
   const requiredReserveValue = Number(requiredReserve);
   const spendableBalance = nativeBalance !== undefined && requiredReserve !== undefined
@@ -74,36 +78,64 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   };
 
   const handleClearContact = () => {
+    paymentAttemptSignatureRef.current = null;
+    paymentAttemptKeyRef.current = null;
     setSelectedContact(null);
     setValue('recipientAddress', '');
+  };
+
+  const getActiveIdempotencyKey = (data: SendPaymentRequest): string => {
+    const requestFromForm = {
+      recipientAddress: data.recipientAddress?.trim() ?? '',
+      amount: data.amount?.trim() ?? '',
+      tokenType: data.tokenType ?? '',
+      memo: data.memo?.trim() ?? '',
+      memoType: data.memoType ?? 'none',
+      recipientContactId: data.recipientContactId ?? selectedContact?.id ?? '',
+    };
+    const signature = JSON.stringify(requestFromForm);
+
+    if (paymentAttemptSignatureRef.current === signature && paymentAttemptKeyRef.current) {
+      return paymentAttemptKeyRef.current;
+    }
+
+    const nextKey = buildPaymentIdempotencyKey(requestFromForm);
+    paymentAttemptSignatureRef.current = signature;
+    paymentAttemptKeyRef.current = nextKey;
+    return nextKey;
   };
 
   const handleFormSubmit = async (data: SendPaymentRequest) => {
     try {
       setIsSubmitting(true);
-      
-      // Sanitize input
+
       const sanitizedData = sanitizePaymentInput(data);
-      
-      // Add contact reference if selected
+
       if (selectedContact) {
         sanitizedData.recipientContactId = selectedContact.id;
       }
-      
-      // Validate again (defensive programming)
+
       const validation = validateSendPayment(sanitizedData);
       if (!validation.isValid) {
+        setFocus('recipientAddress');
         validation.errors.forEach((error) => toast.error(error));
         return;
       }
-      
-      await onSubmit(sanitizedData);
-      
-      // Reset form on success
+
+      const paymentRequest = {
+        ...sanitizedData,
+        idempotencyKey: getActiveIdempotencyKey(sanitizedData),
+      };
+
+      await onSubmit(paymentRequest);
+
+      paymentAttemptSignatureRef.current = null;
+      paymentAttemptKeyRef.current = null;
       reset();
       setSelectedContact(null);
     } catch (error: any) {
       console.error('Payment submission error:', error);
+      setFocus('recipientAddress');
       toast.error(getPaymentFailureMessage(error));
     } finally {
       setIsSubmitting(false);

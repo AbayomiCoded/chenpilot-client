@@ -1,14 +1,15 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { logger } from "../utils/logger";
-import { 
-  RegisterRequest, 
-  LoginRequest, 
-  RegisterResponse, 
-  LoginResponse, 
-  User, 
-  Contact, 
-  CreateContactRequest, 
+import {
+  RegisterRequest,
+  LoginRequest,
+  RegisterResponse,
+  LoginResponse,
+  User,
+  Contact,
+  CreateContactRequest,
   UpdateContactRequest,
+  SendPaymentRequest,
   BalanceResponse,
   AgentQueryRequest,
   AgentQueryResponse,
@@ -34,8 +35,7 @@ import {
   incrementRetryCount,
   retryLabel,
 } from '@/utils/retryUtils';
-
-import axios from 'axios';
+import { buildPaymentIdempotencyKey } from '@/utils/paymentIdempotency';
 
 const FRIENDTEST_URL = 'https://friendbot.stellar.org';
 
@@ -751,6 +751,25 @@ class ApiService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Submit a payment using a deterministic idempotency key so rapid duplicate
+   * clicks retry the same request rather than creating duplicate transfers.
+   */
+  async sendPayment(data: SendPaymentRequest): Promise<ApiResponse<{ paymentId: string; status: string }>> {
+    const idempotencyKey = data.idempotencyKey || buildPaymentIdempotencyKey(data);
+
+    const response = await this.api.post<ApiResponse<{ paymentId: string; status: string }>>('/payments', {
+      ...data,
+      idempotencyKey,
+    }, {
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+    });
+
+    return response.data;
   }
 
   // Agent query - Optimized for backend integration

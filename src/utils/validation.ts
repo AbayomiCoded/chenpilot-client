@@ -41,15 +41,17 @@ export const tokenAmountSchema = z
 export const createContactSchema = z.object({
   name: nameSchema,
   address: stellarAddressSchema,
-  tokenType: z.enum(['XLM', 'USDC', 'USDT', 'BTC', 'ETH'], {
+  tokenType: z.enum(['XLM', 'STRK', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA'], {
     required_error: 'Please select a token type',
   }),
+  note: z.string().max(280, 'Contact notes are limited to 280 characters').optional(),
 });
 
 export const updateContactSchema = z.object({
   name: nameSchema.optional(),
   address: stellarAddressSchema.optional(),
-  tokenType: z.enum(['XLM', 'USDC', 'USDT', 'BTC', 'ETH']).optional(),
+  tokenType: z.enum(['XLM', 'STRK', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA']).optional(),
+  note: z.string().max(280, 'Contact notes are limited to 280 characters').optional(),
 });
 
 // Authentication schemas
@@ -112,6 +114,7 @@ export const sendPaymentSchema = z.object({
   memo: z.string().optional(),
   memoType: z.enum(PAYMENT_LIMITS.MEMO_TYPES).optional(),
   recipientContactId: z.string().optional(),
+  idempotencyKey: z.string().optional(),
 }).superRefine((data, context) => {
   const memoType = data.memoType ?? 'none';
   const memo = data.memo ?? '';
@@ -215,6 +218,7 @@ export const validateSendPayment = (data: {
   memo?: string;
   memoType?: string;
   recipientContactId?: string;
+  idempotencyKey?: string;
 }): { isValid: boolean; errors: string[] } => {
   try {
     sendPaymentSchema.parse(data);
@@ -261,6 +265,7 @@ export const sanitizePaymentInput = (data: {
   memo?: string;
   memoType?: string;
   recipientContactId?: string;
+  idempotencyKey?: string;
 }): {
   recipientAddress: string;
   amount: string;
@@ -268,6 +273,7 @@ export const sanitizePaymentInput = (data: {
   memo?: string;
   memoType?: string;
   recipientContactId?: string;
+  idempotencyKey?: string;
 } => {
   return {
     recipientAddress: data.recipientAddress.trim(),
@@ -280,6 +286,7 @@ export const sanitizePaymentInput = (data: {
         : {}),
     memoType: data.memoType?.toLowerCase(),
     recipientContactId: data.recipientContactId?.trim(),
+    idempotencyKey: data.idempotencyKey?.trim() || undefined,
   };
 };
 
