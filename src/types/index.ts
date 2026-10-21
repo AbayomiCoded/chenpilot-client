@@ -87,7 +87,8 @@ export interface Contact {
   id: string;
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
   createdAt: string;
   updatedAt: string;
   avatar?: string;
@@ -98,13 +99,15 @@ export interface Contact {
 export interface CreateContactRequest {
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
 }
 
 export interface UpdateContactRequest {
   name?: string;
   address?: string;
-  tokenType?: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType?: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
 }
 
 // Balance and Wallet Types
@@ -246,7 +249,7 @@ export interface ChatMessage {
     transactionHash?: string;
     amount?: string;
     tokenType?: string;
-    status?: "pending" | "success" | "failed";
+    status?: "pending" | "success" | "failed" | "cancelled";
     success?: boolean;
     error?: string;
     type?: string;
@@ -624,10 +627,22 @@ export interface AuditLogStats {
 export interface SendPaymentRequest {
   recipientAddress: string;
   amount: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
   memo?: string;
   memoType?: 'none' | 'text' | 'id' | 'hash';
   recipientContactId?: string; // Optional reference to selected contact
+  idempotencyKey?: string;
+}
+
+export interface PaymentSubmissionResult {
+  status: 'pending' | 'submitted' | 'confirmed' | 'failed';
+  transactionHash?: string;
+  transactionId?: string;
+  message?: string;
+}
+
+export interface PaymentStatusResult extends Omit<PaymentSubmissionResult, 'status'> {
+  status: PaymentSubmissionResult['status'] | 'not_found';
 }
 
 export interface SendPaymentValidationResult {
@@ -641,7 +656,8 @@ export interface ContactSelection {
   id: string;
   name: string;
   address: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  note?: string;
   avatar?: string;
   isFavorite?: boolean;
   lastUsed?: string;
