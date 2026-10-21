@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
 import { logger } from "../../utils/logger";
-import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
+import { ChatMessage, AgentQueryRequest, Conversation, ChatHistoryStatus } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
 
@@ -32,6 +32,9 @@ interface ChatState {
   messageQueue: Array<{ id: string; query: string; timestamp: string }>;
   pendingMessages: Set<string>;
   optimisticUpdates: Map<string, ChatMessage>;
+  /** Server history load state, kept separate from `messages` so a failure is not shown as empty (#265). */
+  historyStatus: ChatHistoryStatus;
+  historyError: string | null;
 }
 
 const initialState: ChatState = {
@@ -53,6 +56,8 @@ const initialState: ChatState = {
   messageQueue: [],
   pendingMessages: new Set(),
   optimisticUpdates: new Map(),
+  historyStatus: "idle",
+  historyError: null,
 };
 
 // Async thunks
@@ -151,6 +156,40 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
     return a.id.localeCompare(b.id);
   });
 };
+
+/**
+ * Merge server messages into the local list by message id; the server copy wins (#265).
+ */
+export const mergeMessagesById = (existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] => {
+  const byId = new Map<string, ChatMessage>();
+  for (const message of existing) byId.set(message.id, message);
+  for (const message of incoming) {
+    if (message?.id) byId.set(message.id, message);
+  }
+  return sortMessagesChronologically(Array.from(byId.values()));
+};
+
+/**
+ * Load chat history from the server (#265). Locally cached messages stay in place if this fails.
+ * A 404/501 means the backend has no history endpoint; that resolves with no messages rather
+ * than an error, so the page falls back to the local cache.
+ */
+export const fetchChatHistory = createAsyncThunk(
+  "chat/fetchChatHistory",
+  async (_: void, { rejectWithValue }) => {
+    try {
+      return await apiService.getChatHistory();
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 404 || status === 501) {
+        return { messages: [] as ChatMessage[] };
+      }
+      return rejectWithValue(
+        error?.response?.data?.message || error?.message || "Failed to load chat history",
+      );
+    }
+  },
+);
 
 export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
 
@@ -724,6 +763,19 @@ state.messages[index] = {
   },
   extraReducers: (builder) => {
     builder
+      .addCase(fetchChatHistory.pending, (state) => {
+        state.historyStatus = "loading";
+        state.historyError = null;
+      })
+      .addCase(fetchChatHistory.fulfilled, (state, action) => {
+        state.historyStatus = "succeeded";
+        state.messages = mergeMessagesById(state.messages, action.payload.messages);
+      })
+      .addCase(fetchChatHistory.rejected, (state, action) => {
+        // Keep cached messages; only record the failure
+        state.historyStatus = "failed";
+        state.historyError = (action.payload as string) ?? action.error.message ?? "Failed to load chat history";
+      })
       // Removed server conversation extraReducers - now handled client-side
 
       // Get or Create Active Conversation

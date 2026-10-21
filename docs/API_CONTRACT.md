@@ -43,6 +43,21 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 
 `getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
 
+## Chat History Endpoint
+
+**Proposed; backend support not yet confirmed.** This route uses the API base URL through `apiService.getChatHistory`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /chat/history` | `GET /chat/history?limit=50`; bearer token when available. | `{"messages":[{"id":"msg_1","type":"user","content":"What is my XLM balance?","timestamp":"2026-01-01T00:00:00Z"}]}` | Chat history page (`fetchChatHistory`). Server messages are merged into locally cached messages by `id`. |
+
+Load states on `/chat/history` (#265):
+- **Loading, nothing cached:** a loading indicator, not the empty state.
+- **Loaded and empty:** "No chat history yet" with a "Start new chat" action.
+- **Failed, nothing cached:** a dedicated error state (`EmptyState tone="error"`, `role="alert"`) with "Try again" and "Start new chat".
+- **Failed with cached messages:** the cached conversations stay visible under an inline alert with "Try again". A failed request never clears cached messages.
+- **404 or 501:** treated as "this backend has no server history". The page shows the local cache, or the empty state, without an error.
+
 ## Authentication Endpoints
 
 `User` response fields are `id`, `email`, `name`, `address`, `publicKey`, `isDeployed`, `isFunded`, `tokenType`, `authProvider`, `isEmailVerified`, `createdAt`, and `updatedAt`. `RegisterResponse` additionally declares `stellarAccount`, the backward-compatible `starknetAccount` alias, and `setupStatus` with funding/deployment results.

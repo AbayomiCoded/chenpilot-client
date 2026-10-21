@@ -250,6 +250,14 @@ export interface ThreadState {
   isTyping: boolean;
 }
 
+/** One page of server-side chat history (#265). */
+export interface ChatHistoryPage {
+  messages: ChatMessage[];
+}
+
+/** Load state for the chat history screen (#265). */
+export type ChatHistoryStatus = "idle" | "loading" | "succeeded" | "failed";
+
 export interface Conversation {
   id: string;
   title: string;

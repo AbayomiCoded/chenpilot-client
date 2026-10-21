@@ -15,6 +15,7 @@ import {
   ApiResponse,
   ChatMessage,
   Conversation,
+  ChatHistoryPage,
   PromptVersionRecord,
   LiquidityPool,
   LiquidityStats,
@@ -983,6 +984,21 @@ class ApiService {
   // All conversation and message management is now handled client-side
 
   // Removed: getOrCreateActiveConversation - now handled client-side
+
+  /**
+   * Fetch the user's chat history from the server (#265).
+   * Proposed contract: `GET /chat/history?limit=<n>` → `{ messages: ChatMessage[] }`.
+   *
+   * @param limit - Maximum number of messages to return (defaults to 50).
+   * @returns Promise resolving to one page of history.
+   * @throws {AxiosError} Throws if the request fails.
+   */
+  async getChatHistory(limit = 50): Promise<ChatHistoryPage> {
+    const response = await this.api.get<ChatHistoryPage>('/chat/history', { params: { limit } });
+    return {
+      messages: Array.isArray(response.data?.messages) ? response.data.messages : [],
+    };
+  }
 
   /**
    * Fetch conversation statistics from server.
