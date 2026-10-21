@@ -2,6 +2,10 @@
 
 This document records the HTTP requests made by [`src/services/api.ts`](../src/services/api.ts) and [`src/services/agentService.ts`](../src/services/agentService.ts). Types and examples below describe the frontend's declared/consumed shapes; they are not evidence that every experimental backend route currently implements them. Confirm the backend before treating an example as a server guarantee. Fields shown with `...` are explanatory omissions, not literal JSON.
 
+## Signing And Authorization Boundary (#260)
+
+The browser never holds private keys and never signs. Every endpoint below that changes on-chain state (`POST /query` for agent actions, `POST /auth/starknet/deploy`, `POST /auth/funding/*`, `POST /api/fund`) is signed and submitted by the backend, which must authorize each call against the bearer token's user. Client-side checks (validation, guards, confirmation UI) are not authorization. See `SECURITY.md` → "Wallet Key Ownership & Signing Boundary".
+
 ## Base URLs And Authentication
 
 - `ApiService` uses `NEXT_PUBLIC_API_BASE_URL`, defaulting to `http://localhost:2333`.
