@@ -531,3 +531,68 @@ describe('useSocket - Cleanup Behaviour', () => {
     expect(disconnect).not.toHaveBeenCalled();
   });
 });
+
+describe('useSocketConnection - reconnect/exhausted states (#276)', () => {
+  it('exposes reconnecting state with attempt progress', () => {
+    capturedSocketContext = {
+      ...createMockContext({ isConnected: false }),
+      connectionState: 'reconnecting',
+      reconnectAttempt: 2,
+      maxReconnectAttempts: 5,
+      retry: vi.fn(),
+    };
+
+    const { result } = renderHook(() => useSocketConnection());
+
+    expect(result.current.connectionState).toBe('reconnecting');
+    expect(result.current.isReconnecting).toBe(true);
+    expect(result.current.isExhausted).toBe(false);
+    expect(result.current.reconnectAttempt).toBe(2);
+    expect(result.current.maxReconnectAttempts).toBe(5);
+  });
+
+  it('exposes exhausted state and a retry action', () => {
+    const retry = vi.fn();
+    capturedSocketContext = {
+      ...createMockContext({ isConnected: false }),
+      connectionState: 'exhausted',
+      reconnectAttempt: 5,
+      maxReconnectAttempts: 5,
+      retry,
+    };
+
+    const { result } = renderHook(() => useSocketConnection());
+
+    expect(result.current.isExhausted).toBe(true);
+    expect(result.current.isReconnecting).toBe(false);
+    result.current.retry();
+    expect(retry).toHaveBeenCalledTimes(1);
+  });
+
+  it('reflects recovery when the provider reports connected again', () => {
+    capturedSocketContext = {
+      ...createMockContext({ isConnected: false }),
+      connectionState: 'reconnecting',
+      reconnectAttempt: 1,
+    };
+    const { result, rerender } = renderHook(() => useSocketConnection());
+    expect(result.current.isReconnecting).toBe(true);
+
+    capturedSocketContext = {
+      ...createMockContext({ isConnected: true }),
+      connectionState: 'connected',
+      reconnectAttempt: 0,
+    };
+    rerender();
+
+    expect(result.current.isConnected).toBe(true);
+    expect(result.current.isReconnecting).toBe(false);
+    expect(result.current.reconnectAttempt).toBe(0);
+  });
+
+  it('derives state from isConnected when the provider omits connectionState', () => {
+    capturedSocketContext = createMockContext({ isConnected: true });
+    const { result } = renderHook(() => useSocketConnection());
+    expect(result.current.connectionState).toBe('connected');
+  });
+});
