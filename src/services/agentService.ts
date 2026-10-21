@@ -1,5 +1,11 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import { logger } from "../utils/logger";
+import {
+  logger,
+  generateCorrelationId,
+  hashValue,
+  summarizeContent,
+  isContentLoggingEnabled,
+} from "../utils/logger";
 import {
   AgentQueryRequest,
   AgentQueryResponse,
@@ -9,6 +15,67 @@ import {
   AgentTool
 } from '@/types/agent';
 import agentConfig from '@/config/agent';
+
+/**
+ * Correlation metadata for an agent query. Never contains the prompt text itself (#273).
+ */
+export function summarizeAgentQuery(request: AgentQueryRequest, correlationId: string) {
+  const { length, hash } = summarizeContent(request.query ?? '');
+  return {
+    correlationId,
+    userHash: hashValue(request.userId ?? ''),
+    queryLength: length,
+    queryHash: hash,
+  };
+}
+
+/**
+ * Correlation metadata for an agent response. Never contains the response payload itself (#273).
+ */
+export function summarizeAgentResponse(
+  correlationId: string,
+  status: number | undefined,
+  data: unknown,
+  startedAt: number
+) {
+  const { length, hash } = summarizeContent(data);
+  const result = (data as { result?: { success?: boolean } } | undefined)?.result;
+  return {
+    correlationId,
+    status,
+    success: result?.success,
+    durationMs: Date.now() - startedAt,
+    responseLength: length,
+    responseHash: hash,
+  };
+}
+
+/**
+ * Mask user identifiers embedded in agent URL paths (e.g. `/memory/:userId`).
+ */
+export function redactAgentUrl(url: string | undefined): string | undefined {
+  return url?.replace(/(\/memory\/)[^/?#]+/, (_m, prefix: string) => `${prefix}[user]`);
+}
+
+/**
+ * Reduce an error to safe fields. Axios errors carry `config.data` (the request body,
+ * including the prompt) and `response.data`, so they must not be logged whole.
+ */
+export function describeAgentError(error: unknown) {
+  const e = error as {
+    message?: string;
+    code?: string;
+    config?: { method?: string; url?: string };
+    response?: { status?: number };
+  } | undefined;
+  return {
+    message: e?.message,
+    code: e?.code,
+    status: e?.response?.status,
+    method: e?.config?.method?.toUpperCase(),
+    url: redactAgentUrl(e?.config?.url),
+  };
+}
 
 /**
  * Direct client service for communicating with the AI Agent backend.
@@ -34,11 +101,11 @@ class AgentService {
     if (agentConfig.enableLogging) {
       this.api.interceptors.request.use(
         (config) => {
-          logger.debug(`[AgentService] Making request to: ${config.method?.toUpperCase()} ${config.url}`);
+          logger.debug(`[AgentService] Making request to: ${config.method?.toUpperCase()} ${redactAgentUrl(config.url)}`);
           return config;
         },
         (error) => {
-          console.error('[AgentService] Request error:', error);
+          logger.error('[AgentService] Request error:', describeAgentError(error));
           return Promise.reject(error);
         }
       );
@@ -46,11 +113,11 @@ class AgentService {
       // Response interceptor for error handling
       this.api.interceptors.response.use(
         (response) => {
-          logger.debug(`[AgentService] Response received: ${response.status} ${response.config.url}`);
+          logger.debug(`[AgentService] Response received: ${response.status} ${redactAgentUrl(response.config.url)}`);
           return response;
         },
         (error) => {
-          console.error('[AgentService] Response error:', error);
+          logger.error('[AgentService] Response error:', describeAgentError(error));
           this.isConnected = false;
           return Promise.reject(error);
         }
@@ -94,7 +161,7 @@ class AgentService {
       };
     } catch (error) {
       this.isConnected = false;
-      console.error('[AgentService] Health check failed:', error);
+      logger.error('[AgentService] Health check failed:', describeAgentError(error));
       // Don't throw error, return unhealthy status instead
       return {
         status: 'unhealthy',
@@ -194,12 +261,24 @@ class AgentService {
    * ```
    */
   async queryAgent(request: AgentQueryRequest): Promise<AgentQueryResponse> {
+    const correlationId = generateCorrelationId('agent_query');
+    const startedAt = Date.now();
     try {
-      logger.debug('[AgentService] Sending query:', request.query);
-      
+      // Prompt/response content is never logged by default; only correlation metadata (#273).
+      logger.debug('[AgentService] Sending query:', summarizeAgentQuery(request, correlationId));
+      if (isContentLoggingEnabled()) {
+        logger.debug('[AgentService] Query content:', { correlationId, query: request.query });
+      }
+
       const response = await this.api.post('/query', request);
-      
-      logger.debug('[AgentService] Query response:', response.data);
+
+      logger.debug(
+        '[AgentService] Query response:',
+        summarizeAgentResponse(correlationId, response.status, response.data, startedAt)
+      );
+      if (isContentLoggingEnabled()) {
+        logger.debug('[AgentService] Response content:', { correlationId, data: response.data });
+      }
       
       // The experimental backend returns { result: ... } format
       // Ensure we return the proper AgentQueryResponse format
@@ -218,7 +297,11 @@ class AgentService {
         }
       };
     } catch (error: unknown) {
-      console.error('[AgentService] Query failed:', error);
+      logger.error('[AgentService] Query failed:', {
+        correlationId,
+        durationMs: Date.now() - startedAt,
+        ...describeAgentError(error),
+      });
 
       // Convert technical errors to user-friendly messages
       let friendlyMessage = 'Agent service is currently unavailable. Please try again later.';
@@ -256,7 +339,7 @@ class AgentService {
       const response = await this.api.get<string[]>(`/memory/${userId}`);
       return response.data;
     } catch (error) {
-      console.error('[AgentService] Failed to get memory:', error);
+      logger.error('[AgentService] Failed to get memory:', describeAgentError(error));
       return [];
     }
   }
@@ -272,7 +355,7 @@ class AgentService {
     try {
       await this.api.delete(`/memory/${userId}`);
     } catch (error) {
-      console.error('[AgentService] Failed to clear memory:', error);
+      logger.error('[AgentService] Failed to clear memory:', describeAgentError(error));
       throw new Error('Failed to clear agent memory');
     }
   }
@@ -288,7 +371,7 @@ class AgentService {
       const response = await this.api.get<AgentTool[]>('/tools');
       return response.data;
     } catch (error) {
-      console.error('[AgentService] Failed to get tools:', error);
+      logger.error('[AgentService] Failed to get tools:', describeAgentError(error));
       return [];
     }
   }
@@ -306,7 +389,7 @@ class AgentService {
       const response = await this.api.post(`/tools/${toolName}/execute`, params);
       return response.data;
     } catch (error) {
-      console.error(`[AgentService] Failed to execute tool ${toolName}:`, error);
+      logger.error(`[AgentService] Failed to execute tool ${toolName}:`, describeAgentError(error));
       throw new Error(`Failed to execute tool: ${toolName}`);
     }
   }
