@@ -8,6 +8,15 @@ export const API_CONFIG = {
   RETRY_DELAY: 1000,
 } as const;
 
+export const RETRY_CONFIG = {
+  MAX_ATTEMPTS: 3,
+  RETRYABLE_STATUS_CODES: [408, 429, ...Array.from({ length: 100 }, (_, index) => 500 + index)],
+  IDEMPOTENT_METHODS: ['get', 'head', 'options'],
+  BASE_DELAY_MS: 1000,
+  MAX_DELAY_MS: 30000,
+  JITTER_MS: 1000,
+} as const;
+
 // Application Information
 export const APP_CONFIG = {
   NAME: 'ChenPilot',

@@ -8,6 +8,7 @@ This document records the HTTP requests made by [`src/services/api.ts`](../src/s
 - `AgentService` uses `NEXT_PUBLIC_AGENT_API_URL`, also defaulting to `http://localhost:2333`. These clients are separate even when configured to the same host.
 - `ApiService` attaches `Authorization: Bearer <access-token>` when a token is present. Its explicit refresh call and the 401 interceptor send `POST /auth/refresh` with cookies (`withCredentials: true`).
 - Next.js rewrites `/horizon/:path*` to `${NEXT_PUBLIC_API_BASE_URL || 'http://localhost:2333'}/proxy/:path*`. `horizonFetch` calls the local `/horizon` path; keep the backend `/proxy/:path*` handler available. Stellar Horizon reads made through `horizonFetch` are in `src/store/slices/accountSlice.ts`, not these service endpoint lists.
+- `NEXT_PUBLIC_STELLAR_NETWORK` must be explicitly set to `mainnet` or `testnet` for the UI to identify the active network. Missing or unsupported values display `Network unknown`; do not infer it from `NODE_ENV`. The backend Horizon proxy and payment execution service must be configured for the same network. This frontend configuration does not itself switch backend networks.
 - `ApiResponse<T>` is the declared envelope for many methods:
 
 	```ts
@@ -88,6 +89,17 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `GET /auth/funding/funded-account-balance` | No body. | `{"success":true,"data":{"balance":"10","hasBalance":true}}` | Service method only; no direct screen caller found. |
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
 | `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
+
+## Payment Submission And Status (Backend Support Required)
+
+The send-payment UI now requires explicit confirmation before calling the payment service. The frontend declares the following backend contract, but no existing payment route was present in this repository; verify and implement these routes on the backend before enabling real payments.
+
+| Endpoint | Request example | Expected success response | Client behavior |
+| --- | --- | --- | --- |
+| `POST /payments` | `{"recipientAddress":"G...","amount":"1.25","tokenType":"XLM","memoType":"none"}` with `Idempotency-Key: <uuid>` | `{"success":true,"data":{"status":"submitted","transactionHash":"<hash>"}}` (transaction reference optional while pending) | Payment operations are excluded from automatic retries. The backend must atomically deduplicate a key and return the original result for repeated submissions with that key. |
+| `GET /payments/status?idempotencyKey=<uuid>` | Same idempotency key from the original submit | `{"success":true,"data":{"status":"pending|submitted|confirmed|failed","transactionHash":"<hash>"}}` | A transport failure, timeout, or 5xx leaves the UI in an outcome-unknown state with a status-check action; it must not resubmit automatically. A definitive 4xx is shown as a failed submission. |
+
+The backend should return an explicit `confirmed` result only after it has authoritative confirmation. A `not_found` or unavailable status is not permission to resubmit: the client retains the original key and asks the user to check again. Ensure `/payments/status` is scoped to the authenticated user and does not disclose another user's payment status.
 
 ## Contacts Endpoints
 

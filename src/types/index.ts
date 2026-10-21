@@ -593,6 +593,17 @@ export interface SendPaymentRequest {
   idempotencyKey?: string;
 }
 
+export interface PaymentSubmissionResult {
+  status: 'pending' | 'submitted' | 'confirmed' | 'failed';
+  transactionHash?: string;
+  transactionId?: string;
+  message?: string;
+}
+
+export interface PaymentStatusResult extends Omit<PaymentSubmissionResult, 'status'> {
+  status: PaymentSubmissionResult['status'] | 'not_found';
+}
+
 export interface SendPaymentValidationResult {
   isValid: boolean;
   errors: string[];
