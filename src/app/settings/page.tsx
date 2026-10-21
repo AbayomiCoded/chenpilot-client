@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/Input";
 import { DangerZone } from "@/components/settings/DangerZone";
 import apiService from "@/services/api";
 import { t, LANGUAGES } from "@/lib/i18n/i18n";
+import { StellarNetworkBadge } from "@/components/wallet/StellarNetworkBadge";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
@@ -146,12 +147,18 @@ export default function SettingsPage() {
                       disabled
                       placeholder="Your email address"
                     />
-                    <Input
-                      label="Wallet Address"
-                      value={user?.address || ""}
-                      disabled
-                      placeholder="Your Stellar wallet address"
-                    />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-sm font-medium text-gray-300">Wallet Address</span>
+                        <StellarNetworkBadge />
+                      </div>
+                      <Input
+                        value={user?.address || ""}
+                        disabled
+                        aria-label="Wallet Address"
+                        placeholder="Your Stellar wallet address"
+                      />
+                    </div>
                   </div>
                 </div>
               </Card>
