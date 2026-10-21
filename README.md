@@ -5,7 +5,7 @@ A modern, responsive web client for **ChenPilot** - a crypto wallet management s
 ## Getting Started
 
 > 💡 **Troubleshooting**: Having issues setting up locally? Check out our [Troubleshooting Guide](./docs/TROUBLESHOOTING.md) for solutions to common environment, port, socket, and git hook problems.
-///WIP
+
 ### Prerequisites
 
 - Node.js 18+
