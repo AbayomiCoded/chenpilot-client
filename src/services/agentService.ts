@@ -10,6 +10,59 @@ import {
 } from '@/types/agent';
 import agentConfig from '@/config/agent';
 
+interface TimedResult {
+  ok: boolean;
+  httpStatus?: number;
+  data?: unknown;
+  elapsedMs: number | null;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+const now = (): number =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+
+/** Map the `/health` body status to client health; a 2xx without a status counts as healthy. */
+function mapHealthStatus(
+  status: string | undefined,
+  fallback: AgentHealthCheck['status'] = 'healthy'
+): AgentHealthCheck['status'] {
+  switch ((status ?? '').toLowerCase()) {
+    case 'ok':
+    case 'healthy':
+    case 'up':
+      return 'healthy';
+    case 'degraded':
+      return 'degraded';
+    case 'down':
+    case 'unhealthy':
+    case 'error':
+      return 'unhealthy';
+    default:
+      return fallback;
+  }
+}
+
+function outage(
+  timestamp: string,
+  probe: AgentHealthCheck['probe'],
+  healthEndpointSupported: boolean,
+  result: TimedResult
+): AgentHealthCheck {
+  const timedOut = result.errorCode === 'ECONNABORTED' || result.errorCode === 'ETIMEDOUT' || /timeout/i.test(result.errorMessage ?? '');
+  const reason: AgentHealthCheck['reason'] =
+    result.httpStatus !== undefined ? 'server_error' : timedOut ? 'timeout' : 'network';
+  return {
+    status: 'unhealthy',
+    timestamp,
+    probe,
+    healthEndpointSupported,
+    responseTimeMs: result.elapsedMs,
+    reason,
+    services: { agent: { status: 'down', responseTime: result.elapsedMs ?? undefined, error: reason } },
+  };
+}
+
 /**
  * Direct client service for communicating with the AI Agent backend.
  */
@@ -59,57 +112,94 @@ class AgentService {
   }
 
   /**
-   * Check if the agent service is available and healthy using a HEAD probe request.
-   * Catches errors internally and returns an unhealthy status object without throwing.
+   * Probe agent health and measure response time (#272).
    *
-   * @returns Promise resolving to `AgentHealthCheck` object indicating health status ('healthy' | 'unhealthy') and metrics.
+   * 1. `GET /health` (documented in docs/API_CONTRACT.md). Its `status` field decides health.
+   * 2. If that endpoint is unsupported (404/405/501), fall back to `HEAD /` and report a
+   *    connectivity-only result (`probe: 'connectivity'`, `healthEndpointSupported: false`):
+   *    any HTTP answer means "reachable", not "healthy".
+   * 3. Network errors, timeouts and 5xx answers are outages (`unhealthy` with a `reason`).
+   *
+   * Never throws. `responseTimeMs` is the measured round trip of the probe that answered,
+   * or null when nothing answered.
    */
   async healthCheck(): Promise<AgentHealthCheck> {
-    try {
-      // Since the experimental backend doesn't have a /health endpoint,
-      // we'll try to make a simple request to test connectivity
-      // We'll use a HEAD request to avoid authentication issues
-      const response = await this.api.request({
-        method: 'HEAD',
-        url: '/',
-        timeout: 5000
-      });
-      
-      this.isConnected = true;
+    const timestamp = () => new Date().toISOString();
+    const finish = (result: AgentHealthCheck): AgentHealthCheck => {
+      this.isConnected = result.status !== 'unhealthy';
       this.lastHealthCheck = new Date();
-      return {
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
+      return result;
+    };
+
+    const health = await this.timedRequest({ method: 'GET', url: '/health', timeout: 5000 });
+
+    if (health.ok) {
+      const body = health.data as { status?: string; services?: unknown } | undefined;
+      const status = mapHealthStatus(body?.status);
+      return finish({
+        status,
+        timestamp: timestamp(),
+        probe: 'health_endpoint',
+        healthEndpointSupported: true,
+        responseTimeMs: health.elapsedMs,
         services: {
-          agent: {
-            status: 'up',
-            responseTime: 0
-          }
+          agent: { status: status === 'healthy' ? 'up' : status === 'degraded' ? 'degraded' : 'down', responseTime: health.elapsedMs },
         },
-        system: {
-          memory: { used: 0, total: 0, percentage: 0 },
-          cpu: { usage: 0 },
-          uptime: 0
-        }
-      };
+      });
+    }
+
+    if (health.httpStatus !== undefined && [404, 405, 501].includes(health.httpStatus)) {
+      // No health endpoint: only connectivity can be reported
+      const probe = await this.timedRequest({ method: 'HEAD', url: '/', timeout: 5000 });
+      if (probe.httpStatus !== undefined && probe.httpStatus < 500) {
+        return finish({
+          status: 'healthy',
+          timestamp: timestamp(),
+          probe: 'connectivity',
+          healthEndpointSupported: false,
+          responseTimeMs: probe.elapsedMs,
+          services: { agent: { status: 'up', responseTime: probe.elapsedMs } },
+        });
+      }
+      return finish(outage(timestamp(), 'connectivity', false, probe));
+    }
+
+    // 503 with a health body (e.g. {status: "degraded"}) still describes the service
+    const body = health.data as { status?: string } | undefined;
+    if (health.httpStatus === 503 && body?.status) {
+      const status = mapHealthStatus(body.status, 'unhealthy');
+      return finish({
+        status,
+        timestamp: timestamp(),
+        probe: 'health_endpoint',
+        healthEndpointSupported: true,
+        responseTimeMs: health.elapsedMs,
+        reason: status === 'unhealthy' ? 'server_error' : undefined,
+        services: { agent: { status: status === 'degraded' ? 'degraded' : 'down', responseTime: health.elapsedMs } },
+      });
+    }
+
+    console.error('[AgentService] Health check failed:', health.errorMessage ?? health.httpStatus);
+    return finish(outage(timestamp(), 'health_endpoint', true, health));
+  }
+
+  /** Run a request and measure its round trip; never throws. */
+  private async timedRequest(config: AxiosRequestConfig): Promise<TimedResult> {
+    const start = now();
+    try {
+      const response = await this.api.request(config);
+      return { ok: true, httpStatus: response.status, data: response.data, elapsedMs: Math.round(now() - start) };
     } catch (error) {
-      this.isConnected = false;
-      console.error('[AgentService] Health check failed:', error);
-      // Don't throw error, return unhealthy status instead
+      const e = error as { code?: string; message?: string; response?: { status?: number; data?: unknown } };
+      const answered = e?.response?.status !== undefined;
       return {
-        status: 'unhealthy',
-        timestamp: new Date().toISOString(),
-        services: {
-          agent: {
-            status: 'down',
-            responseTime: 0
-          }
-        },
-        system: {
-          memory: { used: 0, total: 0, percentage: 0 },
-          cpu: { usage: 0 },
-          uptime: 0
-        }
+        ok: false,
+        httpStatus: e?.response?.status,
+        data: e?.response?.data,
+        // Only a real HTTP answer has a meaningful round trip
+        elapsedMs: answered ? Math.round(now() - start) : null,
+        errorCode: e?.code,
+        errorMessage: e?.message,
       };
     }
   }

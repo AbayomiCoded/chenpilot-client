@@ -67,6 +67,17 @@ export interface AgentCapabilities {
 export interface AgentHealthCheck {
   status: 'healthy' | 'degraded' | 'unhealthy';
   timestamp: string;
+  /**
+   * Which probe produced this result (#272): `health_endpoint` = `GET /health`;
+   * `connectivity` = `HEAD /` fallback, which only proves the server is reachable.
+   */
+  probe: 'health_endpoint' | 'connectivity';
+  /** False when `GET /health` is missing (404/405/501). */
+  healthEndpointSupported: boolean;
+  /** Measured round trip of the answering probe in ms; null when nothing answered. */
+  responseTimeMs: number | null;
+  /** Why the agent is unhealthy: no answer (`network`/`timeout`) vs an error answer (`server_error`). */
+  reason?: 'network' | 'timeout' | 'server_error';
   services: {
     [key: string]: {
       status: 'up' | 'down' | 'degraded';
@@ -74,7 +85,8 @@ export interface AgentHealthCheck {
       error?: string;
     };
   };
-  system: {
+  /** Only present when the backend reports it; never synthesized. */
+  system?: {
     memory: {
       used: number;
       total: number;
