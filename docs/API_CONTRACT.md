@@ -89,6 +89,23 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
 | `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
 
+## Transaction History And Confirmation
+
+The `/transactions` page does not use `GET /account/{userId}/transactions`. It reads the account's ledger history directly from Stellar Horizon through `horizonFetch`, so the requests below go to the local `/horizon` path and are rewritten to the backend `/proxy/:path*` handler (see [Base URLs And Authentication](#base-urls-and-authentication)).
+
+| Request | Purpose | Notes |
+| --- | --- | --- |
+| `GET /accounts/{publicKey}/transactions?order=desc&limit=50` | Newest history page. Used by the initial load (`getTransactionHistory`) and by the refresh action (`refreshTransactionHistory`). | A refresh intentionally omits the cursor so it reloads only the newest page and never drops pages the user already paged back to. |
+| `GET /accounts/{publicKey}/transactions?order=desc&limit=50&cursor={paging_token}` | Next older page (`getOlderTransactionHistory`). | The cursor is the Horizon `paging_token` of the oldest record on the previous page. It is only set when a full page was returned, so an exhausted history yields `nextCursor: null`. |
+| `GET /transactions/{hash}` | Authoritative confirmation lookup (`fetchTransactionConfirmation`). | The only source permitted to turn a submitted action into `confirmed`/`failed`. `404` means "not in the ledger yet" and is reported as `pending`; other non-2xx responses are treated as transient and leave the action pending. A `2xx` body must carry a boolean `successful`; anything else is treated as an unexpected payload. |
+
+Behavioral contract the frontend relies on:
+
+- **Submission is not confirmation.** Socket events (`transaction:completed`, `transaction:success`) and the send-payment flow describe a *submission*. They open a `pending` state only. No success notification is shown until `GET /transactions/{hash}` confirms the transaction.
+- **Hashes are the reconciliation key.** Hashes are trimmed and lower-cased before use (`normalizeTransactionHash`). A record already present is updated in place; a new record is appended; records absent from a refresh are preserved. Records without a usable hash are kept but never merged together.
+- **Refresh failures preserve data.** A failed refresh sets `transactions.refreshError` and leaves the existing history, the pagination cursor, and `transactions.lastUpdatedAt` untouched; `lastUpdatedAt` only advances on an authoritative success. Overlapping refreshes are de-duplicated by `singleFlight` and the guard is released on both success and failure.
+- Beyond the lifecycle states above, no additional transaction statuses, confirmation endpoints, or server-side confirmation guarantees are assumed. Treat the three states as derived from the responses in the table, and verify the backend before relying on anything more.
+
 ## Contacts Endpoints
 
 `Contact` is `{ id, name, address, tokenType, createdAt, updatedAt, avatar?, isFavorite?, lastUsed? }`. Create requires `name`, `address`, and a `tokenType` from `XLM | USDC | USDT | BTC | ETH`; update accepts those fields optionally.

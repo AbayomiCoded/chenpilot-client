@@ -1,15 +1,39 @@
 "use client";
 
-import { useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { useDispatch, useSelector } from "react-redux";
 import { RootState, AppDispatch } from "@/store";
-import { getTransactionHistory } from "@/store/slices/accountSlice";
+import {
+  getOlderTransactionHistory,
+  getTransactionHistory,
+  refreshTransactionHistory,
+} from "@/store/slices/accountSlice";
+import { singleFlight } from "@/services/api";
 import { Card } from "@/components/ui/Card";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { Button } from "@/components/ui/Button";
-import { formatDate, formatTokenAmount } from "@/utils/format";
+import {
+  formatDate,
+  formatRelativeTime,
+  formatTokenAmount,
+} from "@/utils/format";
 import { RefreshCw, ReceiptText } from "lucide-react";
+
+/**
+ * Format a timestamp for display, tolerating missing/invalid values so a bad
+ * value never renders "Invalid Date" to the user.
+ */
+function formatLastUpdated(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  return formatRelativeTime(parsed);
+}
 
 export default function TransactionsPage() {
   const router = useRouter();
@@ -18,11 +42,53 @@ export default function TransactionsPage() {
     (state: RootState) => state.account,
   );
 
+  const publicKey = status?.publicKey ?? null;
+  const hasHistory = transactions.transactions.length > 0;
+  const lastUpdatedLabel = useMemo(
+    () => formatLastUpdated(transactions.lastUpdatedAt),
+    [transactions.lastUpdatedAt],
+  );
+  const pendingConfirmations = useMemo(
+    () => transactions.pending.filter((entry) => entry.status === "pending"),
+    [transactions.pending],
+  );
+
   useEffect(() => {
-    if (status?.publicKey) {
-      dispatch(getTransactionHistory(status.publicKey));
+    if (publicKey) {
+      dispatch(getTransactionHistory(publicKey));
     }
-  }, [dispatch, status?.publicKey]);
+  }, [dispatch, publicKey]);
+
+  /**
+   * Reload only the newest history page. The refresh is de-duplicated through
+   * a single-flight guard so a double click (or any overlapping trigger) joins
+   * the in-flight request instead of issuing a second one.
+   */
+  const handleRefresh = useCallback(() => {
+    if (!publicKey) {
+      return;
+    }
+    void singleFlight
+      .run(`transaction-history:${publicKey}`, () =>
+        dispatch(refreshTransactionHistory(publicKey)).unwrap(),
+      )
+      .catch(() => {
+        // The failure is surfaced through `transactions.refreshError`; it must
+        // not clear the history already on screen.
+      });
+  }, [dispatch, publicKey]);
+
+  const handleLoadOlder = useCallback(() => {
+    if (!publicKey || !transactions.nextCursor) {
+      return;
+    }
+    void dispatch(
+      getOlderTransactionHistory({
+        publicKey,
+        cursor: transactions.nextCursor,
+      }),
+    );
+  }, [dispatch, publicKey, transactions.nextCursor]);
 
   const getStatusColor = (successful: boolean) => {
     return successful ? "text-green-600" : "text-red-600";
@@ -41,26 +107,29 @@ export default function TransactionsPage() {
     }
   };
 
-  if (transactions.isLoading) {
+  // Initial load only. A background refresh keeps the existing history visible.
+  if (transactions.isLoading && !hasHistory) {
     return (
       <div className="container mx-auto px-4 py-8">
         <h1 className="text-2xl font-bold mb-6">Transaction History</h1>
-        <div className="text-center">Loading transactions...</div>
+        <div className="text-center" role="status">
+          Loading transactions...
+        </div>
       </div>
     );
   }
 
-  if (transactions.error) {
+  if (transactions.error && !hasHistory) {
     return (
       <div className="container mx-auto px-4 py-8">
         <h1 className="text-2xl font-bold mb-6">Transaction History</h1>
         <Card className="border-red-200 dark:border-red-900">
           <div role="alert" className="space-y-4">
             <p className="text-red-700 dark:text-red-300">Error: {transactions.error}</p>
-            {status?.publicKey && (
+            {publicKey && (
               <Button
                 type="button"
-                onClick={() => dispatch(getTransactionHistory(status.publicKey))}
+                onClick={() => dispatch(getTransactionHistory(publicKey))}
                 className="inline-flex items-center gap-2"
               >
                 <RefreshCw aria-hidden="true" className="h-4 w-4" />
@@ -75,9 +144,74 @@ export default function TransactionsPage() {
 
   return (
     <div className="container mx-auto px-4 py-8">
-      <h1 className="text-2xl font-bold mb-6">Transaction History</h1>
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold">Transaction History</h1>
+          <p className="mt-1 text-sm text-gray-600 dark:text-gray-400">
+            {transactions.isRefreshing
+              ? "Refreshing newest transactions..."
+              : lastUpdatedLabel
+                ? `Last updated ${lastUpdatedLabel}`
+                : "Not yet updated"}
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={handleRefresh}
+          disabled={!publicKey}
+          loading={transactions.isRefreshing}
+          aria-label="Refresh transaction history"
+          className="inline-flex items-center gap-2"
+        >
+          {!transactions.isRefreshing && (
+            <RefreshCw aria-hidden="true" className="h-4 w-4" />
+          )}
+          {transactions.isRefreshing ? "Refreshing" : "Refresh"}
+        </Button>
+      </div>
 
-      {transactions.transactions.length === 0 ? (
+      {transactions.refreshError && (
+        <Card className="mb-4 border-red-200 dark:border-red-900">
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-4">
+            <p className="text-red-700 dark:text-red-300">
+              Could not refresh transactions: {transactions.refreshError}
+            </p>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handleRefresh}
+              disabled={transactions.isRefreshing}
+              className="inline-flex items-center gap-2"
+            >
+              <RefreshCw aria-hidden="true" className="h-4 w-4" />
+              Retry refresh
+            </Button>
+          </div>
+        </Card>
+      )}
+
+      {pendingConfirmations.length > 0 && (
+        <Card className="mb-4">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-white">
+            Awaiting confirmation
+          </h2>
+          <ul className="mt-2 space-y-1">
+            {pendingConfirmations.map((entry) => (
+              <li
+                key={entry.hash}
+                role="status"
+                className="flex items-center justify-between text-sm text-yellow-700 dark:text-yellow-300"
+              >
+                <span>{entry.label}</span>
+                <span>Pending</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      {!hasHistory ? (
         <EmptyState
           icon={<ReceiptText aria-hidden="true" className="h-8 w-8" />}
           title="No transactions yet"
@@ -134,6 +268,26 @@ export default function TransactionsPage() {
               </div>
             </Card>
           ))}
+
+          {transactions.loadMoreError && (
+            <div role="alert" className="text-sm text-red-700 dark:text-red-300">
+              Could not load older transactions: {transactions.loadMoreError}
+            </div>
+          )}
+
+          {transactions.nextCursor && (
+            <div className="pt-2 text-center">
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={handleLoadOlder}
+                loading={transactions.isLoadingMore}
+                disabled={transactions.isLoadingMore}
+              >
+                {transactions.isLoadingMore ? "Loading..." : "Load older transactions"}
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </div>

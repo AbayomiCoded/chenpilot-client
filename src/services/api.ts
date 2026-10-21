@@ -35,9 +35,46 @@ import {
   retryLabel,
 } from '@/utils/retryUtils';
 
-import axios from 'axios';
-
 const FRIENDTEST_URL = 'https://friendbot.stellar.org';
+
+/**
+ * Narrowly-scoped single-flight guard for keyed asynchronous work.
+ *
+ * While a key is in flight, additional calls for the same key reuse the pending
+ * promise instead of issuing a duplicate request. The entry is released on both
+ * success and failure, so a failed attempt never blocks a later retry.
+ *
+ * The guard deliberately lives outside React state: two clicks dispatched in
+ * the same tick must be deduplicated even though no re-render has happened yet,
+ * and `finally`-style cleanup cannot be skipped by an unmount.
+ */
+export class SingleFlight {
+  private inFlight = new Map<string, Promise<unknown>>();
+
+  isInFlight(key: string): boolean {
+    return this.inFlight.has(key);
+  }
+
+  run<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const pending = this.inFlight.get(key) as Promise<T> | undefined;
+    if (pending) {
+      return pending;
+    }
+
+    const promise = Promise.resolve().then(task);
+    this.inFlight.set(key, promise);
+    const release = () => {
+      if (this.inFlight.get(key) === promise) {
+        this.inFlight.delete(key);
+      }
+    };
+    promise.then(release, release);
+
+    return promise;
+  }
+}
+
+export const singleFlight = new SingleFlight();
 
 export interface FundingResult {
   success: boolean;
