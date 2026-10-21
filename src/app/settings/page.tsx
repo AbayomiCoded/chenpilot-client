@@ -4,13 +4,12 @@ import React, { useEffect } from "react";
 import { useAppDispatch, useAppSelector } from "@/store";
 import { fetchProfile } from "@/store/slices/authSlice";
 import { setLanguage } from "@/store/slices/uiSlice";
-import axios from "axios";
 import { ChatLayout } from "@/components/layout/ChatLayout";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
-import apiService from "@/services/api";
 import { t, LANGUAGES } from "@/lib/i18n/i18n";
+import TrustlinesPanel from "@/components/dashboard/TrustlinesPanel";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
@@ -178,6 +177,9 @@ export default function SettingsPage() {
                   </div>
                 </div>
               </Card>
+
+              {/* Stellar Trustlines Management */}
+              <TrustlinesPanel />
 
               {/* Notifications */}
               <Card>

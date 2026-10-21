@@ -125,6 +125,28 @@ export interface WalletBalance {
   nativeBalance: string;
 }
 
+// Stellar Trustline Types
+export interface Trustline {
+  assetCode: string;
+  assetIssuer: string;
+  balance: string;
+  limit: string;
+  buyingLiabilities?: string;
+  sellingLiabilities?: string;
+  assetType?: string;
+}
+
+export interface AddTrustlineRequest {
+  assetCode: string;
+  assetIssuer: string;
+  limit?: string;
+}
+
+export interface RemoveTrustlineRequest {
+  assetCode: string;
+  assetIssuer: string;
+}
+
 // Stellar Transaction Types
 export interface StellarOperation {
   id: string;
@@ -355,10 +377,19 @@ export interface AuthState {
   error: string | null;
 }
 
+export interface TransactionFilters {
+  type: string;
+  asset: string;
+  direction: string;
+  startDate: string;
+  endDate: string;
+}
+
 export interface AccountState {
   status: AccountStatus | null;
   balance: WalletBalance | null;
   transactions: TransactionHistory;
+  filters?: TransactionFilters;
   isLoading: boolean;
   error: string | null;
   network: {
@@ -372,6 +403,9 @@ export interface AccountState {
     isLoading: boolean;
     error: string | null;
   };
+  trustlines: Trustline[];
+  isLoadingTrustlines: boolean;
+  trustlinesError: string | null;
 }
 
 export interface ContactsState {
@@ -397,12 +431,19 @@ export interface UIState {
   };
 }
 
+export interface PresenceState {
+  users: { [userId: string]: { userId: string; userName: string; status: 'online' | 'away' | 'offline'; lastSeen: string; conversationId?: string } };
+  onlineCount: number;
+  awayCount: number;
+}
+
 export interface RootState {
   auth: AuthState;
   account: AccountState;
   contacts: ContactsState;
   chat: ChatState;
   ui: UIState;
+  presence: PresenceState;
 }
 
 // Component Props Types

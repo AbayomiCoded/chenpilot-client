@@ -4,51 +4,22 @@ import {
   WalletBalance,
   StellarTransaction,
   AccountState,
+  Trustline,
+  AddTrustlineRequest,
+  TransactionFilters,
 } from "@/types";
 import { horizonFetch } from "@/utils/horizonFetch";
-import { createSlice, PayloadAction } from '@reduxjs/toolkit';
+import apiService from "@/services/api";
 
-export interface TransactionFilters {
-  type: string;        // e.g., 'payment', 'swap', 'deposit'
-  asset: string;       // e.g., 'XLM', 'USDC'
-  direction: string;   // 'sent' | 'received' | 'all'
-  startDate: string;   // ISO string or YYYY-MM-DD
-  endDate: string;     // ISO string or YYYY-MM-DD
-}
+export type { TransactionFilters };
 
-interface AccountState {
-  transactions: any[];
-  filters: TransactionFilters;
-  // ... existing state properties
-}
-
-const initialFilters: TransactionFilters = {
-  type: 'all',
-  asset: 'all',
-  direction: 'all',
-  startDate: '',
-  endDate: '',
+export const initialFilters: TransactionFilters = {
+  type: "all",
+  asset: "all",
+  direction: "all",
+  startDate: "",
+  endDate: "",
 };
-
-const accountSlice = createSlice({
-  name: 'account',
-  initialState: {
-    transactions: [],
-    filters: initialFilters,
-  } as AccountState,
-  reducers: {
-    setTransactionFilter(
-      state,
-      action: PayloadAction<Partial<TransactionFilters>>
-    ) {
-      state.filters = { ...state.filters, ...action.payload };
-    },
-    clearTransactionFilters(state) {
-      state.filters = initialFilters;
-    },
-    // ... existing reducers
-  },
-});
 
 type NetworkHealthStatus = "healthy" | "degraded" | "down" | "unknown";
 type AccountSyncState = "synced" | "syncing" | "desynced";
@@ -61,6 +32,7 @@ const initialState: AccountState = {
     isLoading: false,
     error: null,
   },
+  filters: initialFilters,
   isLoading: false,
   error: null,
   network: {
@@ -74,6 +46,9 @@ const initialState: AccountState = {
     isLoading: false,
     error: null,
   },
+  trustlines: [],
+  isLoadingTrustlines: false,
+  trustlinesError: null,
 };
 
 // Async thunks
@@ -243,6 +218,61 @@ export const getAccountTransactions = createAsyncThunk(
 );
 
 
+// Trustline Async Thunks
+export const fetchTrustlines = createAsyncThunk(
+  "account/fetchTrustlines",
+  async (publicKey: string, { rejectWithValue }) => {
+    try {
+      const trustlines = await apiService.fetchAccountTrustlines(publicKey);
+      return trustlines;
+    } catch (error: any) {
+      return rejectWithValue(
+        error.message || "Failed to fetch account trustlines",
+      );
+    }
+  },
+);
+
+export const addAccountTrustline = createAsyncThunk(
+  "account/addTrustline",
+  async (
+    { publicKey, data }: { publicKey: string; data: AddTrustlineRequest },
+    { dispatch, rejectWithValue },
+  ) => {
+    try {
+      const result = await apiService.addTrustline(publicKey, data);
+      await dispatch(fetchTrustlines(publicKey));
+      return result;
+    } catch (error: any) {
+      return rejectWithValue(error.message || "Failed to add trustline");
+    }
+  },
+);
+
+export const removeAccountTrustline = createAsyncThunk(
+  "account/removeTrustline",
+  async (
+    {
+      publicKey,
+      assetCode,
+      assetIssuer,
+    }: { publicKey: string; assetCode: string; assetIssuer: string },
+    { dispatch, rejectWithValue },
+  ) => {
+    try {
+      const result = await apiService.removeTrustline(
+        publicKey,
+        assetCode,
+        assetIssuer,
+      );
+      await dispatch(fetchTrustlines(publicKey));
+      return result;
+    } catch (error: any) {
+      return rejectWithValue(error.message || "Failed to remove trustline");
+    }
+  },
+);
+
 const accountSlice = createSlice({
   name: "account",
   initialState,
@@ -271,6 +301,26 @@ const accountSlice = createSlice({
       state.status = null;
       state.balance = null;
       state.error = null;
+      state.trustlines = [];
+      state.trustlinesError = null;
+    },
+    setTrustlines: (state, action: PayloadAction<Trustline[]>) => {
+      state.trustlines = action.payload;
+    },
+    setLoadingTrustlines: (state, action: PayloadAction<boolean>) => {
+      state.isLoadingTrustlines = action.payload;
+    },
+    setTrustlinesError: (state, action: PayloadAction<string | null>) => {
+      state.trustlinesError = action.payload;
+    },
+    setTransactionFilter: (
+      state,
+      action: PayloadAction<Partial<TransactionFilters>>,
+    ) => {
+      state.filters = { ...(state.filters || initialFilters), ...action.payload };
+    },
+    clearTransactionFilters: (state) => {
+      state.filters = initialFilters;
     },
   },
   extraReducers: (builder) => {
@@ -429,10 +479,59 @@ const accountSlice = createSlice({
       .addCase(getAccountTransactions.rejected, (state, action) => {
         state.transactions.isLoading = false;
         state.transactions.error = action.payload as string;
+      })
+      // Fetch Trustlines
+      .addCase(fetchTrustlines.pending, (state) => {
+        state.isLoadingTrustlines = true;
+        state.trustlinesError = null;
+      })
+      .addCase(fetchTrustlines.fulfilled, (state, action) => {
+        state.isLoadingTrustlines = false;
+        state.trustlines = action.payload;
+        state.trustlinesError = null;
+      })
+      .addCase(fetchTrustlines.rejected, (state, action) => {
+        state.isLoadingTrustlines = false;
+        state.trustlinesError = action.payload as string;
+      })
+      // Add Trustline
+      .addCase(addAccountTrustline.pending, (state) => {
+        state.isLoadingTrustlines = true;
+        state.trustlinesError = null;
+      })
+      .addCase(addAccountTrustline.fulfilled, (state) => {
+        state.isLoadingTrustlines = false;
+        state.trustlinesError = null;
+      })
+      .addCase(addAccountTrustline.rejected, (state, action) => {
+        state.isLoadingTrustlines = false;
+        state.trustlinesError = action.payload as string;
+      })
+      // Remove Trustline
+      .addCase(removeAccountTrustline.pending, (state) => {
+        state.isLoadingTrustlines = true;
+        state.trustlinesError = null;
+      })
+      .addCase(removeAccountTrustline.fulfilled, (state) => {
+        state.isLoadingTrustlines = false;
+        state.trustlinesError = null;
+      })
+      .addCase(removeAccountTrustline.rejected, (state, action) => {
+        state.isLoadingTrustlines = false;
+        state.trustlinesError = action.payload as string;
       });
   },
 });
 
-export const { clearError, updateAccountStatus, updateBalance, clearAccount } =
-  accountSlice.actions;
+export const {
+  clearError,
+  updateAccountStatus,
+  updateBalance,
+  clearAccount,
+  setTrustlines,
+  setLoadingTrustlines,
+  setTrustlinesError,
+  setTransactionFilter,
+  clearTransactionFilters,
+} = accountSlice.actions;
 export default accountSlice.reducer;

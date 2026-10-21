@@ -23,7 +23,9 @@ import {
   AuditLogEntry,
   AuditLogsQueryParams,
   AuditLogsResponse,
-  AuditLogStats
+  AuditLogStats,
+  Trustline,
+  AddTrustlineRequest
 } from '@/types';
 import agentService from './agentService';
 import { tokenRefreshService } from './tokenRefreshService';
@@ -34,8 +36,7 @@ import {
   incrementRetryCount,
   retryLabel,
 } from '@/utils/retryUtils';
-
-import axios from 'axios';
+import { horizonFetch } from '@/utils/horizonFetch';
 
 const FRIENDTEST_URL = 'https://friendbot.stellar.org';
 
@@ -115,6 +116,14 @@ let _store: MinimalStore | null = null;
 class ApiService {
   private api: AxiosInstance;
   private token: string | null = null;
+
+  setStore(store: MinimalStore): void {
+    _store = store;
+  }
+
+  getStore(): MinimalStore | null {
+    return _store;
+  }
 
   constructor() {
     // ── Fix: load persisted token immediately so the first request after a
@@ -1096,8 +1105,144 @@ class ApiService {
     const response = await this.api.request<T>(config);
     return response.data;
   }
+
+  /**
+   * Fetch paginated transactions for a user account.
+   *
+   * @param userId - User ID string.
+   * @param page - Page number (defaults to 1).
+   * @param limit - Page size limit (defaults to 10).
+   * @returns Promise resolving to ApiResponse containing transaction array.
+   */
+  async getAccountTransactions(
+    userId: string,
+    page: number = 1,
+    limit: number = 10,
+  ): Promise<ApiResponse<{ transactions: StellarTransaction[]; total: number; page: number; limit: number }>> {
+    try {
+      const response = await this.api.get<ApiResponse<{ transactions: StellarTransaction[]; total: number; page: number; limit: number }>>(
+        `/account/transactions`,
+        { params: { userId, page, limit } },
+      );
+      return response.data;
+    } catch {
+      return {
+        success: true,
+        data: {
+          transactions: [],
+          total: 0,
+          page,
+          limit,
+        },
+      };
+    }
+  }
+
+  // === Trustline Endpoints ===
+
+  /**
+   * Fetch trustlines established on a Stellar account.
+   *
+   * @param publicKey - The Stellar account public key.
+   * @returns Promise resolving to an array of Trustline items.
+   */
+  async fetchAccountTrustlines(publicKey: string): Promise<Trustline[]> {
+    try {
+      const response = await this.api.get<ApiResponse<Trustline[]> | Trustline[]>(
+        `/account/${publicKey}/trustlines`,
+      );
+      if (Array.isArray(response.data)) {
+        return response.data;
+      }
+      if (
+        response.data &&
+        'data' in response.data &&
+        Array.isArray(response.data.data)
+      ) {
+        return response.data.data;
+      }
+    } catch {
+      // Fallback: query Horizon directly through the secure proxy
+      try {
+        const res = await horizonFetch(`/accounts/${publicKey}`);
+        if (res.ok) {
+          const accountData = await res.json();
+          const balances = accountData.balances || [];
+          return balances
+            .filter((b: any) => b.asset_type !== 'native')
+            .map((b: any) => ({
+              assetCode: b.asset_code || '',
+              assetIssuer: b.asset_issuer || '',
+              balance: b.balance || '0',
+              limit: b.limit || '0',
+              assetType: b.asset_type,
+              buyingLiabilities: b.buying_liabilities,
+              sellingLiabilities: b.selling_liabilities,
+            }));
+        }
+      } catch (fallbackErr) {
+        logger.warn('Horizon fallback for trustlines failed', fallbackErr);
+      }
+    }
+    return [];
+  }
+
+  /**
+   * Add or increase a trustline on a Stellar account.
+   *
+   * @param publicKey - Stellar account public key.
+   * @param data - Trustline parameters (assetCode, assetIssuer, limit).
+   * @returns Promise resolving to API response.
+   */
+  async addTrustline(
+    publicKey: string,
+    data: AddTrustlineRequest,
+  ): Promise<ApiResponse<Trustline> | any> {
+    const response = await this.api.post(`/account/${publicKey}/trustlines`, data);
+    return response.data;
+  }
+
+  /**
+   * Remove a trustline by setting limit to 0 (Stellar standard).
+   *
+   * @param publicKey - Stellar account public key.
+   * @param assetCode - Asset alphanumeric code.
+   * @param assetIssuer - Stellar issuer address.
+   * @returns Promise resolving to API response.
+   */
+  async removeTrustline(
+    publicKey: string,
+    assetCode: string,
+    assetIssuer: string,
+  ): Promise<ApiResponse<void> | any> {
+    const response = await this.api.delete(`/account/${publicKey}/trustlines`, {
+      data: { assetCode, assetIssuer },
+    });
+    return response.data;
+  }
 }
 
 // Create and export a singleton instance
 export const apiService = new ApiService();
 export default apiService;
+
+// Standalone exports for direct convenience
+export const fetchAccountTrustlines = (publicKey: string): Promise<Trustline[]> =>
+  apiService.fetchAccountTrustlines(publicKey);
+
+export const addTrustline = (
+  publicKey: string,
+  data: AddTrustlineRequest,
+): Promise<any> => apiService.addTrustline(publicKey, data);
+
+export const removeTrustline = (
+  publicKey: string,
+  assetCode: string,
+  assetIssuer: string,
+): Promise<any> => apiService.removeTrustline(publicKey, assetCode, assetIssuer);
+
+export const getAccountTransactions = (
+  userId: string,
+  page: number = 1,
+  limit: number = 10,
+) => apiService.getAccountTransactions(userId, page, limit);
