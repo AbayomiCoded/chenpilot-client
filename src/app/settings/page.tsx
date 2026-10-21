@@ -1,4 +1,4 @@
-```tsx
+
 "use client";
 
 import React, { useEffect, useState } from "react";
@@ -11,6 +11,7 @@ import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 import { t, LANGUAGES } from "@/lib/i18n/i18n";
 import { TrustlinesPanel } from "@/components/dashboard/TrustlinesPanel";
+import { MfaSettingsSection } from "@/components/settings/MfaSettingsSection";
 import { DangerZone } from "@/components/settings/DangerZone";
 import apiService from "@/services/api";
 import { StellarNetworkBadge } from "@/components/wallet/StellarNetworkBadge";
@@ -80,9 +81,7 @@ export default function SettingsPage() {
       }
     } catch (error: unknown) {
       setDeletionStatus(
-        error instanceof Error
-          ? error.message
-          : "Account deletion failed."
+        error instanceof Error ? error.message : "Account deletion failed."
       );
     } finally {
       setIsDeleting(false);
@@ -94,9 +93,7 @@ export default function SettingsPage() {
       <div className="flex min-h-screen items-center justify-center">
         <div className="text-center">
           <div className="mx-auto h-32 w-32 animate-spin rounded-full border-b-2 border-primary-600" />
-          <p className="mt-4 text-gray-600 dark:text-gray-400">
-            Loading...
-          </p>
+          <p className="mt-4 text-gray-600 dark:text-gray-400">Loading...</p>
         </div>
       </div>
     );
@@ -132,7 +129,6 @@ export default function SettingsPage() {
                   {isLoading ? (
                     <div className="mb-4 flex items-center space-x-3">
                       <div className="h-16 w-16 animate-pulse rounded-full bg-gray-700" />
-
                       <div className="space-y-2">
                         <div className="h-4 w-32 animate-pulse rounded bg-gray-700" />
                         <div className="h-3 w-48 animate-pulse rounded bg-gray-700" />
@@ -209,18 +205,14 @@ export default function SettingsPage() {
 
                     <div className="flex space-x-4">
                       <Button
-                        variant={
-                          theme?.mode === "light" ? "primary" : "ghost"
-                        }
+                        variant={theme?.mode === "light" ? "primary" : "ghost"}
                         size="sm"
                       >
                         {t(language, "settings.light")}
                       </Button>
 
                       <Button
-                        variant={
-                          theme?.mode === "dark" ? "primary" : "ghost"
-                        }
+                        variant={theme?.mode === "dark" ? "primary" : "ghost"}
                         size="sm"
                       >
                         {t(language, "settings.dark")}
@@ -241,9 +233,7 @@ export default function SettingsPage() {
                     {LANGUAGES.map((lang) => (
                       <Button
                         key={lang.code}
-                        variant={
-                          language === lang.code ? "primary" : "ghost"
-                        }
+                        variant={language === lang.code ? "primary" : "ghost"}
                         size="sm"
                         onClick={() =>
                           handleLanguageChange(
@@ -275,7 +265,6 @@ export default function SettingsPage() {
                         <p className="text-sm font-medium text-white">
                           Transaction Notifications
                         </p>
-
                         <p className="text-sm text-gray-400">
                           Get notified when transactions complete
                         </p>
@@ -294,7 +283,6 @@ export default function SettingsPage() {
                         <p className="text-sm font-medium text-white">
                           Chat Notifications
                         </p>
-
                         <p className="text-sm text-gray-400">
                           Get notified of new AI agent responses
                         </p>
@@ -319,6 +307,8 @@ export default function SettingsPage() {
                   </h3>
 
                   <div className="space-y-4">
+                    <MfaSettingsSection language={language} />
+
                     <Button
                       variant="ghost"
                       className="w-full justify-start"
@@ -333,10 +323,7 @@ export default function SettingsPage() {
                     />
 
                     {deletionStatus && (
-                      <p
-                        role="status"
-                        className="text-sm text-amber-400"
-                      >
+                      <p role="status" className="text-sm text-amber-400">
                         {deletionStatus}
                       </p>
                     )}
@@ -350,4 +337,3 @@ export default function SettingsPage() {
     </ChatLayout>
   );
 }
-```

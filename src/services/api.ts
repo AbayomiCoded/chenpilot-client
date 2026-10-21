@@ -23,6 +23,10 @@ import {
   AuditLogsQueryParams,
   AuditLogsResponse,
   AuditLogStats,
+  MfaStatusData,
+  MfaEnrollmentData,
+  MfaVerifyRequest,
+  MfaVerifyData,
   PaymentSubmissionResult,
   PaymentStatusResult,
 } from "@/types";
@@ -63,6 +67,45 @@ export interface AddTrustlineRequest {
 }
 
 const FRIENDTEST_URL = "https://friendbot.stellar.org";
+
+/**
+ * Narrowly-scoped single-flight guard for keyed asynchronous work.
+ *
+ * While a key is in flight, additional calls for the same key reuse the pending
+ * promise instead of issuing a duplicate request. The entry is released on both
+ * success and failure, so a failed attempt never blocks a later retry.
+ *
+ * The guard deliberately lives outside React state: two clicks dispatched in
+ * the same tick must be deduplicated even though no re-render has happened yet,
+ * and `finally`-style cleanup cannot be skipped by an unmount.
+ */
+export class SingleFlight {
+  private inFlight = new Map<string, Promise<unknown>>();
+
+  isInFlight(key: string): boolean {
+    return this.inFlight.has(key);
+  }
+
+  run<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const pending = this.inFlight.get(key) as Promise<T> | undefined;
+    if (pending) {
+      return pending;
+    }
+
+    const promise = Promise.resolve().then(task);
+    this.inFlight.set(key, promise);
+    const release = () => {
+      if (this.inFlight.get(key) === promise) {
+        this.inFlight.delete(key);
+      }
+    };
+    promise.then(release, release);
+
+    return promise;
+  }
+}
+
+export const singleFlight = new SingleFlight();
 
 export interface FundingResult {
   success: boolean;
@@ -1313,6 +1356,7 @@ class ApiService {
     return response.data;
   }
 
+
   // Generic request helper
 
   async request<T>(config: AxiosRequestConfig): Promise<T> {
@@ -1325,6 +1369,210 @@ class ApiService {
   async fetchAccountTrustlines(
     publicKey: string,
   ): Promise<Trustline[]> {
+    try {
+      const response = await this.api.get<
+        ApiResponse<Trustline[]> | Trustline[]
+      >(`/account/${encodeURIComponent(publicKey)}/trustlines`);
+
+      if (Array.isArray(response.data)) {
+        return response.data;
+      }
+
+      if (
+        response.data &&
+        "data" in response.data &&
+        Array.isArray(response.data.data)
+      ) {
+        return response.data.data;
+      }
+    } catch {
+      // Fall back to the secure Horizon proxy if the backend fails.
+      try {
+        const response = await horizonFetch(
+          `/accounts/${encodeURIComponent(publicKey)}`,
+        );
+
+        if (response.ok) {
+          const accountData = await response.json();
+          const balances = Array.isArray(accountData.balances)
+            ? accountData.balances
+            : [];
+
+          return balances
+            .filter(
+              (balance: { asset_type?: string }) =>
+                balance.asset_type !== "native",
+            )
+            .map(
+              (balance: {
+                asset_code?: string;
+                asset_issuer?: string;
+                balance?: string;
+                limit?: string;
+                asset_type?: string;
+                buying_liabilities?: string;
+                selling_liabilities?: string;
+              }) => ({
+                assetCode: balance.asset_code || "",
+                assetIssuer: balance.asset_issuer || "",
+                balance: balance.balance || "0",
+                limit: balance.limit || "0",
+                assetType: balance.asset_type,
+                buyingLiabilities: balance.buying_liabilities,
+                sellingLiabilities: balance.selling_liabilities,
+              }),
+            );
+        }
+      } catch (fallbackError) {
+        logger.warn(
+          "Horizon fallback for trustlines failed",
+          fallbackError,
+        );
+      }
+    }
+
+    return [];
+  }
+
+  async addTrustline(
+    publicKey: string,
+    data: AddTrustlineRequest,
+  ): Promise<ApiResponse<Trustline> | unknown> {
+    const response = await this.api.post<
+      ApiResponse<Trustline> | Trustline
+    >(
+      `/account/${encodeURIComponent(publicKey)}/trustlines`,
+      data,
+    );
+
+    return response.data;
+  }
+
+  async removeTrustline(
+    publicKey: string,
+    assetCode: string,
+    assetIssuer: string,
+  ): Promise<ApiResponse<void> | unknown> {
+    const response = await this.api.delete<ApiResponse<void>>(
+      `/account/${encodeURIComponent(publicKey)}/trustlines`,
+      {
+        data: { assetCode, assetIssuer },
+      },
+    );
+
+    return response.data;
+  }
+
+  // Multi-factor authentication endpoints
+
+  async getMfaStatus(): Promise<ApiResponse<MfaStatusData>> {
+    try {
+      const response = await this.api.get<ApiResponse<MfaStatusData>>(
+        "/auth/mfa/status",
+      );
+
+      return response.data;
+    } catch (error: unknown) {
+      if (
+        axios.isAxiosError(error) &&
+        error.response?.status === 404
+      ) {
+        return {
+          success: false,
+          status: 404,
+          message:
+            "MFA endpoints are not currently supported by the backend service",
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  async initiateMfaEnrollment(): Promise<
+    ApiResponse<MfaEnrollmentData>
+  > {
+    try {
+      const response = await this.api.post<
+        ApiResponse<MfaEnrollmentData>
+      >("/auth/mfa/enroll");
+
+      return response.data;
+    } catch (error: unknown) {
+      if (
+        axios.isAxiosError(error) &&
+        error.response?.status === 404
+      ) {
+        return {
+          success: false,
+          status: 404,
+          message:
+            "MFA enrollment is not currently supported by the backend service",
+        };
+      }
+
+      throw error;
+    }
+  }
+
+  async verifyMfaEnrollment(
+    data: MfaVerifyRequest,
+  ): Promise<ApiResponse<MfaVerifyData>> {
+    try {
+      const response = await this.api.post<
+        ApiResponse<MfaVerifyData>
+      >("/auth/mfa/verify", data);
+
+      return response.data;
+    } catch (error: unknown) {
+      if (
+        axios.isAxiosError(error) &&
+        error.response?.status === 404
+      ) {
+        return {
+          success: false,
+          status: 404,
+          message:
+            "MFA verification is not currently supported by the backend service",
+        };
+      }
+
+      throw error;
+    }
+  }
+}
+
+// Singleton instance
+
+export const apiService = new ApiService();
+export default apiService;
+
+// Standalone trustline helpers
+
+export const fetchAccountTrustlines = (
+  publicKey: string,
+): Promise<Trustline[]> =>
+  apiService.fetchAccountTrustlines(publicKey);
+
+export const addTrustline = (
+  publicKey: string,
+  data: AddTrustlineRequest,
+): Promise<ApiResponse<Trustline> | unknown> =>
+  apiService.addTrustline(publicKey, data);
+
+export const removeTrustline = (
+  publicKey: string,
+  assetCode: string,
+  assetIssuer: string,
+): Promise<ApiResponse<void> | unknown> =>
+  apiService.removeTrustline(publicKey, assetCode, assetIssuer);
+
+export const getAccountTransactions = (
+  userId: string,
+  page = 1,
+  limit = 10,
+) => apiService.getAccountTransactions(userId, page, limit);
+
     try {
       const response = await this.api.get<
         ApiResponse<Trustline[]> | Trustline[]
