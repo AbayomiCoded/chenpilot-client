@@ -3,6 +3,7 @@ import { logger } from "../../utils/logger";
 import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
+import { logout } from "./authSlice";
 import { classifyAgentError, isRetryableErrorKind, isStateChangingQuery } from "@/services/agentService";
 
 // ─── Voice message payload ────────────────────────────────────────────────────
@@ -743,6 +744,14 @@ state.messages[index] = {
   },
   extraReducers: (builder) => {
     builder
+      // Drop the previous user's chat data from memory on logout; storage is cleared by
+      // clearUserScopedStorage (#256). Online status is device state and is kept.
+      .addCase(logout.fulfilled, (state) => ({
+        ...initialState,
+        isOnline: state.isOnline,
+        pendingMessages: new Set<string>(),
+        optimisticUpdates: new Map<string, ChatMessage>(),
+      }))
       // Removed server conversation extraReducers - now handled client-side
 
       // Get or Create Active Conversation

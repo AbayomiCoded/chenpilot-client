@@ -27,6 +27,7 @@ import {
 } from '@/types';
 import agentService, { classifyAgentError } from './agentService';
 import { tokenRefreshService } from './tokenRefreshService';
+import { clearUserScopedStorage } from './storageInventory';
 import {
   isRetryableError,
   computeBackoffMs,
@@ -421,12 +422,9 @@ class ApiService {
       console.warn('Logout request failed, clearing local state anyway', error);
     } finally {
       this.clearToken();
-      // Purge all auth-related data from storage
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('user_data');
-        localStorage.removeItem('refresh_token'); // Clear refresh token if stored here
-        sessionStorage.clear(); // Clear session storage as well
-      }
+      // Purge every user-scoped key (auth, profile, chat history, offline queue) and all
+      // session storage; device preferences stay (#256)
+      clearUserScopedStorage();
     }
   }
 

@@ -2,6 +2,7 @@ import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
 import { User, LoginRequest, RegisterRequest } from "@/types";
 import apiService from "@/services/api";
 import { normalizeAuthError } from "@/services/auth.service";
+import { clearUserScopedStorage, fromPersistedUser, toPersistedUser } from "@/services/storageInventory";
 
 export const LOGIN_FIELDS = ["email", "password"] as const;
 export const REGISTER_FIELDS = ["name", "email", "password"] as const;
@@ -235,7 +236,7 @@ const authSlice = createSlice({
         // Real credentials from a previous session.
         try {
           state.token           = storedToken;
-          state.user            = JSON.parse(storedUser) as User;
+          state.user            = fromPersistedUser(JSON.parse(storedUser));
           state.isAuthenticated = true;
         } catch {
           // Corrupt data — fall through to the unauthenticated default.
@@ -281,9 +282,10 @@ const authSlice = createSlice({
         // Save to localStorage for persistence
         if (typeof window !== "undefined") {
           localStorage.setItem("auth_token", action.payload.token);
+          // Persist a minimized profile only; no wallet address or public key (#256)
           localStorage.setItem(
             "user_data",
-            JSON.stringify(action.payload.user),
+            JSON.stringify(toPersistedUser(action.payload.user)),
           );
         }
       })
@@ -310,9 +312,10 @@ const authSlice = createSlice({
         // Save to localStorage for persistence
         if (typeof window !== "undefined") {
           localStorage.setItem("auth_token", action.payload.token);
+          // Persist a minimized profile only; no wallet address or public key (#256)
           localStorage.setItem(
             "user_data",
-            JSON.stringify(action.payload.user),
+            JSON.stringify(toPersistedUser(action.payload.user)),
           );
         }
       })
@@ -333,12 +336,8 @@ const authSlice = createSlice({
         state.error = null;
         state.sessionExpirationTime = null;
         state.isSessionWarningActive = false;
-        // Clear localStorage on logout
-        if (typeof window !== "undefined") {
-          localStorage.removeItem("auth_token");
-          localStorage.removeItem("user_data");
-          localStorage.removeItem("session_expiration");
-        }
+        // Clear every user-scoped key on logout (#256)
+        clearUserScopedStorage();
       })
       // Load User
       .addCase(loadUser.pending, (state) => {

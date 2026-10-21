@@ -40,6 +40,34 @@ To maintain the security of credentials, API keys, and user assets, all contribu
 Because Chenpilot Client operates as a web-based client workspace and wallet application:
 - **Storage Profile**: Sensitive authentication tokens and session states are stored in browser storage mechanisms (`localStorage` / encrypted cookies).
 - **Security Implications**: Stored tokens are susceptible to theft if the client environment is compromised via Cross-Site Scripting (XSS). Contributors must maintain rigorous Content Security Policies (CSP), sanitize all user inputs, and keep third-party dependencies updated.
+
+### Browser Storage Inventory (#256)
+
+These are all the keys the client reads or writes. The source of truth is `STORAGE_INVENTORY` in `src/services/storageInventory.ts`. `storageInventory.test.ts` fails if code uses a key that isn't listed there, so add new keys to both the inventory and this table.
+
+| Key | Area | Owner | Lifetime | Cleared on logout | Sensitivity | Contents |
+| :--- | :--- | :--- | :--- | :---: | :--- | :--- |
+| `auth_token` | localStorage | `services/api.ts`, `store/slices/authSlice.ts` | Until logout, refresh failure or token rejection | ✅ | Credential | Bearer JWT |
+| `user_data` | localStorage | `store/slices/authSlice.ts` | Until logout or refresh failure | ✅ | Personal | Minimized profile: id, name, email, account flags. **No wallet address or public key** (see below) |
+| `session_expiration` | localStorage | `services/sessionService.ts` | Until logout or session end | ✅ | Personal | Expiry timestamp for cross-tab session sync |
+| `refresh_token` | localStorage | `services/api.ts` | Legacy: never written, only removed | ✅ | Credential | Refresh tokens are HTTP-only cookies |
+| `chat_history` | localStorage | `store/slices/chatSlice.ts` | Until logout or chat deletion | ✅ | Personal | Messages per conversation; prompts can include wallet addresses and amounts |
+| `conversations` | localStorage | `store/slices/chatSlice.ts` | Until logout or conversation deletion | ✅ | Personal | Conversation titles and metadata |
+| `messageQueue` | localStorage | `store/slices/chatSlice.ts` | Until sent after reconnecting, or logout | ✅ | Personal | Prompts queued while offline |
+| `theme` | localStorage | `store/slices/uiSlice.ts`, `ThemeProvider` | Persistent | ❌ | Preference | `light` / `dark` |
+| `language` | localStorage | `store/slices/uiSlice.ts`, `lib/i18n` | Persistent | ❌ | Preference | UI language code |
+| *(all keys)* | sessionStorage | none currently | Tab | ✅ (`sessionStorage.clear()`) | — | — |
+
+`STORAGE_KEYS.SIDEBAR_STATE` and `STORAGE_KEYS.USER_PREFERENCES` in `src/constants` are declared but never used.
+
+**Logout cleanup.** `clearUserScopedStorage()` removes every user-scoped key above and clears `sessionStorage`. Both `apiService.logout()` and the `logout` thunk call it, and `chatSlice` resets in-memory chat state on `logout.fulfilled`. Device preferences (`theme`, `language`) are kept. Before this audit, chat history, conversations and the offline queue survived logout, so the next person using a shared browser could read them.
+
+**Reduced persistence.** `user_data` used to store the full `User`, including the wallet `address` and `publicKey`. It now stores only `toPersistedUser(user)`. Wallet identifiers are restored as empty strings and re-fetched from `GET /auth/me` / `fetchProfile` (the settings page fetches them on mount).
+
+**Rules:**
+1. Never persist secrets, private keys, seed phrases or passwords (see "Wallet Key Ownership & Signing Boundary").
+2. Anything tied to a user must be marked `userScoped: true`, so logout removes it.
+3. Store the minimum needed to restore the UI; re-fetch the rest from the API.
 ---
 
 ## Wallet Key Ownership & Signing Boundary
