@@ -35,6 +35,11 @@ interface ChatState {
   /** Server history load state, kept separate from `messages` so a failure is not shown as empty (#265). */
   historyStatus: ChatHistoryStatus;
   historyError: string | null;
+  /** Cursor for the next older history page (#264); null when unknown or exhausted. */
+  historyCursor: string | null;
+  historyHasMore: boolean;
+  isLoadingOlderHistory: boolean;
+  olderHistoryError: string | null;
 }
 
 const initialState: ChatState = {
@@ -58,6 +63,10 @@ const initialState: ChatState = {
   optimisticUpdates: new Map(),
   historyStatus: "idle",
   historyError: null,
+  historyCursor: null,
+  historyHasMore: false,
+  isLoadingOlderHistory: false,
+  olderHistoryError: null,
 };
 
 // Async thunks
@@ -169,25 +178,53 @@ export const mergeMessagesById = (existing: ChatMessage[], incoming: ChatMessage
   return sortMessagesChronologically(Array.from(byId.values()));
 };
 
+/** Messages requested per history page (#264). */
+export const HISTORY_PAGE_SIZE = 50;
+
 /**
- * Load chat history from the server (#265). Locally cached messages stay in place if this fails.
- * A 404/501 means the backend has no history endpoint; that resolves with no messages rather
- * than an error, so the page falls back to the local cache.
+ * Load the newest page of chat history from the server (#265, #264). Locally cached messages
+ * stay in place if this fails. A 404/501 means the backend has no history endpoint; that
+ * resolves with no messages rather than an error, so the page falls back to the local cache.
  */
 export const fetchChatHistory = createAsyncThunk(
   "chat/fetchChatHistory",
   async (_: void, { rejectWithValue }) => {
     try {
-      return await apiService.getChatHistory();
+      return await apiService.getChatHistory({ limit: HISTORY_PAGE_SIZE });
     } catch (error: any) {
       const status = error?.response?.status;
       if (status === 404 || status === 501) {
-        return { messages: [] as ChatMessage[] };
+        return { messages: [] as ChatMessage[], nextCursor: null, hasMore: false };
       }
       return rejectWithValue(
         error?.response?.data?.message || error?.message || "Failed to load chat history",
       );
     }
+  },
+);
+
+/**
+ * Load the next older page of history using the stable cursor from the previous page (#264).
+ * Skipped while another page is loading or when there is nothing older.
+ */
+export const loadOlderHistory = createAsyncThunk(
+  "chat/loadOlderHistory",
+  async (_: void, { getState, rejectWithValue }) => {
+    const cursor = (getState() as { chat: ChatState }).chat.historyCursor as string;
+    try {
+      const page = await apiService.getChatHistory({ before: cursor, limit: HISTORY_PAGE_SIZE });
+      return { page, cursor };
+    } catch (error: any) {
+      return rejectWithValue(
+        error?.response?.data?.message || error?.message || "Failed to load older messages",
+      );
+    }
+  },
+  {
+    condition: (_: void, { getState }) => {
+      const chat = (getState() as { chat: ChatState }).chat;
+      return Boolean(chat.historyHasMore && chat.historyCursor && !chat.isLoadingOlderHistory);
+    },
   },
 );
 
@@ -770,6 +807,33 @@ state.messages[index] = {
       .addCase(fetchChatHistory.fulfilled, (state, action) => {
         state.historyStatus = "succeeded";
         state.messages = mergeMessagesById(state.messages, action.payload.messages);
+        state.historyCursor = action.payload.nextCursor;
+        state.historyHasMore = action.payload.hasMore;
+        state.olderHistoryError = null;
+      })
+      .addCase(loadOlderHistory.pending, (state) => {
+        state.isLoadingOlderHistory = true;
+        state.olderHistoryError = null;
+      })
+      .addCase(loadOlderHistory.fulfilled, (state, action) => {
+        const { page, cursor } = action.payload;
+        state.isLoadingOlderHistory = false;
+        // Merge by id: duplicate or overlapping pages never create duplicate rows,
+        // and sorting puts out-of-order pages back in chronological order.
+        state.messages = mergeMessagesById(state.messages, page.messages);
+
+        // Only advance from the cursor this page was requested with. A late response for an
+        // older cursor (e.g. after a refresh) must not move the cursor backwards.
+        if (state.historyCursor === cursor) {
+          // A server returning the same cursor would loop forever; treat it as the end
+          const stuck = page.nextCursor === cursor;
+          state.historyCursor = stuck ? null : page.nextCursor;
+          state.historyHasMore = !stuck && page.hasMore;
+        }
+      })
+      .addCase(loadOlderHistory.rejected, (state, action) => {
+        state.isLoadingOlderHistory = false;
+        state.olderHistoryError = (action.payload as string) ?? action.error.message ?? "Failed to load older messages";
       })
       .addCase(fetchChatHistory.rejected, (state, action) => {
         // Keep cached messages; only record the failure

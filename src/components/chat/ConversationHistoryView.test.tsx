@@ -70,3 +70,32 @@ describe('ConversationHistoryView (#265)', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 });
+
+describe('ConversationHistoryView pagination (#264)', () => {
+  it('offers to load older messages when more pages exist', () => {
+    const onLoadOlder = vi.fn();
+    renderView({ messages: cached, hasMore: true, onLoadOlder });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Load older messages' }));
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables the button while a page is loading', () => {
+    renderView({ messages: cached, hasMore: true, isLoadingOlder: true, onLoadOlder: vi.fn() });
+    expect(screen.getByRole('button', { name: /Loading older messages/ })).toBeDisabled();
+  });
+
+  it('shows a retry after an older page fails', () => {
+    const onLoadOlder = vi.fn();
+    renderView({ messages: cached, hasMore: true, olderError: 'Network Error', onLoadOlder });
+
+    expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load older messages: Network Error");
+    fireEvent.click(screen.getByRole('button', { name: 'Retry loading older messages' }));
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides the control on the last page', () => {
+    renderView({ messages: cached, hasMore: false, onLoadOlder: vi.fn() });
+    expect(screen.queryByRole('button', { name: /older messages/ })).not.toBeInTheDocument();
+  });
+});

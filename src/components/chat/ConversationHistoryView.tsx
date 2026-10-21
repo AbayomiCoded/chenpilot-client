@@ -4,7 +4,7 @@ import React from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { EmptyState } from '@/components/ui/EmptyState';
-import { History, MessageCircle, AlertTriangle, RefreshCw } from 'lucide-react';
+import { History, MessageCircle, AlertTriangle, RefreshCw, ChevronUp } from 'lucide-react';
 import { ChatHistoryStatus, ChatMessage } from '@/types';
 
 export interface ConversationHistoryViewProps {
@@ -13,6 +13,11 @@ export interface ConversationHistoryViewProps {
   error: string | null;
   onRetry: () => void;
   onStartChat: () => void;
+  /** Older pages exist on the server (#264). */
+  hasMore?: boolean;
+  isLoadingOlder?: boolean;
+  olderError?: string | null;
+  onLoadOlder?: () => void;
 }
 
 /**
@@ -26,6 +31,10 @@ export function ConversationHistoryView({
   error,
   onRetry,
   onStartChat,
+  hasMore = false,
+  isLoadingOlder = false,
+  olderError = null,
+  onLoadOlder,
 }: ConversationHistoryViewProps) {
   const hasMessages = messages.length > 0;
   const isLoading = status === 'loading' || status === 'idle';
@@ -102,7 +111,28 @@ export function ConversationHistoryView({
         </Button>
       </div>
 
-      <div className="grid gap-2">
+      {onLoadOlder && (hasMore || olderError) && (
+        <div className="flex flex-col items-center gap-2">
+          {olderError && (
+            <p role="alert" className="text-sm text-red-700 dark:text-red-300">
+              Couldn&apos;t load older messages: {olderError}
+            </p>
+          )}
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={onLoadOlder}
+            disabled={isLoadingOlder}
+            aria-busy={isLoadingOlder}
+            className="gap-2"
+          >
+            <ChevronUp aria-hidden="true" className="h-4 w-4" />
+            {isLoadingOlder ? 'Loading older messages…' : olderError ? 'Retry loading older messages' : 'Load older messages'}
+          </Button>
+        </div>
+      )}
+
+      <div className="grid gap-2" data-testid="history-list">
         {messages.map((message) => (
           <Card key={message.id} className="p-2 hover:shadow-md transition-shadow">
             <div className="flex items-start space-x-2">

@@ -49,7 +49,7 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
-| `GET /chat/history` | `GET /chat/history?limit=50`; bearer token when available. | `{"messages":[{"id":"msg_1","type":"user","content":"What is my XLM balance?","timestamp":"2026-01-01T00:00:00Z"}]}` | Chat history page (`fetchChatHistory`). Server messages are merged into locally cached messages by `id`. |
+| `GET /chat/history` | Newest page: `GET /chat/history?limit=50`. Older page: `GET /chat/history?before=<nextCursor>&limit=50`. Bearer token when available. `limit` is clamped to 1–100. | `{"messages":[{"id":"msg_1","type":"user","content":"What is my XLM balance?","timestamp":"2026-01-01T00:00:00Z"}],"nextCursor":"c_0041","hasMore":true}` | Chat history page: `fetchChatHistory` loads the newest page, and `loadOlderHistory` loads the next older page. Server messages are merged into locally cached messages by `id`. |
 
 Load states on `/chat/history` (#265):
 - **Loading, nothing cached:** a loading indicator, not the empty state.
@@ -57,6 +57,13 @@ Load states on `/chat/history` (#265):
 - **Failed, nothing cached:** a dedicated error state (`EmptyState tone="error"`, `role="alert"`) with "Try again" and "Start new chat".
 - **Failed with cached messages:** the cached conversations stay visible under an inline alert with "Try again". A failed request never clears cached messages.
 - **404 or 501:** treated as "this backend has no server history". The page shows the local cache, or the empty state, without an error.
+
+Pagination (#264):
+- **Cursor:** `nextCursor` is opaque and must stay valid for the same position even when new messages arrive. For example, encode the oldest returned message's `(timestamp, id)` rather than an offset. `hasMore: false` or `nextCursor: null` ends paging.
+- **Order:** messages in a page may come in any order. The client merges them by `id`, so overlapping or repeated pages never create duplicate rows, and re-sorts chronologically.
+- **Stale or stuck cursors:** the client only advances the cursor if the response belongs to the cursor it currently holds, so a late response cannot move it backwards. A page that returns the same cursor it was requested with is treated as the end.
+- **One request at a time:** a page request is skipped while another is in flight or when there is nothing older. A failed page keeps the cursor and shows "Retry loading older messages".
+- **Scroll position:** the history view records `scrollTop`/`scrollHeight` before requesting an older page and shifts `scrollTop` by the added height after it is prepended (`usePrependScrollAnchor`), so the view does not jump.
 
 ## Authentication Endpoints
 
