@@ -1,42 +1,63 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { sendPaymentSchema, validateSendPayment, sanitizePaymentInput } from '@/utils/validation';
-import { SendPaymentRequest, ContactSelection } from '@/types';
+import { Contact, PaymentStatusResult, PaymentSubmissionResult, SendPaymentRequest, ContactSelection } from '@/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { Modal } from '@/components/ui/Modal';
+import { StellarNetworkBadge } from '@/components/wallet/StellarNetworkBadge';
+import { createPaymentIdempotencyKey, isPaymentOutcomeUnknown } from '@/utils/paymentOutcome';
 import ContactPicker from './ContactPicker';
 import {
   Send,
   User,
   X,
-  ChevronDown,
   Loader2,
   CheckCircle,
   AlertCircle,
+  Copy,
+  Clock3,
+  ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import { calculateSpendableNativeBalance } from '@/utils/nativeBalance';
 import toast from 'react-hot-toast';
 
 interface SendPaymentFormProps {
-  onSubmit: (data: SendPaymentRequest) => Promise<void>;
-  contacts: any[];
+  onSubmit: (data: SendPaymentRequest, idempotencyKey: string) => Promise<PaymentSubmissionResult>;
+  onCheckStatus: (idempotencyKey: string) => Promise<PaymentStatusResult>;
+  contacts: Contact[];
   isLoading?: boolean;
   defaultTokenType?: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  nativeBalance?: string;
+  requiredReserve?: string;
+  availableBalance?: number | string;
 }
 
 export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   onSubmit,
+  onCheckStatus,
   contacts,
   isLoading = false,
   defaultTokenType = 'XLM',
+  nativeBalance,
+  requiredReserve,
+  availableBalance,
 }) => {
   const [selectedContact, setSelectedContact] = useState<ContactSelection | null>(null);
   const [isContactPickerOpen, setIsContactPickerOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [reviewPayment, setReviewPayment] = useState<SendPaymentRequest | null>(null);
+  const [idempotencyKey, setIdempotencyKey] = useState<string | null>(null);
+  const [paymentPhase, setPaymentPhase] = useState<'editing' | 'review' | 'pending' | 'completed' | 'failed' | 'uncertain'>('editing');
+  const [paymentResult, setPaymentResult] = useState<PaymentSubmissionResult | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [statusCheckMessage, setStatusCheckMessage] = useState<string | null>(null);
+  const [isCheckingStatus, setIsCheckingStatus] = useState(false);
 
   const {
     register,
@@ -45,6 +66,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
     setValue,
     watch,
     reset,
+    setFocus,
   } = useForm<SendPaymentRequest>({
     resolver: zodResolver(sendPaymentSchema),
     defaultValues: {
@@ -55,6 +77,57 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
   const watchedToken = watch('tokenType');
   const watchedMemoType = watch('memoType');
+  const paymentAttemptSignatureRef = useRef<string | null>(null);
+  const paymentAttemptKeyRef = useRef<string | null>(null);
+  const nativeBalanceValue = Number(nativeBalance);
+  const requiredReserveValue = Number(requiredReserve);
+  const spendableBalance = nativeBalance !== undefined && requiredReserve !== undefined
+    ? calculateSpendableNativeBalance(nativeBalance, requiredReserve)
+    : null;
+  const watchedAmount = watch('amount') || '';
+  const recipientAddressValue = watch('recipientAddress') || '';
+  const assetPrecision = getAssetPrecision(watchedToken);
+  const amountStep = assetPrecision > 0 ? `0.${'0'.repeat(assetPrecision - 1)}1` : '1';
+  const numericAvailableBalance = Number(availableBalance ?? 0);
+  const hasInsufficientBalance =
+    watchedToken === 'XLM' &&
+    watchedAmount !== '' &&
+    !Number.isNaN(Number(watchedAmount)) &&
+    Number(watchedAmount) > numericAvailableBalance &&
+    Number.isFinite(numericAvailableBalance);
+
+  const safeCopyText = async (text: string) => {
+    if (!text) {
+      toast.error('There is no recipient address to copy.');
+      return;
+    }
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        toast.success('Recipient address copied to clipboard.');
+        return;
+      }
+    } catch {
+      // fall through to explicit fallback below
+    }
+
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      toast.success('Recipient address copied to clipboard.');
+      return;
+    } catch {
+      toast.error('Unable to copy the recipient address in this browser.');
+    }
+  };
 
   const handleContactSelect = (contact: ContactSelection) => {
     setSelectedContact(contact);
@@ -64,56 +137,231 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   };
 
   const handleClearContact = () => {
+    paymentAttemptSignatureRef.current = null;
+    paymentAttemptKeyRef.current = null;
     setSelectedContact(null);
     setValue('recipientAddress', '');
+  };
+
+  const getActiveIdempotencyKey = (data: SendPaymentRequest): string => {
+    const requestFromForm = {
+      recipientAddress: data.recipientAddress?.trim() ?? '',
+      amount: data.amount?.trim() ?? '',
+      tokenType: data.tokenType ?? '',
+      memo: data.memo?.trim() ?? '',
+      memoType: data.memoType ?? 'none',
+      recipientContactId: data.recipientContactId ?? selectedContact?.id ?? '',
+    };
+    const signature = JSON.stringify(requestFromForm);
+
+    if (paymentAttemptSignatureRef.current === signature && paymentAttemptKeyRef.current) {
+      return paymentAttemptKeyRef.current;
+    }
+
+    const nextKey = buildPaymentIdempotencyKey(requestFromForm);
+    paymentAttemptSignatureRef.current = signature;
+    paymentAttemptKeyRef.current = nextKey;
+    return nextKey;
   };
 
   const handleFormSubmit = async (data: SendPaymentRequest) => {
     try {
       setIsSubmitting(true);
-      
-      // Sanitize input
+
       const sanitizedData = sanitizePaymentInput(data);
-      
-      // Add contact reference if selected
+
       if (selectedContact) {
         sanitizedData.recipientContactId = selectedContact.id;
       }
-      
-      // Validate again (defensive programming)
+
       const validation = validateSendPayment(sanitizedData);
       if (!validation.isValid) {
+        setFocus('recipientAddress');
         validation.errors.forEach((error) => toast.error(error));
         return;
       }
-      
-      await onSubmit(sanitizedData);
-      
-      // Reset form on success
+
+      const paymentRequest = {
+        ...sanitizedData,
+        idempotencyKey: getActiveIdempotencyKey(sanitizedData),
+      };
+
+      await onSubmit(paymentRequest);
+
+      paymentAttemptSignatureRef.current = null;
+      paymentAttemptKeyRef.current = null;
       reset();
       setSelectedContact(null);
     } catch (error: any) {
       console.error('Payment submission error:', error);
-      toast.error(error?.message || 'Failed to send payment');
+      setFocus('recipientAddress');
+      toast.error(getPaymentFailureMessage(error));
+  const handleFormSubmit = (data: SendPaymentRequest) => {
+    const sanitizedData = sanitizePaymentInput(data);
+    if (selectedContact) {
+      sanitizedData.recipientContactId = selectedContact.id;
+    }
+
+    const validation = validateSendPayment(sanitizedData);
+    if (!validation.isValid) {
+      validation.errors.forEach((error) => toast.error(error));
+      return;
+    }
+
+    setReviewPayment(sanitizedData);
+    setIdempotencyKey(createPaymentIdempotencyKey());
+    setPaymentError(null);
+    setPaymentPhase('review');
+  };
+
+  const confirmPayment = async () => {
+    if (!reviewPayment || !idempotencyKey) return;
+
+    setIsSubmitting(true);
+    setPaymentError(null);
+    try {
+      const result = await onSubmit(reviewPayment, idempotencyKey);
+      setPaymentResult(result);
+      setPaymentPhase(
+        result.status === 'confirmed' ? 'completed' : result.status === 'failed' ? 'failed' : 'pending',
+      );
+    } catch (error: unknown) {
+      console.error('Payment submission error:', error);
+      if (isPaymentOutcomeUnknown(error)) {
+        setPaymentError(error instanceof Error ? error.message : 'Payment outcome is unknown.');
+        setPaymentPhase('uncertain');
+      } else {
+        const message = error instanceof Error ? error.message : 'Failed to submit payment.';
+        setPaymentError(message);
+        setReviewPayment(null);
+        setIdempotencyKey(null);
+        setPaymentPhase('editing');
+        toast.error(message);
+      }
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const getContactDisplayName = () => {
-    if (selectedContact) {
-      return (
-        <div className="flex items-center space-x-2">
-          <User className="h-4 w-4 text-blue-400" />
-          <span className="text-blue-400">{selectedContact.name}</span>
-        </div>
-      );
+  const checkPaymentStatus = async () => {
+    if (!idempotencyKey) return;
+
+    setIsCheckingStatus(true);
+    setStatusCheckMessage(null);
+    try {
+      const result = await onCheckStatus(idempotencyKey);
+      if (result.status === 'confirmed') {
+        setPaymentResult(result);
+        setPaymentPhase('completed');
+      } else if (result.status === 'failed') {
+        setPaymentResult(result);
+        setPaymentPhase('failed');
+      } else if (result.status === 'pending' || result.status === 'submitted') {
+        setPaymentResult(result);
+        setPaymentPhase('pending');
+      } else {
+        setStatusCheckMessage('No final status is available yet. Keep this screen open and check again; do not resend the payment.');
+      }
+    } catch {
+      setStatusCheckMessage('Status could not be retrieved. The payment may still have been submitted; check again before taking further action.');
+    } finally {
+      setIsCheckingStatus(false);
     }
-    return 'Select from contacts';
   };
+
+  const startFreshPayment = () => {
+    reset({ tokenType: defaultTokenType, memoType: 'none' });
+    setSelectedContact(null);
+    setReviewPayment(null);
+    setIdempotencyKey(null);
+    setPaymentResult(null);
+    setPaymentError(null);
+    setStatusCheckMessage(null);
+    setPaymentPhase('editing');
+  };
+
+  if (paymentPhase === 'pending' || paymentPhase === 'completed' || paymentPhase === 'failed' || paymentPhase === 'uncertain') {
+    const transactionReference = paymentResult?.transactionHash ?? paymentResult?.transactionId;
+
+    return (
+      <Card className="space-y-5 border border-gray-700 bg-gray-950 p-6 text-white">
+        <div className="flex items-start gap-3">
+          {paymentPhase === 'completed' ? (
+            <CheckCircle className="mt-0.5 h-5 w-5 text-emerald-400" />
+          ) : paymentPhase === 'pending' ? (
+            <Clock3 className="mt-0.5 h-5 w-5 text-amber-300" />
+          ) : (
+            <AlertCircle className="mt-0.5 h-5 w-5 text-amber-300" />
+          )}
+          <div>
+            <h2 className="text-lg font-semibold">
+              {paymentPhase === 'completed' ? 'Payment confirmed' : paymentPhase === 'failed' ? 'Payment failed' : paymentPhase === 'pending' ? 'Payment submitted' : 'Payment status unknown'}
+            </h2>
+            <p className="mt-1 text-sm text-gray-300">
+              {paymentPhase === 'completed'
+                ? 'The server confirmed this payment.'
+                : paymentPhase === 'failed'
+                  ? paymentResult?.message ?? 'The server confirmed that this payment failed.'
+                : paymentPhase === 'pending'
+                  ? 'The server accepted this payment. Check its status for confirmation.'
+                  : paymentError ?? 'We could not determine whether the payment was submitted.'}
+            </p>
+          </div>
+        </div>
+
+        {reviewPayment && (
+          <dl className="grid gap-3 border-y border-gray-800 py-4 text-sm sm:grid-cols-2">
+            <div><dt className="text-gray-400">Recipient</dt><dd className="break-all font-mono text-gray-100">{reviewPayment.recipientAddress}</dd></div>
+            <div><dt className="text-gray-400">Amount</dt><dd className="text-gray-100">{reviewPayment.amount} {reviewPayment.tokenType}</dd></div>
+          </dl>
+        )}
+
+        {transactionReference && (
+          <div className="space-y-1 text-sm">
+            <p className="text-gray-400">Transaction reference</p>
+            <p className="break-all font-mono text-gray-100">{transactionReference}</p>
+          </div>
+        )}
+
+        {(paymentPhase === 'pending' || paymentPhase === 'uncertain') && (
+          <div className="space-y-3">
+            {statusCheckMessage && <p role="status" className="text-sm text-amber-200">{statusCheckMessage}</p>}
+            <Button type="button" onClick={checkPaymentStatus} disabled={isCheckingStatus}>
+              {isCheckingStatus ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ExternalLink className="mr-2 h-4 w-4" />}
+              Check payment status
+            </Button>
+          </div>
+        )}
+
+        {(paymentPhase === 'completed' || paymentPhase === 'failed') && (
+          <Button type="button" onClick={startFreshPayment}>Start a new payment</Button>
+        )}
+      </Card>
+    );
+  }
 
   return (
     <div className="space-y-6">
+      {spendableBalance !== null && (
+        <Card className="p-4" aria-label="Native XLM balance">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs text-gray-400">Total XLM</p>
+              <p className="font-semibold text-white">{nativeBalanceValue.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-400">Spendable after reserve</p>
+              <p className="font-semibold text-white">{spendableBalance.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM</p>
+            </div>
+          </div>
+          {requiredReserveValue > 0 && (
+            <p className="mt-2 text-xs text-gray-400">
+              Keep at least {requiredReserveValue.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM in your account for its minimum reserve.
+            </p>
+          )}
+        </Card>
+      )}
+
       {/* Contact Selection */}
       <Card className="p-4">
         <div className="flex items-center justify-between mb-4">
@@ -164,19 +412,47 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
             <label className="block text-sm font-medium text-gray-300 mb-2">
               Recipient Address
             </label>
-            <Input
-              {...register('recipientAddress')}
-              placeholder="GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
-              className={cn(
-                'font-mono text-sm',
-                selectedContact && 'bg-blue-500/5 border-blue-500/30'
-              )}
-              disabled={!!selectedContact}
-            />
+            <div className="flex gap-2">
+              <Input
+                {...register('recipientAddress')}
+                placeholder="GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+                className={cn(
+                  'font-mono text-sm flex-1',
+                  selectedContact && 'bg-blue-500/5 border-blue-500/30'
+                )}
+                disabled={!!selectedContact}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => safeCopyText(recipientAddressValue)}
+                className="whitespace-nowrap"
+                disabled={!recipientAddressValue}
+              >
+                <Copy className="h-4 w-4 mr-1" />
+                Copy
+              </Button>
+            </div>
             {errors.recipientAddress && (
               <p className="mt-1 text-xs text-red-400">{errors.recipientAddress.message}</p>
             )}
           </div>
+
+          {availableBalance !== undefined && watchedToken === 'XLM' && (
+            <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-400">Available balance</span>
+                <span className="font-medium text-white">{Number(availableBalance).toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM</span>
+              </div>
+              {hasInsufficientBalance && (
+                <p className="mt-2 flex items-center gap-2 text-xs text-amber-300">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  Requested amount exceeds your available XLM balance.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Amount */}
           <div>
@@ -188,7 +464,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                 {...register('amount')}
                 placeholder="0.00"
                 type="number"
-                step="0.0000001"
+                step={amountStep}
                 className="flex-1"
               />
               <select
@@ -208,6 +484,12 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
             )}
             {errors.tokenType && (
               <p className="mt-1 text-xs text-red-400">{errors.tokenType.message}</p>
+            )}
+            {hasInsufficientBalance && !errors.amount && (
+              <p className="mt-1 text-xs text-amber-300 flex items-center gap-1">
+                <AlertCircle className="h-3.5 w-3.5" />
+                Insufficient funds for this XLM transfer.
+              </p>
             )}
           </div>
 
@@ -232,7 +514,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                   {...register('memo')}
                   placeholder={
                     watchedMemoType === 'text'
-                      ? 'Enter memo text (max 28 characters)'
+                      ? 'Enter memo text (max 28 UTF-8 bytes)'
                       : watchedMemoType === 'id'
                       ? 'Enter numeric ID'
                       : 'Enter 64-character hex hash'
@@ -241,7 +523,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                     'font-mono text-sm',
                     watchedMemoType === 'hash' && 'uppercase'
                   )}
-                  maxLength={watchedMemoType === 'hash' ? 64 : 28}
+                  maxLength={watchedMemoType === 'hash' ? 64 : watchedMemoType === 'id' ? 20 : 28}
                 />
               )}
             </div>
@@ -256,7 +538,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
           {/* Submit Button */}
           <Button
             type="submit"
-            disabled={isSubmitting || isLoading}
+            disabled={isSubmitting || isLoading || hasInsufficientBalance}
             className="w-full"
             size="lg"
           >
@@ -268,7 +550,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
             ) : (
               <>
                 <Send className="h-4 w-4 mr-2" />
-                Send Payment
+                Review Payment
               </>
             )}
           </Button>
@@ -283,6 +565,61 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
         isOpen={isContactPickerOpen}
         tokenType={watchedToken}
       />
+
+      <Modal
+        isOpen={paymentPhase === 'review' && !!reviewPayment}
+        onClose={() => {
+          if (!isSubmitting) {
+            setPaymentPhase('editing');
+            setReviewPayment(null);
+            setIdempotencyKey(null);
+          }
+        }}
+        title="Review payment"
+        className="border border-gray-700 bg-gray-950 text-white"
+        titleClassName="text-white"
+      >
+        {reviewPayment && (
+          <div className="space-y-5">
+            <dl className="space-y-4 text-sm">
+              <div>
+                <dt className="text-gray-400">Recipient</dt>
+                <dd className="mt-1 break-all font-mono text-gray-100">{reviewPayment.recipientAddress}</dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt className="text-gray-400">Amount</dt>
+                <dd className="text-right font-semibold text-white">{reviewPayment.amount} {reviewPayment.tokenType}</dd>
+              </div>
+              <div>
+                <dt className="text-gray-400">Memo</dt>
+                <dd className="mt-1 break-all text-gray-100">
+                  {reviewPayment.memo ? `${reviewPayment.memo} (${reviewPayment.memoType ?? 'text'})` : 'No memo'}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-gray-400">Network</dt>
+                <dd><StellarNetworkBadge /></dd>
+              </div>
+            </dl>
+
+            {paymentError && <p role="alert" className="text-sm text-red-300">{paymentError}</p>}
+
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+              <Button type="button" variant="ghost" onClick={() => {
+                setPaymentPhase('editing');
+                setReviewPayment(null);
+                setIdempotencyKey(null);
+              }} disabled={isSubmitting}>
+                Return to edit
+              </Button>
+              <Button type="button" onClick={confirmPayment} disabled={isSubmitting}>
+                {isSubmitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <CheckCircle className="mr-2 h-4 w-4" />}
+                Confirm and send
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };

@@ -1,29 +1,30 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import { logger } from "../utils/logger";
-import { 
-  RegisterRequest, 
-  LoginRequest, 
-  RegisterResponse, 
-  LoginResponse, 
-  User, 
-  Contact, 
-  CreateContactRequest, 
+import {
+  RegisterRequest,
+  LoginRequest,
+  RegisterResponse,
+  LoginResponse,
+  User,
+  Contact,
+  CreateContactRequest,
   UpdateContactRequest,
+  SendPaymentRequest,
   BalanceResponse,
   AgentQueryRequest,
   AgentQueryResponse,
   ApiResponse,
-  ChatMessage,
-  Conversation,
   PromptVersionRecord,
-  LiquidityPool,
   LiquidityStats,
   LiquidityRequest,
   StellarTransaction,
   AuditLogEntry,
   AuditLogsQueryParams,
   AuditLogsResponse,
-  AuditLogStats
+  AuditLogStats,
+  PaymentSubmissionResult,
+  PaymentStatusResult,
+  SendPaymentRequest,
 } from '@/types';
 import agentService from './agentService';
 import { tokenRefreshService } from './tokenRefreshService';
@@ -34,8 +35,8 @@ import {
   incrementRetryCount,
   retryLabel,
 } from '@/utils/retryUtils';
-
-import axios from 'axios';
+import { buildPaymentIdempotencyKey } from '@/utils/paymentIdempotency';
+import { PaymentOutcomeUnknownError, isPaymentOutcomeUnknown } from '@/utils/paymentOutcome';
 
 const FRIENDTEST_URL = 'https://friendbot.stellar.org';
 
@@ -76,7 +77,7 @@ export const requestAccountFunding = async (
           message: 'Account funded successfully via Stellar Testnet Friendbot fallback.',
           txHash: friendbotResponse.data.hash,
         };
-      } catch (friendbotError: unknown) {
+      } catch {
         throw new Error(
           `Funding failed: Backend service unavailable and Friendbot fallback failed. Required: ${requiredAmount} XLM, Current: ${currentBalance} XLM.`
         );
@@ -107,6 +108,10 @@ type MinimalStore = {
 };
 
 let _store: MinimalStore | null = null;
+
+interface PaymentRequestConfig extends AxiosRequestConfig {
+  paymentOperation?: boolean;
+}
 
 /**
  * Main API service handling HTTP requests, authentication state,
@@ -650,6 +655,43 @@ class ApiService {
     return response.data;
   }
 
+  async sendPayment(
+    payment: SendPaymentRequest,
+    idempotencyKey: string,
+  ): Promise<PaymentSubmissionResult> {
+    try {
+      const response = await this.api.post<PaymentSubmissionResult>('/payments', payment, {
+        headers: { 'Idempotency-Key': idempotencyKey },
+        paymentOperation: true,
+      } as PaymentRequestConfig);
+      const payload = response.data as PaymentSubmissionResult | ApiResponse<PaymentSubmissionResult>;
+      if ('success' in payload) {
+        if (!payload.success) throw new Error(payload.message || 'Payment submission failed.');
+        return payload.data;
+      }
+      return payload;
+    } catch (error) {
+      if (isPaymentOutcomeUnknown(error)) {
+        throw new PaymentOutcomeUnknownError(
+          'We could not confirm whether the payment was submitted. Check its status before taking any further action.',
+        );
+      }
+      throw error;
+    }
+  }
+
+  async getPaymentStatus(idempotencyKey: string): Promise<PaymentStatusResult> {
+    const response = await this.api.get<PaymentStatusResult>('/payments/status', {
+      params: { idempotencyKey },
+    });
+    const payload = response.data as PaymentStatusResult | ApiResponse<PaymentStatusResult>;
+    if ('success' in payload) {
+      if (!payload.success) throw new Error(payload.message || 'Payment status is unavailable.');
+      return payload.data;
+    }
+    return payload;
+  }
+
   // Contact management - Note: Contact endpoints are not available in experimental backend
   // Contact management is handled through the agent query system
 
@@ -751,6 +793,25 @@ class ApiService {
       }
       throw error;
     }
+  }
+
+  /**
+   * Submit a payment using a deterministic idempotency key so rapid duplicate
+   * clicks retry the same request rather than creating duplicate transfers.
+   */
+  async sendPayment(data: SendPaymentRequest): Promise<ApiResponse<{ paymentId: string; status: string }>> {
+    const idempotencyKey = data.idempotencyKey || buildPaymentIdempotencyKey(data);
+
+    const response = await this.api.post<ApiResponse<{ paymentId: string; status: string }>>('/payments', {
+      ...data,
+      idempotencyKey,
+    }, {
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+    });
+
+    return response.data;
   }
 
   // Agent query - Optimized for backend integration
