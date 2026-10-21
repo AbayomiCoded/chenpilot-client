@@ -3,7 +3,8 @@ import React, { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useAppDispatch } from "@/store";
-import { register as registerUser } from "@/store/slices/authSlice";
+import { register as registerUser, REGISTER_FIELDS } from "@/store/slices/authSlice";
+import { applyAuthErrors } from "@/components/auth/applyAuthErrors";
 import { registerSchema } from "@/utils/validation";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -24,11 +25,14 @@ export function RegisterForm() {
   const router = useRouter();
   const dispatch = useAppDispatch();
   const [showPassword, setShowPassword] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
 
   const {
     register,
     handleSubmit,
     watch,
+    setError,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
@@ -37,6 +41,7 @@ export function RegisterForm() {
   const passwordValue = watch("password") ?? "";
 
   const onSubmit = async (data: RegisterFormData) => {
+    setFormError(null);
     try {
       const cleanData = {
         email: String(data.email),
@@ -46,12 +51,12 @@ export function RegisterForm() {
       await dispatch(registerUser(cleanData)).unwrap();
       toast.success("Account created successfully! Welcome to ChenPilot!");
       router.push("/chat");
-    } catch (error: any) {
-      const backendMessage =
-        error?.message ||
-        error?.response?.data?.message ||
-        "Registration failed";
-      toast.error(String(backendMessage));
+    } catch (error: unknown) {
+      // Map server validation errors onto inputs (#258). Name and email are kept; the password
+      // is cleared and masked out of every message instead of echoing a raw server response.
+      const { message } = applyAuthErrors(error, REGISTER_FIELDS, setError, [data.password]);
+      setValue("password", "");
+      setFormError(message);
     }
   };
 
@@ -165,6 +170,12 @@ export function RegisterForm() {
 
           <PasswordStrengthMeter password={passwordValue} />
         </div>
+
+        {formError && (
+          <p id="register-form-error" role="alert" className="text-sm text-red-400 font-light">
+            {formError}
+          </p>
+        )}
 
         <div className="flex items-start gap-2 text-sm pt-2">
           <input

@@ -1,6 +1,10 @@
 import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
 import { User, LoginRequest, RegisterRequest } from "@/types";
 import apiService from "@/services/api";
+import { normalizeAuthError } from "@/services/auth.service";
+
+export const LOGIN_FIELDS = ["email", "password"] as const;
+export const REGISTER_FIELDS = ["name", "email", "password"] as const;
 
 interface AuthState {
   user: User | null;
@@ -25,47 +29,57 @@ const initialState: AuthState = {
 // Async thunks
 export const login = createAsyncThunk(
   "auth/login",
-  async (credentials: LoginRequest) => {
-    // Mock login - always succeed
-    const mockUser: User = {
-      id: "mock-user-id",
-      email: credentials.email,
-      name: "Mock User",
-      address: "0x1234567890abcdef",
-      publicKey: "0xabcdef1234567890",
-      isDeployed: true,
-      isFunded: true,
-      tokenType: "STRK",
-      authProvider: "email",
-      isEmailVerified: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const mockToken = "mock-jwt-token";
-    return { user: mockUser, token: mockToken };
+  async (credentials: LoginRequest, { rejectWithValue }) => {
+    try {
+      // Mock login - always succeed
+      const mockUser: User = {
+        id: "mock-user-id",
+        email: credentials.email,
+        name: "Mock User",
+        address: "0x1234567890abcdef",
+        publicKey: "0xabcdef1234567890",
+        isDeployed: true,
+        isFunded: true,
+        tokenType: "STRK",
+        authProvider: "email",
+        isEmailVerified: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const mockToken = "mock-jwt-token";
+      return { user: mockUser, token: mockToken };
+    } catch (error) {
+      // Reject with field-level errors; the password is masked out of every message (#258)
+      return rejectWithValue(normalizeAuthError(error, LOGIN_FIELDS, [credentials.password]));
+    }
   },
 );
 
 export const register = createAsyncThunk(
   "auth/register",
-  async (userData: RegisterRequest) => {
-    // Mock register - always succeed
-    const mockUser: User = {
-      id: "mock-user-id",
-      email: userData.email,
-      name: userData.name || "Mock User",
-      address: "0x1234567890abcdef",
-      publicKey: "0xabcdef1234567890",
-      isDeployed: true,
-      isFunded: true,
-      tokenType: "STRK",
-      authProvider: "email",
-      isEmailVerified: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const mockToken = "mock-jwt-token";
-    return { user: mockUser, token: mockToken };
+  async (userData: RegisterRequest, { rejectWithValue }) => {
+    try {
+      // Mock register - always succeed
+      const mockUser: User = {
+        id: "mock-user-id",
+        email: userData.email,
+        name: userData.name || "Mock User",
+        address: "0x1234567890abcdef",
+        publicKey: "0xabcdef1234567890",
+        isDeployed: true,
+        isFunded: true,
+        tokenType: "STRK",
+        authProvider: "email",
+        isEmailVerified: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const mockToken = "mock-jwt-token";
+      return { user: mockUser, token: mockToken };
+    } catch (error) {
+      // Reject with field-level errors; the password is masked out of every message (#258)
+      return rejectWithValue(normalizeAuthError(error, REGISTER_FIELDS, [userData.password]));
+    }
   },
 );
 
@@ -275,7 +289,11 @@ const authSlice = createSlice({
       })
       .addCase(login.rejected, (state, action) => {
         state.isLoading = false;
-        state.error = action.payload as string;
+        // Payload is a NormalizedAuthError (#258); keep only the safe general message in state
+        state.error =
+          (action.payload as { message?: string } | undefined)?.message ??
+          action.error.message ??
+          "Authentication failed";
         state.isAuthenticated = false;
       })
       // Register
@@ -300,7 +318,11 @@ const authSlice = createSlice({
       })
       .addCase(register.rejected, (state, action) => {
         state.isLoading = false;
-        state.error = action.payload as string;
+        // Payload is a NormalizedAuthError (#258); keep only the safe general message in state
+        state.error =
+          (action.payload as { message?: string } | undefined)?.message ??
+          action.error.message ??
+          "Authentication failed";
         state.isAuthenticated = false;
       })
       // Logout

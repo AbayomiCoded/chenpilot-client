@@ -79,6 +79,32 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 
 ## Authentication Endpoints
 
+### Auth Validation Errors (#258)
+
+When `POST /auth/login` or `POST /auth/register` rejects input, the backend should respond with `400` or `422` and one of these bodies. Each is normalized by `normalizeAuthError` (`src/services/auth.service.ts`):
+
+```json
+{ "success": false, "status": 422, "message": "Validation failed",
+  "errors": { "email": "Email is already registered", "password": ["Too short", "Needs a number"] } }
+```
+```json
+{ "success": false, "status": 400, "message": "Validation failed",
+  "errors": [{ "field": "email", "message": "Invalid email" }] }
+```
+
+Also accepted:
+- `param` / `msg` instead of `field` / `message` (express-validator style)
+- `path` as a string (`"user.email"`) or an array (`["body","email"]`, zod style)
+- `details` instead of `errors`
+
+Field names map onto form inputs `email`, `password` and `name`. The aliases `username` and `emailAddress` map to `email`, and `fullName` and `displayName` map to `name`. For each field, the first message is attached to the input (`aria-invalid`, first errored field focused). Errors for unknown fields, or a top-level `message`, show as a form-level alert instead of a toast.
+
+**Rules:**
+- Email and name stay in the form after a failure. The password input is cleared.
+- The submitted password is masked as `••••••` in every displayed message, and echoed `value` fields are ignored. Servers must not echo passwords at all.
+- Failures with no structured body show a generic message rather than raw HTML or stack text.
+- The login/register thunks reject with this normalized payload (`rejectWithValue`). They still return mock users today (see the note below), so the mapping takes effect once they call `apiService.login` / `apiService.register`.
+
 `User` response fields are `id`, `email`, `name`, `address`, `publicKey`, `isDeployed`, `isFunded`, `tokenType`, `authProvider`, `isEmailVerified`, `createdAt`, and `updatedAt`. `RegisterResponse` additionally declares `stellarAccount`, the backward-compatible `starknetAccount` alias, and `setupStatus` with funding/deployment results.
 
 | Endpoint | Request example | Success response example | UI surface / behavior |
