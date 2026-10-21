@@ -10,6 +10,13 @@ export interface AgentQueryResponse {
     success: boolean;
     data: string;
     error?: string;
+    /**
+     * Whether the request reached the service (#266). False for network failures where no
+     * HTTP response came back; the user's message then counts as not sent.
+     */
+    delivered?: boolean;
+    /** Server id for the user's message, used to reconcile the optimistic row (#266). */
+    userMessageId?: string;
     transactionHash?: string;
     metadata?: {
       type?: 'defi' | 'wallet' | 'contact' | 'general';

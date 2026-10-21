@@ -3,8 +3,6 @@ import { useAppDispatch, useAppSelector } from '@/store';
 import {
   queueMessage,
   dequeueMessage,
-  addPendingMessage,
-  removePendingMessage,
   sendMessage,
 } from '@/store/slices/chatSlice';
 import toast from 'react-hot-toast';
@@ -25,19 +23,17 @@ export const useOfflineQueue = () => {
 
     for (const queuedMsg of queueCopy) {
       try {
-        // Mark as pending
-        dispatch(addPendingMessage(queuedMsg.id));
-
-        // Send message
-        await dispatch(sendMessage(queuedMsg.query)).unwrap();
+        // Send with the queued row's id so it moves queued → sending → sent instead of a
+        // second bubble being added (#266)
+        await dispatch(sendMessage({ query: queuedMsg.query, tempId: queuedMsg.id })).unwrap();
 
         // Remove from queue
         dispatch(dequeueMessage(queuedMsg.id));
-        dispatch(removePendingMessage(queuedMsg.id));
 
         toast.success('Queued message sent');
       } catch (error: any) {
-        dispatch(removePendingMessage(queuedMsg.id));
+        // The row is now `failed` with a retry action; drop it from the automatic queue
+        dispatch(dequeueMessage(queuedMsg.id));
         const errorMsg = error instanceof Error ? error.message : String(error);
         toast.error(`Failed to send queued message: ${errorMsg}`);
       }

@@ -3,6 +3,7 @@ import { logger } from "../../utils/logger";
 import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
+import { canTransition, getDeliveryState, DeliveryState } from "@/store/messageDelivery";
 
 // ─── Voice message payload ────────────────────────────────────────────────────
 export interface SendVoiceMessagePayload {
@@ -152,6 +153,17 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
   });
 };
 
+/** Apply a delivery transition if the state machine allows it (#266). */
+const transitionDelivery = (message: ChatMessage, to: DeliveryState): boolean => {
+  if (!canTransition(getDeliveryState(message), to)) return false;
+  message.metadata = {
+    ...message.metadata,
+    delivery: to,
+    status: to === 'sent' ? 'success' : to === 'failed' ? 'failed' : 'pending',
+  };
+  return true;
+};
+
 export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
 
 export const sendMessage = createAsyncThunk(
@@ -186,19 +198,13 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Generate server timestamp (should come from server in production)
-      const serverTimestamp = new Date().toISOString();
-
-      // Save user message with server timestamp
-      const userMessage: ChatMessage = {
-        id: `msg_user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: "user",
-        content: query,
-        timestamp: serverTimestamp,
-      };
-
       // Call the API service to get actual response
       const response = await apiService.queryAgent({ userId, query });
+
+      // No HTTP response came back: the message never reached the service (#266)
+      if (response.result.delivered === false) {
+        return rejectWithValue(response.result.error || "Network error: message not delivered");
+      }
 
       // Handle parsing of the agent response
       let content = response.result.data;
@@ -236,15 +242,19 @@ export const sendMessage = createAsyncThunk(
         ? new Date(rawServerTimestamp).getTime()
         : Number(rawServerTimestamp);
 
-      // Create user message representation with updated serverTimestamp and success status
+      // Create user message representation with updated serverTimestamp and success status.
+      // Adopt the server id when the backend returns one (#266).
+      const serverId = response.result.userMessageId;
       const userMessage: ChatMessage = {
-        id: tempId,
+        id: serverId ?? tempId,
         type: 'user',
         content: query,
         timestamp: new Date(serverTimestamp).toISOString(),
         serverTimestamp: serverTimestamp,
         metadata: {
           status: 'success',
+          delivery: 'sent',
+          serverId,
           clientTimestamp: clientTimestamp,
           serverTimestamp: serverTimestamp,
           optimisticId: tempId,
@@ -708,6 +718,11 @@ state.messages[index] = {
     removeOptimisticUpdate: (state, action: PayloadAction<string>) => {
       state.optimisticUpdates.delete(action.payload);
     },
+    /** Move a user message to another delivery state if the transition is allowed (#266). */
+    setMessageDelivery: (state, action: PayloadAction<{ id: string; delivery: DeliveryState }>) => {
+      const message = state.messages.find((m) => m.id === action.payload.id);
+      if (message) transitionDelivery(message, action.payload.delivery);
+    },
     resolveOptimisticUpdate: (
       state,
       action: PayloadAction<{ clientId: string; serverMessage: ChatMessage }>,
@@ -768,6 +783,7 @@ state.messages[index] = {
             timestamp: new Date(clientTimestamp).toISOString(),
             metadata: {
               status: 'pending',
+              delivery: 'sending',
               clientTimestamp: clientTimestamp,
               optimisticId: tempId,
               tempId: tempId,
@@ -775,7 +791,14 @@ state.messages[index] = {
           };
           state.messages.push(optimisticUserMessage);
           state.messages = sortMessagesChronologically(state.messages);
+        } else {
+          // A queued or failed message being (re)sent: reuse its row (#266)
+          const existing = state.messages.find(
+            m => m.id === tempId || m.metadata?.optimisticId === tempId || m.metadata?.tempId === tempId
+          );
+          if (existing) transitionDelivery(existing, 'sending');
         }
+        state.pendingMessages.add(tempId);
       })
       .addCase(sendMessage.fulfilled, (state, action) => {
         state.isLoading = false;
@@ -825,7 +848,23 @@ state.messages[index] = {
             m.metadata?.tempId === tempId,
         );
 
-        if (optimisticIdx !== -1 && userMessage) {
+        // The server copy may already be present (e.g. via a socket event or history load):
+        // keep one row only (#266)
+        const serverIdx = userMessage?.metadata?.serverId
+          ? state.messages.findIndex((m, i) => i !== optimisticIdx && m.id === userMessage.metadata!.serverId)
+          : -1;
+
+        state.pendingMessages.delete(tempId);
+        state.optimisticUpdates.delete(tempId);
+
+        if (serverIdx !== -1 && userMessage) {
+          state.messages[serverIdx] = {
+            ...state.messages[serverIdx],
+            ...userMessage,
+            metadata: { ...state.messages[serverIdx].metadata, ...userMessage.metadata, delivery: 'sent', status: 'success' },
+          };
+          if (optimisticIdx !== -1) state.messages.splice(optimisticIdx, 1);
+        } else if (optimisticIdx !== -1 && userMessage) {
           state.messages[optimisticIdx] = {
             ...state.messages[optimisticIdx],
             ...userMessage,
@@ -873,10 +912,12 @@ const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
           m => m.id === tempId || m.metadata?.optimisticId === tempId || m.metadata?.tempId === tempId
         );
 
+        state.pendingMessages.delete(tempId);
         if (optimisticIdx !== -1) {
+          // sending → failed; retry is offered only in this state (#266)
+          transitionDelivery(state.messages[optimisticIdx], 'failed');
           state.messages[optimisticIdx].metadata = {
             ...state.messages[optimisticIdx].metadata,
-            status: 'failed',
             error: String(action.payload),
           };
         }
@@ -982,5 +1023,6 @@ export const {
   storeOptimisticUpdate,
   removeOptimisticUpdate,
   resolveOptimisticUpdate,
+  setMessageDelivery,
 } = chatSlice.actions;
 export default chatSlice.reducer;

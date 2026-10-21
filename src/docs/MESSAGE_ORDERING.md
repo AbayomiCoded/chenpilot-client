@@ -134,3 +134,34 @@ if (hasIssues) {
   console.warn('Message ordering issue detected');
 }
 ```
+
+## Message Delivery States (#266)
+
+User messages carry `metadata.delivery`, managed by `src/store/messageDelivery.ts`:
+
+| State | Meaning | Shown as |
+| --- | --- | --- |
+| `queued` | Written while offline; waiting in `messageQueue` | "Queued. Will send when you're back online." |
+| `sending` | Request in flight | "Sending..." |
+| `sent` | The service acknowledged it (an HTTP response came back), even if the agent's answer was an error | No badge |
+| `failed` | Never reached the service (network drop, no response) | "Not sent", plus **Retry** |
+
+**Allowed transitions** (`canTransition`):
+
+| From | To |
+| --- | --- |
+| (new) | `queued`, `sending` |
+| `queued` | `sending`, `failed` |
+| `sending` | `sent`, `failed` |
+| `failed` | `sending` (retry online), `queued` (retry offline) |
+| `sent` | none (final) |
+
+Any other transition is ignored. The legacy `status` field (`pending`/`success`/`failed`) is kept in sync, and older stored messages are mapped from it.
+
+**Rules:**
+- **One row per message.** Queued messages, retries and the offline queue all send with the existing row's id as `tempId`, so the same row moves through the states instead of a second bubble being added. Previously the offline queue created a duplicate.
+- **Server ids.** When the agent result includes `userMessageId`, the row adopts it (`id` and `metadata.serverId`). If a row with that id already exists, for example from a socket event, the optimistic row is merged into it, so there are no duplicates.
+- **Disconnect during send.** `agentService`/`apiService` return `result.delivered: false` when no HTTP response came back. `sendMessage` then rejects, and the row becomes `failed`.
+- **Retry** appears only in the `failed` state (`canRetry`).
+
+Backend: `POST /query` may return `result.userMessageId` (proposed, optional).

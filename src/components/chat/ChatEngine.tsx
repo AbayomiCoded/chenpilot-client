@@ -9,7 +9,7 @@ import {
   saveConversationLocally,
   queueMessage,
   addMessage as reduxAddMessage,
-  addPendingMessage,
+  setMessageDelivery,
 } from "@/store/slices/chatSlice";
 import AgentMessage from "@/components/chat/AgentMessage";
 import UserMessage from "@/components/chat/UserMessage";
@@ -295,15 +295,16 @@ export const ChatEngine: React.FC = () => {
         const msgId = `offline_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         dispatch(queueMessage({ id: msgId, query: queryWithTool }));
 
-        // Add optimistic user message
+        // Add the user message as queued; the offline queue sends it with this id as tempId,
+        // so the same row moves queued → sending → sent (#266)
         const userMessage: ChatMessage = {
           id: msgId,
           type: "user",
           content: message,
           timestamp: new Date().toISOString(),
+          metadata: { delivery: "queued", status: "pending", optimisticId: msgId, tempId: msgId },
         };
         dispatch(reduxAddMessage(userMessage));
-        dispatch(addPendingMessage(msgId));
 
         toast.info(
           "You're offline. Message queued and will send when back online.",
@@ -315,6 +316,20 @@ export const ChatEngine: React.FC = () => {
     } catch (error: any) {
       toast.error(error || "Failed to send message");
     }
+  };
+
+  // Retry is only offered for messages that never reached the service (#266)
+  const handleRetryMessage = (failed: ChatMessage) => {
+    const query = typeof failed.content === "string" ? failed.content : JSON.stringify(failed.content);
+    if (!isOnline) {
+      dispatch(queueMessage({ id: failed.id, query }));
+      dispatch(setMessageDelivery({ id: failed.id, delivery: "queued" }));
+      toast.info("You're offline. Message queued and will send when back online.");
+      return;
+    }
+    dispatch(sendMessage({ query, tempId: failed.id }))
+      .unwrap()
+      .catch(() => toast.error("Message still couldn't be sent"));
   };
 
   const copyToClipboard = (text: string) => {
@@ -607,6 +622,7 @@ return (
               {message.type === "user" ? (
                 <UserMessage
                   message={message}
+                  onRetry={handleRetryMessage}
                   onCopy={copyToClipboard}
                   onEdit={handleEditMessage}
                 />

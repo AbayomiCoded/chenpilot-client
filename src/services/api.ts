@@ -832,7 +832,8 @@ class ApiService {
         result: {
           success: false,
           data: friendlyMessage,
-          error: errorMsg
+          error: errorMsg,
+          delivered: Boolean((error as { response?: unknown })?.response)
         }
       };
     }

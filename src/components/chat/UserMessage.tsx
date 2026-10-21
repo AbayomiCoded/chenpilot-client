@@ -4,23 +4,30 @@ import React, { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChatMessage } from "@/types";
-import { Copy, Check, Edit2, Check as CheckIcon, X, Clock } from "lucide-react";
+import { Copy, Check, Edit2, Check as CheckIcon, X, Clock, AlertCircle, RefreshCw, CloudOff } from "lucide-react";
 import { useAppSelector } from "@/store";
+import { canRetry, getDeliveryState } from "@/store/messageDelivery";
 
 interface UserMessageProps {
   message: ChatMessage;
   onCopy?: (text: string) => void;
   onEdit?: (messageId: string, newContent: string) => void;
   onReply?: (messageId: string) => void;
+  /** Resend a message that failed to reach the service (#266). */
+  onRetry?: (message: ChatMessage) => void;
 }
 
 export default function UserMessage({
   message,
   onCopy,
   onEdit,
+  onRetry,
 }: UserMessageProps) {
   const { pendingMessages } = useAppSelector((state) => state.chat);
-  const isPending = pendingMessages.has(message.id);
+  const delivery = getDeliveryState(message);
+  const isPending = delivery === "sending" || (delivery === undefined && pendingMessages.has(message.id));
+  const isQueued = delivery === "queued";
+  const isFailed = delivery === "failed";
   const [copied, setCopied] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState(
@@ -80,12 +87,35 @@ export default function UserMessage({
 
   return (
     <div
-      className={`max-w-3xl ${isPending ? "opacity-75" : ""} bg-[#7C3AED] text-white rounded-2xl px-6 py-4 group relative`}
+      className={`max-w-3xl ${isPending || isQueued ? "opacity-75" : ""} ${isFailed ? "ring-1 ring-red-400" : ""} bg-[#7C3AED] text-white rounded-2xl px-6 py-4 group relative`}
+      data-delivery={delivery ?? "unknown"}
     >
       {isPending && (
-        <div className="absolute -left-8 top-4 flex items-center gap-1 text-xs text-yellow-400">
+        <div role="status" className="absolute -left-8 top-4 flex items-center gap-1 text-xs text-yellow-400">
           <Clock className="h-3 w-3 animate-spin" />
           <span>Sending...</span>
+        </div>
+      )}
+      {isQueued && (
+        <div role="status" className="mb-2 flex items-center gap-1 text-xs text-yellow-200">
+          <CloudOff className="h-3 w-3" aria-hidden="true" />
+          <span>Queued. Will send when you&apos;re back online.</span>
+        </div>
+      )}
+      {isFailed && (
+        <div role="alert" className="mb-2 flex items-center gap-2 text-xs text-red-200">
+          <AlertCircle className="h-3 w-3" aria-hidden="true" />
+          <span>Not sent</span>
+          {onRetry && canRetry(message) && (
+            <button
+              type="button"
+              onClick={() => onRetry(message)}
+              className="inline-flex items-center gap-1 underline hover:text-white"
+            >
+              <RefreshCw className="h-3 w-3" aria-hidden="true" />
+              Retry
+            </button>
+          )}
         </div>
       )}
       {isEditing ? (

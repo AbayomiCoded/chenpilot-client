@@ -237,6 +237,10 @@ export interface ChatMessage {
     clientTimestamp?: number | string;
     optimisticId?: string;
     tempId?: string;
+    /** Delivery state of a user message (#266); see src/store/messageDelivery.ts. */
+    delivery?: "queued" | "sending" | "sent" | "failed";
+    /** Server-assigned id once the message was acknowledged (#266). */
+    serverId?: string;
   };
 }
 

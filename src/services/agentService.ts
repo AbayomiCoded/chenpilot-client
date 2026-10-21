@@ -233,12 +233,14 @@ class AgentService {
         friendlyMessage = "I'm having trouble connecting. Please check your internet connection and try again.";
       }
       
-      // Return a structured error response
+      // Return a structured error response. No HTTP response means the message never
+      // reached the service (#266).
       return {
         result: {
           success: false,
           data: friendlyMessage,
-          error: errorMsg
+          error: errorMsg,
+          delivered: Boolean((error as { response?: unknown })?.response)
         }
       };
     }
