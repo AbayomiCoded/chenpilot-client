@@ -6,10 +6,11 @@ import { useAppDispatch, useAppSelector } from '@/store';
 import { getContacts } from '@/store/slices/contactsSlice';
 import { ChatLayout } from '@/components/layout/ChatLayout';
 import SendPaymentForm from '@/components/payment/SendPaymentForm';
-import { SendPaymentRequest } from '@/types';
+import { PaymentStatusResult, PaymentSubmissionResult, SendPaymentRequest } from '@/types';
+import apiService from '@/services/api';
+import { StellarNetworkBadge } from '@/components/wallet/StellarNetworkBadge';
 import { ArrowLeft, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import toast from 'react-hot-toast';
 
 export default function SendPaymentPage() {
   const router = useRouter();
@@ -26,21 +27,11 @@ export default function SendPaymentPage() {
     dispatch(getContacts());
   }, [dispatch, isAuthenticated, router]);
 
-  const handleSendPayment = async (data: SendPaymentRequest) => {
-    try {
-      // In a real implementation, this would call the payment API
-      console.log('Sending payment:', data);
-      
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      
-      toast.success('Payment sent successfully!');
-      router.push('/transactions');
-    } catch (error: any) {
-      console.error('Payment error:', error);
-      toast.error(error?.message || 'Failed to send payment');
-    }
-  };
+  const handleSendPayment = (data: SendPaymentRequest, idempotencyKey: string): Promise<PaymentSubmissionResult> =>
+    apiService.sendPayment(data, idempotencyKey);
+
+  const handleCheckPaymentStatus = (idempotencyKey: string): Promise<PaymentStatusResult> =>
+    apiService.getPaymentStatus(idempotencyKey);
 
   if (!isAuthenticated) {
     return (
@@ -76,11 +67,12 @@ export default function SendPaymentPage() {
                   </p>
                 </div>
               </div>
-              <div className="flex items-center space-x-2 bg-blue-500/10 px-3 py-1.5 rounded-full border border-blue-500/30">
-                <Shield className="h-4 w-4 text-blue-400" />
-                <span className="text-xs font-medium text-blue-300">
-                  Secure
-                </span>
+              <div className="flex items-center gap-3">
+                <StellarNetworkBadge />
+                <div className="flex items-center space-x-2 bg-blue-500/10 px-3 py-1.5 rounded-full border border-blue-500/30">
+                  <Shield className="h-4 w-4 text-blue-400" />
+                  <span className="text-xs font-medium text-blue-300">Secure</span>
+                </div>
               </div>
             </div>
           </div>
@@ -91,6 +83,7 @@ export default function SendPaymentPage() {
           <div className="max-w-4xl mx-auto px-4 py-8">
             <SendPaymentForm
               onSubmit={handleSendPayment}
+              onCheckStatus={handleCheckPaymentStatus}
               contacts={contacts}
               isLoading={contactsLoading}
             />
