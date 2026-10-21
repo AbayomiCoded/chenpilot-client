@@ -26,6 +26,7 @@ import {
   AuditLogStats
 } from '@/types';
 import agentService from './agentService';
+import { parseAgentEnvelope, protocolErrorResult } from './agentEnvelope';
 import { tokenRefreshService } from './tokenRefreshService';
 import {
   isRetryableError,
@@ -794,26 +795,13 @@ class ApiService {
       logger.debug('[ApiService] Querying backend /query endpoint');
       const response = await this.api.post('/query', data, { signal: options.signal });
       
-      // The system returns response.data directly or wrapped in { result: ... }
-      if (response.data && response.data.result) {
-        return {
-          result: {
-            success: response.data.result.success ?? true,
-            data: response.data.result.data || 'Success',
-            error: response.data.result.error,
-            executionTrace: response.data.result.executionTrace
-          }
-        };
+      // Same envelope rules as AgentService: no defaulted success, no raw-body fallback (#275)
+      const parsed = parseAgentEnvelope(response.data);
+      if (!parsed.ok) {
+        console.error('[ApiService] Malformed /query response:', parsed.reason);
+        return { result: protocolErrorResult(parsed.reason) };
       }
-      
-      // Handle the case where the backend returns the result directly
-      return {
-        result: {
-          success: true,
-          data: typeof response.data === 'string' ? response.data : JSON.stringify(response.data),
-          error: undefined
-        }
-      };
+      return { result: parsed.result };
     } catch (error: unknown) {
       console.error('[ApiService] Backend query failed:', error);
       // Convert technical errors to user-friendly messages

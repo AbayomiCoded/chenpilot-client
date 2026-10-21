@@ -50,6 +50,44 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 
 An unsupported `/health` is not an outage: the client falls back to `HEAD /` and reports connectivity only. `system` metrics are included only if the backend provides them; the client no longer sends zeroed placeholders.
 
+### Agent Response Envelope (#275)
+
+`POST /query` must answer with one of these bodies. Both `AgentService.queryAgent` and the `apiService.queryAgent` backend fallback validate them with `parseAgentEnvelope` (`src/services/agentEnvelope.ts`).
+
+**Success:**
+```json
+{ "result": { "success": true, "data": "Your balance is 100 XLM", "error": null } }
+{ "result": { "success": true, "data": { "vaults": [] } } }
+{ "result": { "success": true, "data": "Sent 10 XLM", "transactionHash": "abc123",
+              "executionTrace": { "steps": [] },
+              "metadata": { "type": "wallet", "action": "transfer_xlm", "amount": "10", "asset": "XLM" } } }
+```
+`data` is a non-empty string, an object or an array. `error` must be absent, `null` or `""`.
+
+**Failure** (HTTP 200 with a failed result):
+```json
+{ "result": { "success": false, "data": "Not enough XLM", "error": "insufficient_funds" } }
+{ "result": { "success": false, "error": "insufficient_funds" } }
+```
+At least one of `error` or a string `data` is required. When `data` is missing, `error` is shown as the message.
+
+Optional fields, when present, must be: `executionTrace` an object, `transactionHash` a string, `metadata` an object.
+
+**Protocol errors.** Any other body is reported as a failure, never as a success. This includes:
+- plain text
+- a bare object without `result`
+- `success` missing or not a boolean
+- a success with no or empty `data`, or with an `error`
+- a failure with neither `error` nor `data`
+- optional fields of the wrong type
+
+The client returns:
+```json
+{ "result": { "success": false, "data": "The agent sent a response this app could not understand. Please try again.",
+              "error": "protocol_error: <reason>" } }
+```
+Earlier versions defaulted `success` to `true` and wrapped unknown bodies as successful replies; that is no longer the case. HTTP errors (4xx/5xx, network) are unchanged and still become friendly failure results.
+
 `getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
 
 ## Authentication Endpoints

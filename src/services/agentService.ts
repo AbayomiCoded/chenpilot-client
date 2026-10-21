@@ -9,6 +9,7 @@ import {
   AgentTool
 } from '@/types/agent';
 import agentConfig from '@/config/agent';
+import { parseAgentEnvelope, protocolErrorResult } from './agentEnvelope';
 
 interface TimedResult {
   ok: boolean;
@@ -291,22 +292,14 @@ class AgentService {
       
       logger.debug('[AgentService] Query response:', response.data);
       
-      // The experimental backend returns { result: ... } format
-      // Ensure we return the proper AgentQueryResponse format
-      if (response.data && response.data.result) {
-        return {
-          result: response.data.result
-        };
+      // Only documented envelopes are accepted; anything else is a protocol error rather than
+      // a misleading success (#275)
+      const parsed = parseAgentEnvelope(response.data);
+      if (!parsed.ok) {
+        console.error('[AgentService] Malformed /query response:', parsed.reason);
+        return { result: protocolErrorResult(parsed.reason) };
       }
-      
-      // Fallback if response format is unexpected
-      return {
-        result: {
-          success: true,
-          data: response.data || 'Query processed successfully',
-          error: null
-        }
-      };
+      return { result: parsed.result };
     } catch (error: unknown) {
       console.error('[AgentService] Query failed:', error);
 
