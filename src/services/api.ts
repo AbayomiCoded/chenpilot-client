@@ -25,7 +25,7 @@ import {
   AuditLogsResponse,
   AuditLogStats
 } from '@/types';
-import agentService from './agentService';
+import agentService, { classifyAgentError, isStateChangingQuery, agentErrorMessage } from './agentService';
 import { tokenRefreshService } from './tokenRefreshService';
 import {
   isRetryableError,
@@ -817,22 +817,21 @@ class ApiService {
     } catch (error: unknown) {
       console.error('[ApiService] Backend query failed:', error);
       // Convert technical errors to user-friendly messages
-      let friendlyMessage = 'Query failed. Please try again.';
       const errorMsg = (error as { response?: { data?: { message?: string } }; message?: string }).response?.data?.message || (error as { message?: string }).message || 'Unknown error';
-      
-      if (errorMsg.includes('invalid query')) {
-        friendlyMessage = "I didn't understand that. Could you please rephrase your question?";
-      } else if (errorMsg.includes('timeout')) {
-        friendlyMessage = "The request is taking longer than expected. Please try again.";
-      } else if (errorMsg.includes('network')) {
-        friendlyMessage = "I'm having trouble connecting. Please check your internet connection and try again.";
-      }
+      // Keep timeouts distinct from connectivity failures (#274)
+      const errorKind = classifyAgentError(error);
+      const stateChanging = isStateChangingQuery(data.query);
+      const friendlyMessage = errorKind === 'server' || errorKind === 'unknown'
+        ? 'Query failed. Please try again.'
+        : agentErrorMessage(errorKind, stateChanging);
 
       return {
         result: {
           success: false,
           data: friendlyMessage,
-          error: errorMsg
+          error: errorMsg,
+          errorKind,
+          stateChanging
         }
       };
     }

@@ -12,7 +12,9 @@ import {
   AgentStatus,
   AgentCapabilities,
   AgentHealthCheck,
-  AgentTool
+  AgentTool,
+  AgentErrorKind,
+  AgentActionStatus
 } from '@/types/agent';
 import agentConfig from '@/config/agent';
 
@@ -75,6 +77,57 @@ export function describeAgentError(error: unknown) {
     method: e?.config?.method?.toUpperCase(),
     url: redactAgentUrl(e?.config?.url),
   };
+}
+
+// Queries that can move funds or change on-chain state. A timeout on these must not be
+// blindly retried, because the first attempt may still complete (#274).
+const STATE_CHANGING_PATTERN =
+  /\b(send|transfer|swap|trade|buy|sell|lend|borrow|withdraw|repay|deposit|stake|unstake|liquidate|claim|harvest|deploy|pay)\b|\b(add|remove)\s+(liquidity|collateral)\b/i;
+
+/**
+ * Whether a query looks like a state-changing action rather than a read (balance, APY, ...).
+ */
+export function isStateChangingQuery(query: string): boolean {
+  return STATE_CHANGING_PATTERN.test(query ?? '');
+}
+
+/**
+ * Categorize an agent request failure so a timeout is never reported as a connectivity error.
+ * Axios sets `code: 'ECONNABORTED'` (or `ETIMEDOUT`) and a "timeout of Nms exceeded" message on timeouts.
+ */
+export function classifyAgentError(error: unknown): AgentErrorKind {
+  const e = error as {
+    code?: string;
+    message?: string;
+    response?: { status?: number; data?: { message?: string } };
+  } | undefined;
+  const message = (e?.response?.data?.message || e?.message || '').toLowerCase();
+
+  if (message.includes('invalid query')) return 'invalid_query';
+  if (e?.code === 'ECONNABORTED' || e?.code === 'ETIMEDOUT' || message.includes('timeout')) return 'timeout';
+  if (e?.response?.status === 504 || e?.response?.status === 408) return 'timeout';
+  if (e?.response?.status) return 'server';
+  if (e?.code === 'ERR_NETWORK' || message.includes('network')) return 'network';
+  return 'unknown';
+}
+
+/**
+ * User-facing copy per failure kind. Timeouts on state-changing actions tell the user the
+ * action may still be running and to check status instead of resending.
+ */
+export function agentErrorMessage(kind: AgentErrorKind, stateChanging: boolean): string {
+  switch (kind) {
+    case 'timeout':
+      return stateChanging
+        ? "This action is taking longer than expected and may still be running. Check its status before trying again so it isn't submitted twice."
+        : 'The request is taking longer than expected. Please try again.';
+    case 'invalid_query':
+      return "I didn't understand that. Could you please rephrase your question?";
+    case 'network':
+      return "I'm having trouble connecting. Please check your internet connection and try again.";
+    default:
+      return 'Agent service is currently unavailable. Please try again later.';
+  }
 }
 
 /**
@@ -261,7 +314,9 @@ class AgentService {
    * ```
    */
   async queryAgent(request: AgentQueryRequest): Promise<AgentQueryResponse> {
-    const correlationId = generateCorrelationId('agent_query');
+    // The correlation id doubles as the client request id the backend can report status for (#274).
+    const correlationId = request.clientRequestId ?? generateCorrelationId('agent_query');
+    const stateChanging = isStateChangingQuery(request.query);
     const startedAt = Date.now();
     try {
       // Prompt/response content is never logged by default; only correlation metadata (#273).
@@ -270,7 +325,7 @@ class AgentService {
         logger.debug('[AgentService] Query content:', { correlationId, query: request.query });
       }
 
-      const response = await this.api.post('/query', request);
+      const response = await this.api.post('/query', { ...request, clientRequestId: correlationId });
 
       logger.debug(
         '[AgentService] Query response:',
@@ -284,16 +339,18 @@ class AgentService {
       // Ensure we return the proper AgentQueryResponse format
       if (response.data && response.data.result) {
         return {
-          result: response.data.result
+          result: { ...response.data.result, requestId: correlationId, stateChanging }
         };
       }
-      
+
       // Fallback if response format is unexpected
       return {
         result: {
           success: true,
           data: response.data || 'Query processed successfully',
-          error: null
+          error: null,
+          requestId: correlationId,
+          stateChanging
         }
       };
     } catch (error: unknown) {
@@ -303,27 +360,55 @@ class AgentService {
         ...describeAgentError(error),
       });
 
-      // Convert technical errors to user-friendly messages
-      let friendlyMessage = 'Agent service is currently unavailable. Please try again later.';
+      // Convert technical errors to user-friendly messages, keeping timeouts distinct (#274)
       const axiosError = error as { response?: { data?: { message?: string } }; message?: string };
       const errorMsg = axiosError.response?.data?.message || axiosError.message || 'Unknown error';
-      
-      if (errorMsg.includes('invalid query')) {
-        friendlyMessage = "I didn't understand that. Could you please rephrase your question?";
-      } else if (errorMsg.includes('timeout')) {
-        friendlyMessage = "The request is taking longer than expected. Please try again.";
-      } else if (errorMsg.includes('network')) {
-        friendlyMessage = "I'm having trouble connecting. Please check your internet connection and try again.";
-      }
-      
+      const errorKind = classifyAgentError(error);
+
       // Return a structured error response
       return {
         result: {
           success: false,
-          data: friendlyMessage,
-          error: errorMsg
+          data: agentErrorMessage(errorKind, stateChanging),
+          error: errorMsg,
+          errorKind,
+          requestId: correlationId,
+          stateChanging
         }
       };
+    }
+  }
+
+  /**
+   * Check whether a query that timed out on the client is still running or has finished (#274).
+   * Calls `GET /query/:requestId/status`. Never throws: if the backend does not support the
+   * endpoint (404/501) or cannot be reached, resolves with `status: 'unknown'`.
+   *
+   * Expected backend response: `{ status: 'pending' | 'completed' | 'failed', result?: AgentQueryResponse['result'] }`.
+   *
+   * @param requestId - `result.requestId` from the timed-out `queryAgent` response.
+   */
+  async getActionStatus(requestId: string): Promise<AgentActionStatus> {
+    const checkedAt = () => new Date().toISOString();
+    try {
+      const response = await this.api.get(`/query/${encodeURIComponent(requestId)}/status`, {
+        timeout: 10000
+      });
+      const body = response.data as { status?: string; result?: AgentQueryResponse['result'] } | undefined;
+      const status = body?.status;
+
+      if (status === 'pending' || status === 'completed' || status === 'failed') {
+        return {
+          requestId,
+          status,
+          result: body?.result ? { ...body.result, requestId } : undefined,
+          checkedAt: checkedAt()
+        };
+      }
+      return { requestId, status: 'unknown', checkedAt: checkedAt() };
+    } catch (error) {
+      logger.error('[AgentService] Status check failed:', { correlationId: requestId, ...describeAgentError(error) });
+      return { requestId, status: 'unknown', checkedAt: checkedAt() };
     }
   }
 

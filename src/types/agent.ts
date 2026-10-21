@@ -3,6 +3,26 @@
 export interface AgentQueryRequest {
   userId: string;
   query: string;
+  /**
+   * Client-generated id for this query (#274). Lets the backend dedupe retries and
+   * answer `GET /query/:clientRequestId/status` after a client-side timeout.
+   */
+  clientRequestId?: string;
+}
+
+/**
+ * Why an agent query failed (#274). `timeout` means the client stopped waiting; the
+ * action may still be running or may have completed on the backend.
+ */
+export type AgentErrorKind = 'timeout' | 'network' | 'invalid_query' | 'server' | 'unknown';
+
+/** Result of checking a query's status after a timeout (#274). */
+export interface AgentActionStatus {
+  requestId: string;
+  /** `unknown` when the backend cannot report status (endpoint missing or unreachable). */
+  status: 'pending' | 'completed' | 'failed' | 'unknown';
+  result?: AgentQueryResponse['result'];
+  checkedAt: string;
 }
 
 export interface AgentQueryResponse {
@@ -10,6 +30,12 @@ export interface AgentQueryResponse {
     success: boolean;
     data: string;
     error?: string;
+    /** Set on failures so the UI can tell a timeout apart from a connectivity error (#274). */
+    errorKind?: AgentErrorKind;
+    /** Echo of `clientRequestId`; use with `agentService.getActionStatus`. */
+    requestId?: string;
+    /** True when the query looked like a state-changing action (transfer, swap, ...). */
+    stateChanging?: boolean;
     transactionHash?: string;
     metadata?: {
       type?: 'defi' | 'wallet' | 'contact' | 'general';

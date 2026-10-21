@@ -263,6 +263,9 @@ export const sendMessage = createAsyncThunk(
           status: 'success',
           success: response.result.success,
           error: response.result.error,
+          errorKind: response.result.errorKind,
+          requestId: response.result.requestId,
+          stateChanging: response.result.stateChanging,
           executionTrace: response.result.executionTrace,
 serverTimestamp: serverTimestamp,
           // Store raw structured data in metadata if it was JSON
