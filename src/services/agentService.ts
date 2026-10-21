@@ -64,6 +64,37 @@ function outage(
   };
 }
 
+const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+const bool = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
+
+/** Parse a `GET /status` body (#271). Returns null when the body is not an object. */
+export function parseStatusMetrics(body: unknown): Omit<AgentStatus, 'isOnline' | 'health'> | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+  const b = body as Record<string, unknown>;
+  const services: AgentStatus['services'] = {};
+  if (typeof b.services === 'object' && b.services !== null && !Array.isArray(b.services)) {
+    for (const [name, raw] of Object.entries(b.services as Record<string, unknown>)) {
+      if (typeof raw !== 'object' || raw === null) continue;
+      const svc = raw as Record<string, unknown>;
+      services[name] = {
+        isActive: bool(svc.isActive),
+        isHealthy: bool(svc.isHealthy),
+        lastCheck: str(svc.lastCheck),
+        ...(str(svc.error) ? { error: str(svc.error)! } : {}),
+      };
+    }
+  }
+  return {
+    source: 'backend',
+    version: str(b.version),
+    uptime: num(b.uptimeSeconds ?? b.uptime),
+    lastActivity: str(b.lastActivity),
+    activeConnections: num(b.activeConnections),
+    services,
+  };
+}
+
 /**
  * Direct client service for communicating with the AI Agent backend.
  */
@@ -206,27 +237,41 @@ class AgentService {
   }
 
   /**
-   * Get current agent status and connected protocol services status.
-   *
-   * @returns Promise resolving to `AgentStatus` envelope.
+   * Agent status from real sources only (#271).
+   * - `isOnline` comes from `healthCheck()` (#272).
+   * - Metrics come from `GET /status` when the backend supports it; otherwise every metric is
+   *   `null`, `services` is empty and `source` is `'unavailable'`.
+   * Never throws.
    */
   async getStatus(): Promise<AgentStatus> {
-    // Since the experimental backend doesn't have a /status endpoint,
-    // we'll return a basic status based on connectivity
+    const [health, metrics] = await Promise.all([
+      this.healthCheck().catch(() => null),
+      this.fetchStatusMetrics(),
+    ]);
     return {
-      isOnline: this.isConnected,
-      version: '1.0.0',
-      uptime: 0,
-      lastActivity: new Date().toISOString(),
-      activeConnections: 1,
-      services: {
-        soroswap: { isActive: true, isHealthy: true, lastCheck: new Date().toISOString() },
-        blend: { isActive: true, isHealthy: true, lastCheck: new Date().toISOString() },
-        aquarius: { isActive: true, isHealthy: true, lastCheck: new Date().toISOString() },
-        phoenix: { isActive: true, isHealthy: true, lastCheck: new Date().toISOString() },
-        database: { isActive: true, isHealthy: true, lastCheck: new Date().toISOString() }
-      }
+      isOnline: health ? health.status !== 'unhealthy' : false,
+      health,
+      ...metrics,
     };
+  }
+
+  /** `GET /status`, validated field by field; unknown or invalid fields stay null. */
+  private async fetchStatusMetrics(): Promise<Omit<AgentStatus, 'isOnline' | 'health'>> {
+    const unavailable: Omit<AgentStatus, 'isOnline' | 'health'> = {
+      source: 'unavailable',
+      version: null,
+      uptime: null,
+      lastActivity: null,
+      activeConnections: null,
+      services: {},
+    };
+    try {
+      const response = await this.api.get('/status', { timeout: 5000 });
+      return parseStatusMetrics(response.data) ?? unavailable;
+    } catch {
+      // 404/501 (no endpoint) and outages both mean "no metrics", never fabricated ones
+      return unavailable;
+    }
   }
 
   /**

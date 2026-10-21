@@ -26,6 +26,7 @@ import {
   AuditLogStats
 } from '@/types';
 import agentService from './agentService';
+import type { AgentStatus } from '@/types/agent';
 import { parseAgentEnvelope, protocolErrorResult } from './agentEnvelope';
 import { tokenRefreshService } from './tokenRefreshService';
 import {
@@ -838,21 +839,18 @@ class ApiService {
       return await agentService.getStatus();
     } catch (error) {
       console.error('Failed to get agent status:', error);
-      // Return a default status instead of throwing
-      return {
+      // Unknown, not fabricated: no placeholder metrics or protocol states (#271)
+      const unavailable: AgentStatus = {
         isOnline: false,
-        version: '1.0.0',
-        uptime: 0,
-        lastActivity: new Date().toISOString(),
-        activeConnections: 0,
-        services: {
-          vesu: { isActive: false, isHealthy: false, lastCheck: new Date().toISOString() },
-          atomiq: { isActive: false, isHealthy: false, lastCheck: new Date().toISOString() },
-          xverse: { isActive: false, isHealthy: false, lastCheck: new Date().toISOString() },
-          troves: { isActive: false, isHealthy: false, lastCheck: new Date().toISOString() },
-          database: { isActive: false, isHealthy: false, lastCheck: new Date().toISOString() }
-        }
+        source: 'unavailable',
+        version: null,
+        uptime: null,
+        lastActivity: null,
+        activeConnections: null,
+        services: {},
+        health: null,
       };
+      return unavailable;
     }
   }
 

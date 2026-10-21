@@ -21,25 +21,29 @@ export interface AgentQueryResponse {
   };
 }
 
+/**
+ * Agent status (#271). Every metric is `null` when no real source reported it; the client never
+ * fills in placeholder values. `isOnline` comes from the health probe (`AgentHealthCheck`).
+ */
 export interface AgentStatus {
   isOnline: boolean;
-  version: string;
-  uptime: number;
-  lastActivity: string;
-  activeConnections: number;
-  services: {
-    soroswap: ServiceStatus;
-    blend: ServiceStatus;
-    aquarius: ServiceStatus;
-    phoenix: ServiceStatus;
-    database: ServiceStatus;
-  };
+  /** Where the metrics came from: `GET /status`, or nothing (`unavailable`). */
+  source: 'backend' | 'unavailable';
+  version: string | null;
+  /** Seconds. */
+  uptime: number | null;
+  lastActivity: string | null;
+  activeConnections: number | null;
+  /** Per-protocol health as reported by the backend; empty when unknown. */
+  services: Record<string, ServiceStatus>;
+  /** The health probe that determined `isOnline`. */
+  health: AgentHealthCheck | null;
 }
 
 export interface ServiceStatus {
-  isActive: boolean;
-  isHealthy: boolean;
-  lastCheck: string;
+  isActive: boolean | null;
+  isHealthy: boolean | null;
+  lastCheck: string | null;
   error?: string;
 }
 

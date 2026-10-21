@@ -88,7 +88,22 @@ The client returns:
 ```
 Earlier versions defaulted `success` to `true` and wrapped unknown bodies as successful replies; that is no longer the case. HTTP errors (4xx/5xx, network) are unchanged and still become friendly failure results.
 
-`getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
+### Agent Status (#271)
+
+**Proposed; backend support not yet confirmed.**
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /status` | No body; 5s timeout. | `{"version":"2.3.0","uptimeSeconds":5400,"activeConnections":12,"lastActivity":"2026-10-21T10:00:00Z","services":{"soroswap":{"isActive":true,"isHealthy":true,"lastCheck":"2026-10-21T09:59:00Z"},"blend":{"isActive":true,"isHealthy":false,"lastCheck":"2026-10-21T09:59:00Z","error":"RPC timeout"}}}` | `AgentStatus` dashboard. Each field is validated on its own; missing or invalid fields stay `null`. |
+
+`agentService.getStatus()` no longer invents values:
+- `isOnline` comes only from `healthCheck()`.
+- Metrics (`version`, `uptime`, `activeConnections`, `lastActivity`) come only from `GET /status`. If the endpoint is missing or fails, they are `null` and `source` is `"unavailable"`.
+- `services` holds only the protocols the backend reports. It is empty, not "all healthy", when nothing was reported.
+
+The dashboard shows "Unavailable" for `null` metrics and "Protocol health is unavailable" for empty `services`. A service whose health is `null` gets an "Unknown" marker. The probe's measured response time is shown, labelled "connectivity check only" when `/health` is unsupported.
+
+`getCapabilities()` still returns a local object and makes no HTTP request. Its success no longer counts as the agent being online.
 
 ## Authentication Endpoints
 
