@@ -188,6 +188,12 @@ class ApiService {
       async (error) => {
         const originalRequest = error.config;
 
+        // A step-up challenge is not an expired session: let the caller prompt for
+        // re-authentication instead of refreshing or logging out (#255, ADR-0006).
+        if (error.response?.data?.code === 'REAUTH_REQUIRED') {
+          return Promise.reject(error);
+        }
+
         // Non-401 errors, or a request that already tried refresh, reject.
         if (error.response?.status !== 401 || originalRequest._retry) {
           if (error.response?.status === 401) {
@@ -500,6 +506,22 @@ class ApiService {
    * @returns Promise resolving to standard ApiResponse envelope with status message.
    * @throws {AxiosError} Throws if current password is incorrect or request fails.
    */
+  /**
+   * Confirm the user's password to refresh "recent authentication" for sensitive actions (#255).
+   * Proposed contract: `POST /auth/reauthenticate` `{ password }` → `{ authenticatedAt, expiresAt }`.
+   *
+   * @param password - The user's current password. Never stored or logged.
+   * @throws {AxiosError} 401/403 when the password is wrong.
+   */
+  async reauthenticate(password: string): Promise<{ authenticatedAt: string; expiresAt: string }> {
+    const response = await this.api.post<{ authenticatedAt: string; expiresAt: string }>(
+      '/auth/reauthenticate',
+      { password },
+      { withCredentials: true },
+    );
+    return response.data;
+  }
+
   async changePassword(currentPassword: string, newPassword: string): Promise<ApiResponse<{ message: string }>> {
     const response = await this.api.post<ApiResponse<{ message: string }>>('/auth/change-password', {
       currentPassword,

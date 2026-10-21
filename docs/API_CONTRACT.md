@@ -64,6 +64,23 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | `POST /auth/change-password` | `{"currentPassword":"Example123!","newPassword":"NewExample123!"}` | `{"success":true,"data":{"message":"Password changed"}}` | Service method only; no direct screen caller found. |
 | `DELETE /auth/account` | No body; bearer token when available. | `{"success":true,"data":{"message":"Account deleted"}}` | Service method only; clears the in-memory/local token after the request resolves. |
 
+### Re-authentication For Sensitive Actions (#255)
+
+**Proposed; backend support not yet confirmed.** See [ADR-0006](adr/0006-idle-session-reauthentication.md).
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `POST /auth/reauthenticate` | `{"password":"Example123!"}`; cookies included. | `{"authenticatedAt":"2026-01-01T00:00:00Z","expiresAt":"2026-01-01T00:05:00Z"}`; a wrong password returns `401`/`403`. | `ReauthDialog`, shown only after a step-up challenge. |
+
+**Step-up challenge.** When the user's last authentication is older than the server's limit, `POST /auth/change-password`, `DELETE /auth/account` and the data-export routes respond with:
+
+```json
+HTTP 403
+{ "code": "REAUTH_REQUIRED", "maxAgeSeconds": 300 }
+```
+
+The client prompts for the password, calls `/auth/reauthenticate` and retries the original request once. A `401` with this `code` does not trigger the token-refresh/logout interceptor. The client has no idle timer for these actions; the server's limit is the only rule.
+
 ### Data Export Fallbacks
 
 `exportUserData()` tries these paths in order, moving to the next only on HTTP 404. Each successful response is consumed as a binary `Blob`, not JSON.

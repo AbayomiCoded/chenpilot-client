@@ -2,7 +2,9 @@
 
 import React, { useEffect } from "react";
 import { useAppDispatch, useAppSelector } from "@/store";
-import { fetchProfile } from "@/store/slices/authSlice";
+import { fetchProfile, logout } from "@/store/slices/authSlice";
+import { useRouter } from "next/navigation";
+import { SecuritySettings } from "@/components/settings/SecuritySettings";
 import { setLanguage } from "@/store/slices/uiSlice";
 import axios from "axios";
 import { ChatLayout } from "@/components/layout/ChatLayout";
@@ -14,6 +16,7 @@ import { t, LANGUAGES } from "@/lib/i18n/i18n";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
+  const router = useRouter();
   const { isAuthenticated, user, isLoading } = useAppSelector(
     (state) => state.auth,
   );
@@ -220,24 +223,15 @@ export default function SettingsPage() {
                 </div>
               </Card>
 
-              {/* Security */}
+              {/* Security: sensitive actions may require re-authentication (#255) */}
               <Card>
-                <div className="p-6">
-                  <h3 className="text-lg font-medium text-white mb-4">
-                    {t(language, "settings.security")}
-                  </h3>
-                  <div className="space-y-4">
-                    <Button variant="ghost" className="w-full justify-start">
-                      Change Password
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      className="w-full justify-start text-red-600 hover:text-red-700"
-                    >
-                      Delete Account
-                    </Button>
-                  </div>
-                </div>
+                <SecuritySettings
+                  title={t(language, "settings.security")}
+                  onAccountDeleted={() => {
+                    dispatch(logout());
+                    router.push("/auth/login");
+                  }}
+                />
               </Card>
             </div>
           </div>
