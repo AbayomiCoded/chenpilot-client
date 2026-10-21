@@ -12,6 +12,7 @@ import { Eye, EyeOff, ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
+import { isTerminalAuthError, useClearPasswordOnLeave } from "@/components/auth/passwordHygiene";
 
 interface LoginFormData {
   email: string;
@@ -27,10 +28,15 @@ export default function LoginForm() {
   const {
     register,
     handleSubmit,
+    setValue,
+    setFocus,
     formState: { errors },
   } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
   });
+
+  // Never leave a submitted password behind after leaving the page or a bfcache restore (#253)
+  useClearPasswordOnLeave(() => setValue("password", ""));
 
   const onSubmit = async (data: LoginFormData) => {
     try {
@@ -39,6 +45,12 @@ export default function LoginForm() {
       router.push("/chat");
     } catch (error: any) {
       toast.error(error?.message || "Login failed");
+      // Terminal failures (wrong credentials, validation) clear the password and keep the
+      // email; transient ones (network, 5xx) keep it so the user can just resubmit (#253)
+      if (isTerminalAuthError(error)) {
+        setValue("password", "");
+        setFocus("password");
+      }
     }
   };
 

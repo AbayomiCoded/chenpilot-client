@@ -13,6 +13,7 @@ import { Eye, EyeOff, ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
+import { isTerminalAuthError, useClearPasswordOnLeave } from "@/components/auth/passwordHygiene";
 
 interface RegisterFormData {
   email: string;
@@ -29,10 +30,15 @@ export function RegisterForm() {
     register,
     handleSubmit,
     watch,
+    setValue,
+    setFocus,
     formState: { errors, isSubmitting },
   } = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
   });
+
+  // Never leave a submitted password behind after leaving the page or a bfcache restore (#253)
+  useClearPasswordOnLeave(() => setValue("password", ""));
 
   const passwordValue = watch("password") ?? "";
 
@@ -52,6 +58,11 @@ export function RegisterForm() {
         error?.response?.data?.message ||
         "Registration failed";
       toast.error(String(backendMessage));
+      // Terminal failures clear the password but keep name and email (#253)
+      if (isTerminalAuthError(error)) {
+        setValue("password", "");
+        setFocus("password");
+      }
     }
   };
 
