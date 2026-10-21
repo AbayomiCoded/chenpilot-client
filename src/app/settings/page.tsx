@@ -5,6 +5,7 @@ import { useAppDispatch, useAppSelector } from "@/store";
 import { fetchProfile, logout } from "@/store/slices/authSlice";
 import { useRouter } from "next/navigation";
 import { SecuritySettings } from "@/components/settings/SecuritySettings";
+import { SignInActivity } from "@/components/settings/SignInActivity";
 import { setLanguage } from "@/store/slices/uiSlice";
 import axios from "axios";
 import { ChatLayout } from "@/components/layout/ChatLayout";
@@ -232,6 +233,14 @@ export default function SettingsPage() {
                     router.push("/auth/login");
                   }}
                 />
+              </Card>
+
+              {/* Recent sign-in activity (#257) */}
+              <Card>
+                <div className="p-6">
+                  <h3 className="text-lg font-medium text-white mb-4">Recent sign-in activity</h3>
+                  <SignInActivity />
+                </div>
               </Card>
             </div>
           </div>

@@ -1,6 +1,8 @@
 /**
  * Session Service - Manages user session lifecycle and expiration
  */
+import apiService from './api';
+import type { SignInActivityEvent, SignInActivityPage } from '@/types';
 
 export interface SessionConfig {
   sessionTimeout: number; // Total session duration in milliseconds
@@ -206,3 +208,96 @@ class SessionService {
 }
 
 export const sessionService = new SessionService();
+
+// ─── Sign-in activity (#257) ────────────────────────────────────────────────
+
+export type SignInActivityResult =
+  | { status: 'ok'; page: SignInActivityPage }
+  | { status: 'unsupported' }
+  | { status: 'error'; message: string };
+
+const EVENT_TYPES = new Set(['sign_in', 'sign_out', 'password_change', 'reauthentication', 'token_refresh']);
+
+/** Validate and sort a server activity page (newest first); unknown or malformed events are dropped. */
+export function normalizeActivityPage(raw: unknown): SignInActivityPage {
+  const data = (raw ?? {}) as { events?: unknown; capabilities?: Partial<SignInActivityPage['capabilities']> };
+  const events = (Array.isArray(data.events) ? data.events : [])
+    .filter((e): e is SignInActivityEvent => {
+      const event = e as Partial<SignInActivityEvent>;
+      return (
+        typeof event?.id === 'string' &&
+        EVENT_TYPES.has(event.type as string) &&
+        (event.outcome === 'success' || event.outcome === 'failure') &&
+        typeof event.occurredAt === 'string' &&
+        !Number.isNaN(Date.parse(event.occurredAt))
+      );
+    })
+    .sort((a, b) => Date.parse(b.occurredAt) - Date.parse(a.occurredAt));
+
+  return {
+    events,
+    capabilities: {
+      revokeSession: data.capabilities?.revokeSession === true,
+      reportEvent: data.capabilities?.reportEvent === true,
+    },
+  };
+}
+
+/** Load recent sign-in activity. A 404/501 means the backend has no activity endpoint yet. */
+export async function loadSignInActivity(limit = 20): Promise<SignInActivityResult> {
+  try {
+    return { status: 'ok', page: normalizeActivityPage(await apiService.getSignInActivity(limit)) };
+  } catch (error) {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 404 || status === 501) return { status: 'unsupported' };
+    return { status: 'error', message: "Couldn't load sign-in activity. Try again later." };
+  }
+}
+
+export const revokeSession = (sessionId: string) => apiService.revokeSession(sessionId);
+export const reportSignInEvent = (eventId: string) => apiService.reportSignInEvent(eventId);
+
+const BROWSERS: Array<[RegExp, string]> = [
+  [/Edg\//, 'Edge'],
+  [/OPR\/|Opera/, 'Opera'],
+  [/Firefox\//, 'Firefox'],
+  [/Chrome\//, 'Chrome'],
+  [/Safari\//, 'Safari'],
+];
+const SYSTEMS: Array<[RegExp, string]> = [
+  [/Windows/, 'Windows'],
+  [/iPhone|iPad|iPod/, 'iOS'],
+  [/Android/, 'Android'],
+  [/Mac OS X|Macintosh/, 'macOS'],
+  [/CrOS/, 'ChromeOS'],
+  [/Linux/, 'Linux'],
+];
+
+/** Approximate "Browser on OS" label; never exposes version numbers or the raw user agent. */
+export function describeDevice(event: Pick<SignInActivityEvent, 'device' | 'userAgent'>): string {
+  let browser = event.device?.browser;
+  let os = event.device?.os;
+  if ((!browser || !os) && event.userAgent) {
+    browser ??= BROWSERS.find(([re]) => re.test(event.userAgent!))?.[1];
+    os ??= SYSTEMS.find(([re]) => re.test(event.userAgent!))?.[1];
+  }
+  if (browser && os) return `${browser} on ${os}`;
+  return browser || os || 'Unknown device';
+}
+
+/** Approximate location label ("Region, Country"), or null. */
+export function describeLocation(event: Pick<SignInActivityEvent, 'approxLocation'>): string | null {
+  const parts = [event.approxLocation?.region, event.approxLocation?.country].filter(Boolean);
+  return parts.length ? parts.join(', ') : null;
+}
+
+/**
+ * Coarsen an IP address for the optional details view: IPv4 keeps the first three octets
+ * (`203.0.113.x`), IPv6 keeps the first three groups. Never shown by default.
+ */
+export function maskIpAddress(ip: string | undefined): string | null {
+  if (!ip) return null;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return `${ip.split('.').slice(0, 3).join('.')}.x`;
+  if (ip.includes(':')) return `${ip.split(':').slice(0, 3).join(':')}:…`;
+  return null;
+}

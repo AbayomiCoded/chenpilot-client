@@ -81,6 +81,28 @@ HTTP 403
 
 The client prompts for the password, calls `/auth/reauthenticate` and retries the original request once. A `401` with this `code` does not trigger the token-refresh/logout interceptor. The client has no idle timer for these actions; the server's limit is the only rule.
 
+### Sign-in Activity (#257)
+
+**Proposed; backend support not yet confirmed.** These routes are used by `SignInActivity` on the settings page, through `sessionService`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /auth/activity` | `GET /auth/activity?limit=20`; bearer token. | `{"events":[{"id":"evt_1","type":"sign_in","outcome":"success","occurredAt":"2026-10-20T09:15:00Z","device":{"browser":"Chrome","os":"macOS","type":"desktop"},"approxLocation":{"region":"Lagos","country":"NG"},"ipAddress":"203.0.113.42","method":"password","sessionId":"sess_1","current":true}],"capabilities":{"revokeSession":true,"reportEvent":true}}` | Settings → Recent sign-in activity. `404`/`501` shows "isn't available yet"; other failures show a retry. |
+| `DELETE /auth/sessions/{sessionId}` | `DELETE /auth/sessions/sess_2` | `204 No Content` | "Sign out session". Shown only when `capabilities.revokeSession` is true, and never for the `current` session or for failed events. |
+| `POST /auth/activity/{eventId}/report` | `POST /auth/activity/evt_3/report` with `{}` | `202 Accepted` | "This wasn't me". Shown only when `capabilities.reportEvent` is true; not shown for the current session. |
+
+**Event model:**
+- `type`: one of `sign_in`, `sign_out`, `password_change`, `reauthentication`, `token_refresh`.
+- `outcome`: `success` or `failure`.
+- `occurredAt`: ISO 8601. Events are shown newest first.
+
+Events with an unknown type, unknown outcome or invalid date are dropped. `device` should be derived on the server. If only `userAgent` is sent, the client reduces it to "Browser on OS" and drops version numbers.
+
+**Privacy defaults:**
+- Shown by default: date, coarse device/browser, outcome and approximate location (region, country).
+- `ipAddress` is never shown by default. "Show network details" reveals only a coarsened form (`203.0.113.x`; the first three groups of an IPv6 address).
+- The backend should not send precise location or full fingerprints.
+
 ### Data Export Fallbacks
 
 `exportUserData()` tries these paths in order, moving to the next only on HTTP 404. Each successful response is consumed as a binary `Blob`, not JSON.

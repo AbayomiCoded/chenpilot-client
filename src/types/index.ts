@@ -14,6 +14,34 @@ export interface User {
   updatedAt: string;
 }
 
+/** Server event model for sign-in activity (#257). See docs/API_CONTRACT.md "Sign-in Activity". */
+export interface SignInActivityEvent {
+  id: string;
+  type: "sign_in" | "sign_out" | "password_change" | "reauthentication" | "token_refresh";
+  outcome: "success" | "failure";
+  /** ISO 8601 timestamp. */
+  occurredAt: string;
+  /** Coarse device info derived server-side; never a full fingerprint. */
+  device?: { browser?: string; os?: string; type?: "desktop" | "mobile" | "tablet" | "unknown" };
+  /** Raw user agent, used only when `device` is missing. */
+  userAgent?: string;
+  /** Approximate location (country/region), if the server provides it. */
+  approxLocation?: { country?: string; region?: string };
+  /** IP address. Hidden in the UI unless the user asks for details. */
+  ipAddress?: string;
+  method?: "password" | "google";
+  /** Session this event belongs to, for revocation. */
+  sessionId?: string;
+  /** The session making this request. */
+  current?: boolean;
+}
+
+export interface SignInActivityPage {
+  events: SignInActivityEvent[];
+  /** What the backend supports; actions are hidden when false/absent. */
+  capabilities: { revokeSession: boolean; reportEvent: boolean };
+}
+
 export interface StellarAccountInfo {
   address: string;
   publicKey: string;

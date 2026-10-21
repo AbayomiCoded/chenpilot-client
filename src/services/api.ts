@@ -15,6 +15,7 @@ import {
   ApiResponse,
   ChatMessage,
   Conversation,
+  SignInActivityPage,
   PromptVersionRecord,
   LiquidityPool,
   LiquidityStats,
@@ -506,6 +507,27 @@ class ApiService {
    * @returns Promise resolving to standard ApiResponse envelope with status message.
    * @throws {AxiosError} Throws if current password is incorrect or request fails.
    */
+  /**
+   * Recent sign-in activity for the current user (#257).
+   * Proposed contract: `GET /auth/activity?limit=<n>` → `SignInActivityPage`.
+   *
+   * @throws {AxiosError} 404/501 when the backend does not support activity yet.
+   */
+  async getSignInActivity(limit = 20): Promise<SignInActivityPage> {
+    const response = await this.api.get<SignInActivityPage>('/auth/activity', { params: { limit } });
+    return response.data;
+  }
+
+  /** Sign out another session (#257). Proposed: `DELETE /auth/sessions/:sessionId` → 204. */
+  async revokeSession(sessionId: string): Promise<void> {
+    await this.api.delete(`/auth/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  /** Report an activity event as "not me" (#257). Proposed: `POST /auth/activity/:id/report` → 202. */
+  async reportSignInEvent(eventId: string): Promise<void> {
+    await this.api.post(`/auth/activity/${encodeURIComponent(eventId)}/report`, {});
+  }
+
   /**
    * Confirm the user's password to refresh "recent authentication" for sensitive actions (#255).
    * Proposed contract: `POST /auth/reauthenticate` `{ password }` → `{ authenticatedAt, expiresAt }`.
