@@ -1,6 +1,28 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { Contact, CreateContactRequest, UpdateContactRequest } from '@/types';
 import apiService from '@/services/api';
+import { PAGINATION } from '@/constants';
+
+export const paginateContacts = (
+  contacts: Contact[],
+  page: number,
+  pageSize = PAGINATION.CONTACTS_PAGE_SIZE,
+): Contact[] => {
+  const start = Math.max(0, page - 1) * pageSize;
+  return contacts.slice(start, start + pageSize);
+};
+export const hasContactAddressChanged = (savedAddress: string, proposedAddress: string): boolean =>
+  proposedAddress.trim() !== savedAddress;
+
+export const filterContacts = (contacts: Contact[], searchTerm: string): Contact[] => {
+  const normalizedTerm = searchTerm.trim().toLowerCase();
+  if (!normalizedTerm) return contacts;
+
+  return contacts.filter((contact) =>
+    contact.name.toLowerCase().includes(normalizedTerm) ||
+    contact.address.toLowerCase().includes(normalizedTerm)
+  );
+};
 
 interface ContactsState {
   list: Contact[];

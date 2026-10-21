@@ -6,6 +6,9 @@ import {
   stellarAddressSchema,
   tokenAmountSchema,
   createContactSchema,
+  sendPaymentSchema,
+  sanitizePaymentInput,
+  getPaymentFailureMessage,
 } from "../validation";
 
 // #141 — table-driven tests for validation schemas.
@@ -128,5 +131,45 @@ describe("createContactSchema", () => {
   it("rejects invalid address", () => {
     const r = createContactSchema.safeParse({ ...valid, address: "bad" });
     expect(r.success).toBe(false);
+  });
+});
+
+describe('sendPaymentSchema memo rules', () => {
+  const payment = {
+    recipientAddress: 'GABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB',
+    amount: '1',
+    tokenType: 'XLM' as const,
+  };
+
+  it('omits stale memo values when memo type is none', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memo: 'stale', memoType: 'none' }).success).toBe(true);
+    expect(sanitizePaymentInput({ ...payment, memo: 'stale', memoType: 'none' })).not.toHaveProperty('memo');
+  });
+
+  it('accepts text memo up to 28 UTF-8 bytes and rejects longer values', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'text', memo: 'a'.repeat(28) }).success).toBe(true);
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'text', memo: 'é'.repeat(15) }).success).toBe(false);
+  });
+
+  it('accepts numeric memo IDs within uint64 and rejects overflow or non-numeric values', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'id', memo: '18446744073709551615' }).success).toBe(true);
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'id', memo: '18446744073709551616' }).success).toBe(false);
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'id', memo: '12x' }).success).toBe(false);
+  });
+
+  it('accepts exactly 32-byte hex hashes and rejects malformed hashes', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'hash', memo: 'a'.repeat(64) }).success).toBe(true);
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'hash', memo: 'a'.repeat(63) }).success).toBe(false);
+  });
+
+  it('requires a memo type when a memo is provided without one', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memo: 'untyped' }).success).toBe(false);
+  });
+});
+
+describe('getPaymentFailureMessage', () => {
+  it('explains reserve-related rejection in plain language', () => {
+    expect(getPaymentFailureMessage(new Error('Insufficient balance to maintain reserve')))
+      .toContain("Stellar's minimum account reserve");
   });
 });

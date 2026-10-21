@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { getContacts } from '@/store/slices/contactsSlice';
@@ -10,12 +10,20 @@ import { SendPaymentRequest } from '@/types';
 import { ArrowLeft, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import toast from 'react-hot-toast';
+import apiService from '@/services/api';
+import { getPaymentFailureMessage } from '@/utils/validation';
+
+interface NativeBalanceBreakdown {
+  total: string;
+  reserve: string;
+}
 
 export default function SendPaymentPage() {
   const router = useRouter();
   const dispatch = useAppDispatch();
   const { isAuthenticated } = useAppSelector((state) => state.auth);
   const { list: contacts, isLoading: contactsLoading } = useAppSelector((state) => state.contacts);
+  const [nativeBalance, setNativeBalance] = useState<NativeBalanceBreakdown | null>(null);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -24,6 +32,20 @@ export default function SendPaymentPage() {
     }
 
     dispatch(getContacts());
+    let isActive = true;
+    void apiService.getBalance().then((response) => {
+      const total = response.data?.nativeBalance;
+      const reserve = response.data?.required;
+      if (isActive && response.success && total && reserve && Number.isFinite(Number(total)) && Number.isFinite(Number(reserve))) {
+        setNativeBalance({ total, reserve });
+      }
+    }).catch(() => {
+      // Balance guidance is omitted when the backend cannot provide its breakdown.
+    });
+
+    return () => {
+      isActive = false;
+    };
   }, [dispatch, isAuthenticated, router]);
 
   const handleSendPayment = async (data: SendPaymentRequest) => {
@@ -38,7 +60,7 @@ export default function SendPaymentPage() {
       router.push('/transactions');
     } catch (error: any) {
       console.error('Payment error:', error);
-      toast.error(error?.message || 'Failed to send payment');
+      toast.error(getPaymentFailureMessage(error));
     }
   };
 
@@ -93,6 +115,8 @@ export default function SendPaymentPage() {
               onSubmit={handleSendPayment}
               contacts={contacts}
               isLoading={contactsLoading}
+              nativeBalance={nativeBalance?.total}
+              requiredReserve={nativeBalance?.reserve}
             />
           </div>
         </div>

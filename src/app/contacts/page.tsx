@@ -1,9 +1,11 @@
+import { getContacts, createContact, updateContact, deleteContact, paginateContacts, hasContactAddressChanged, filterContacts } from '@/store/slices/contactsSlice';
+  if (hasContactAddressChanged(editingContact.address, formData.address)) {
 'use client';
 
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/store';
-import { getContacts, createContact, updateContact, deleteContact } from '@/store/slices/contactsSlice';
+import { getContacts, createContact, updateContact, deleteContact, paginateContacts } from '@/store/slices/contactsSlice';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Card } from '@/components/ui/Card';
@@ -23,6 +25,7 @@ import {
 } from 'lucide-react';
 import { formatAddress } from '@/utils/format';
 import { Contact, CreateContactRequest } from '@/types';
+import { PAGINATION } from '@/constants';
 import toast from 'react-hot-toast';
 
 export default function ContactsPage() {
@@ -32,8 +35,10 @@ export default function ContactsPage() {
   const { list: contacts, isLoading } = useAppSelector((state) => state.contacts);
   
   const [searchTerm, setSearchTerm] = useState('');
+  const [contactsPage, setContactsPage] = useState(1);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isAddressChangeConfirmationOpen, setIsAddressChangeConfirmationOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [formData, setFormData] = useState<CreateContactRequest>({
     name: '',
@@ -50,10 +55,10 @@ export default function ContactsPage() {
     dispatch(getContacts());
   }, [dispatch, isAuthenticated, router]);
 
-  const filteredContacts = contacts.filter(contact =>
-    contact.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    contact.address.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredContacts = filterContacts(contacts, searchTerm);
+  const pageCount = Math.ceil(filteredContacts.length / PAGINATION.CONTACTS_PAGE_SIZE);
+  const currentContactsPage = Math.min(contactsPage, Math.max(1, pageCount));
+  const visibleContacts = paginateContacts(filteredContacts, currentContactsPage);
 
   const handleCreateContact = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -68,10 +73,8 @@ export default function ContactsPage() {
     }
   };
 
-  const handleUpdateContact = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const persistContactUpdate = async () => {
     if (!editingContact) return;
-
     try {
       await dispatch(updateContact({
         id: editingContact.id,
@@ -79,12 +82,32 @@ export default function ContactsPage() {
       })).unwrap();
       toast.success('Contact updated successfully!');
       setIsEditModalOpen(false);
+      setIsAddressChangeConfirmationOpen(false);
       setEditingContact(null);
       setFormData({ name: '', address: '', tokenType: 'STRK' });
     } catch (error: any) {
       const errorMessage = error instanceof Error ? error.message : String(error || 'Failed to update contact');
       toast.error(errorMessage);
     }
+  };
+
+  const handleUpdateContact = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingContact) return;
+
+    if (formData.address.trim() !== editingContact.address) {
+      setIsAddressChangeConfirmationOpen(true);
+      return;
+    }
+
+    await persistContactUpdate();
+  };
+
+  const cancelAddressChange = () => {
+    if (editingContact) {
+      setFormData((current) => ({ ...current, address: editingContact.address }));
+    }
+    setIsAddressChangeConfirmationOpen(false);
   };
 
   const handleDeleteContact = async (contact: Contact) => {
@@ -151,7 +174,10 @@ export default function ContactsPage() {
               <Input
                 placeholder="Search contacts..."
                 value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
+                onChange={(e) => {
+                  setSearchTerm(e.target.value);
+                  setContactsPage(1);
+                }}
                 className="pl-10 w-full sm:w-64"
               />
             </div>
@@ -177,7 +203,7 @@ export default function ContactsPage() {
           />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            {filteredContacts.map((contact) => (
+            {visibleContacts.map((contact) => (
               <Card key={contact.id}>
                 <div className="flex items-start justify-between mb-4">
                   <div>
@@ -246,6 +272,33 @@ export default function ContactsPage() {
             ))}
           </div>
         )}
+        {!isLoading && pageCount > 1 && (
+          <nav className="mt-6 flex items-center justify-center gap-4" aria-label="Contacts pages">
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={currentContactsPage === 1}
+              onClick={() => setContactsPage(currentContactsPage - 1)}
+              aria-label="Previous contacts page"
+            >
+              Previous
+            </Button>
+            <span aria-live="polite" className="text-sm text-gray-300">
+              Page {currentContactsPage} of {pageCount}
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              disabled={currentContactsPage === pageCount}
+              onClick={() => setContactsPage(currentContactsPage + 1)}
+              aria-label="Next contacts page"
+            >
+              Next
+            </Button>
+          </nav>
+        )}
       </div>
 
       {/* Create Contact Modal */}
@@ -304,9 +357,37 @@ export default function ContactsPage() {
       {/* Edit Contact Modal */}
       <Modal
         isOpen={isEditModalOpen}
-        onClose={() => setIsEditModalOpen(false)}
-        title="Edit Contact"
+        onClose={() => {
+          setIsEditModalOpen(false);
+          setIsAddressChangeConfirmationOpen(false);
+        }}
+        title={isAddressChangeConfirmationOpen ? 'Confirm Address Change' : 'Edit Contact'}
       >
+        {isAddressChangeConfirmationOpen && editingContact ? (
+          <div className="space-y-4">
+            <p className="text-sm text-gray-700 dark:text-gray-300">
+              Changing this destination can redirect future payments to a different account. Confirm the new address before saving.
+            </p>
+            <div className="space-y-3 rounded-lg border border-gray-200 p-3 dark:border-gray-700">
+              <div>
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">Current address</p>
+                <code className="break-all text-sm">{formatAddress(editingContact.address)}</code>
+              </div>
+              <div>
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">New address</p>
+                <code className="break-all text-sm">{formatAddress(formData.address.trim())}</code>
+              </div>
+            </div>
+            <div className="flex justify-end space-x-3 pt-2">
+              <Button type="button" variant="secondary" onClick={cancelAddressChange}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={() => void persistContactUpdate()}>
+                Confirm destination change
+              </Button>
+            </div>
+          </div>
+        ) : (
         <form onSubmit={handleUpdateContact} className="space-y-4">
           <Input
             label="Name"
@@ -352,6 +433,7 @@ export default function ContactsPage() {
             </Button>
           </div>
         </form>
+        )}
       </Modal>
       </div>
     </ChatLayout>

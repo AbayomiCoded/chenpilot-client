@@ -109,33 +109,62 @@ export const sendPaymentSchema = z.object({
   tokenType: z.enum(PAYMENT_LIMITS.SUPPORTED_TOKENS, {
     required_error: VALIDATION_MESSAGES.TOKEN_TYPE_REQUIRED,
   }),
-  memo: z
-    .string()
-    .max(PAYMENT_LIMITS.MAX_MEMO_LENGTH, VALIDATION_MESSAGES.MEMO_TOO_LONG)
-    .optional(),
+  memo: z.string().optional(),
   memoType: z.enum(PAYMENT_LIMITS.MEMO_TYPES).optional(),
   recipientContactId: z.string().optional(),
-}).refine((data) => {
-  // If memo is provided, memoType must be specified (except for 'none')
-  if (data.memo && data.memo.length > 0 && !data.memoType) {
-    return false;
+}).superRefine((data, context) => {
+  const memoType = data.memoType ?? 'none';
+  const memo = data.memo ?? '';
+
+  if (memo && !data.memoType) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: VALIDATION_MESSAGES.MEMO_TYPE_REQUIRED,
+      path: ['memoType'],
+    });
+    return;
   }
-  return true;
-}, {
-  message: VALIDATION_MESSAGES.MEMO_TYPE_REQUIRED,
-  path: ['memoType'],
-}).refine((data) => {
-  // Validate memo format based on type
-  if (data.memo && data.memoType === 'id') {
-    return SECURITY_VALIDATION.MEMO_ID_REGEX.test(data.memo);
+
+  if (memoType === 'none') {
+    return;
   }
-  if (data.memo && data.memoType === 'hash') {
-    return SECURITY_VALIDATION.MEMO_HASH_REGEX.test(data.memo);
+
+  if (!memo.trim()) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Memo is required for the selected memo type',
+      path: ['memo'],
+    });
+    return;
   }
-  return true;
-}, {
-  message: VALIDATION_MESSAGES.MEMO_INVALID_FORMAT,
-  path: ['memo'],
+
+  if (memoType === 'text' && new TextEncoder().encode(memo).length > PAYMENT_LIMITS.MAX_MEMO_LENGTH) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: VALIDATION_MESSAGES.MEMO_TOO_LONG,
+      path: ['memo'],
+    });
+  }
+
+  if (memoType === 'id') {
+    const isUnsignedInteger = SECURITY_VALIDATION.MEMO_ID_REGEX.test(memo);
+    const fitsUnsigned64 = isUnsignedInteger && BigInt(memo) <= 18446744073709551615n;
+    if (!fitsUnsigned64) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: VALIDATION_MESSAGES.MEMO_ID_INVALID,
+        path: ['memo'],
+      });
+    }
+  }
+
+  if (memoType === 'hash' && !SECURITY_VALIDATION.MEMO_HASH_REGEX.test(memo)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: VALIDATION_MESSAGES.MEMO_HASH_INVALID,
+      path: ['memo'],
+    });
+  }
 });
 
 // Utility functions for validation
@@ -200,18 +229,19 @@ export const validateSendPayment = (data: {
 };
 
 export const validateMemo = (memo: string, memoType: string): boolean => {
-  if (!memo || memo.length === 0) return true;
+  if (memoType === 'none') return true;
+  if (!memo || memo.trim().length === 0) return false;
   
   if (memoType === 'id') {
-    return SECURITY_VALIDATION.MEMO_ID_REGEX.test(memo);
+    return SECURITY_VALIDATION.MEMO_ID_REGEX.test(memo) && BigInt(memo) <= 18446744073709551615n;
   }
   if (memoType === 'hash') {
     return SECURITY_VALIDATION.MEMO_HASH_REGEX.test(memo);
   }
   if (memoType === 'text') {
-    return memo.length <= PAYMENT_LIMITS.MAX_MEMO_LENGTH;
+    return new TextEncoder().encode(memo).length <= PAYMENT_LIMITS.MAX_MEMO_LENGTH;
   }
-  return true;
+  return false;
 };
 
 export const validateAmountRange = (
@@ -243,8 +273,29 @@ export const sanitizePaymentInput = (data: {
     recipientAddress: data.recipientAddress.trim(),
     amount: data.amount.trim(),
     tokenType: data.tokenType.toUpperCase(),
-    memo: data.memo?.trim(),
+    ...(data.memoType?.toLowerCase() === 'none'
+      ? {}
+      : data.memo?.trim()
+        ? { memo: data.memo.trim() }
+        : {}),
     memoType: data.memoType?.toLowerCase(),
     recipientContactId: data.recipientContactId?.trim(),
   };
+};
+
+export const getPaymentFailureMessage = (error: unknown): string => {
+  let message = error instanceof Error ? error.message : String(error || '');
+
+  if (typeof error === 'object' && error !== null && 'response' in error) {
+    const response = (error as { response?: { data?: { message?: unknown } } }).response;
+    if (typeof response?.data?.message === 'string') {
+      message = response.data.message;
+    }
+  }
+
+  if (/reserve|minimum\s+(native\s+)?balance|insufficient\s+native\s+balance/i.test(message)) {
+    return "This payment would leave too little XLM to meet Stellar's minimum account reserve. Reduce the amount or add XLM.";
+  }
+
+  return message || 'Failed to send payment';
 };
