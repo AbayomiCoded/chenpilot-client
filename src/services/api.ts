@@ -22,6 +22,10 @@ import {
   AuditLogsQueryParams,
   AuditLogsResponse,
   AuditLogStats,
+  MfaStatusData,
+  MfaEnrollmentData,
+  MfaVerifyRequest,
+  MfaVerifyData,
   PaymentSubmissionResult,
   PaymentStatusResult,
   SendPaymentRequest,
@@ -39,6 +43,45 @@ import { buildPaymentIdempotencyKey } from '@/utils/paymentIdempotency';
 import { PaymentOutcomeUnknownError, isPaymentOutcomeUnknown } from '@/utils/paymentOutcome';
 
 const FRIENDTEST_URL = 'https://friendbot.stellar.org';
+
+/**
+ * Narrowly-scoped single-flight guard for keyed asynchronous work.
+ *
+ * While a key is in flight, additional calls for the same key reuse the pending
+ * promise instead of issuing a duplicate request. The entry is released on both
+ * success and failure, so a failed attempt never blocks a later retry.
+ *
+ * The guard deliberately lives outside React state: two clicks dispatched in
+ * the same tick must be deduplicated even though no re-render has happened yet,
+ * and `finally`-style cleanup cannot be skipped by an unmount.
+ */
+export class SingleFlight {
+  private inFlight = new Map<string, Promise<unknown>>();
+
+  isInFlight(key: string): boolean {
+    return this.inFlight.has(key);
+  }
+
+  run<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const pending = this.inFlight.get(key) as Promise<T> | undefined;
+    if (pending) {
+      return pending;
+    }
+
+    const promise = Promise.resolve().then(task);
+    this.inFlight.set(key, promise);
+    const release = () => {
+      if (this.inFlight.get(key) === promise) {
+        this.inFlight.delete(key);
+      }
+    };
+    promise.then(release, release);
+
+    return promise;
+  }
+}
+
+export const singleFlight = new SingleFlight();
 
 export interface FundingResult {
   success: boolean;
@@ -1157,6 +1200,70 @@ class ApiService {
   }
 
   /**
+   * Fetch current MFA status for the authenticated user.
+   * Catches 404 from experimental backend and returns a fallback envelope.
+   *
+   * @returns Promise resolving to `ApiResponse<MfaStatusData>`.
+   */
+  async getMfaStatus(): Promise<ApiResponse<MfaStatusData>> {
+    try {
+      const response = await this.api.get<ApiResponse<MfaStatusData>>('/auth/mfa/status');
+      return response.data;
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } }).response?.status === 404) {
+        return {
+          success: false,
+          status: 404,
+          message: 'MFA endpoints are not currently supported by the backend service',
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Initiate MFA enrollment for the authenticated user.
+   * Catches 404 from experimental backend and returns a fallback envelope.
+   *
+   * @returns Promise resolving to `ApiResponse<MfaEnrollmentData>`.
+   */
+  async initiateMfaEnrollment(): Promise<ApiResponse<MfaEnrollmentData>> {
+    try {
+      const response = await this.api.post<ApiResponse<MfaEnrollmentData>>('/auth/mfa/enroll');
+      return response.data;
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } }).response?.status === 404) {
+        return {
+          success: false,
+          status: 404,
+          message: 'MFA enrollment is not currently supported by the backend service',
+        };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Verify MFA enrollment code.
+   * Requires authoritative confirmation from backend before MFA is enabled.
+   *
+   * @param data - Payload containing 6-digit TOTP code.
+   * @returns Promise resolving to `ApiResponse<MfaVerifyData>`.
+   */
+  async verifyMfaEnrollment(data: MfaVerifyRequest): Promise<ApiResponse<MfaVerifyData>> {
+    try {
+      const response = await this.api.post<ApiResponse<MfaVerifyData>>('/auth/mfa/verify', data);
+      return response.data;
+    } catch (error: unknown) {
+      if ((error as { response?: { status?: number } }).response?.status === 404) {
+        return {
+          success: false,
+          status: 404,
+          message: 'MFA verification is not currently supported by the backend service',
+        };
+      }
+      throw error;
+    }
    * Request account deletion. Local token, conversations and drafts are cleared
    * even when the API call fails so the client does not keep private copies.
    * On-chain history cannot be deleted from this client.

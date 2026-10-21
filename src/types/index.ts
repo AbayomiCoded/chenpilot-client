@@ -82,6 +82,30 @@ export interface LoginResponse {
   };
 }
 
+// Multi-Factor Authentication (MFA) Types
+export interface MfaStatusData {
+  enabled: boolean;
+  enrolledAt?: string;
+  method?: "totp" | null;
+}
+
+export interface MfaEnrollmentData {
+  secret: string;
+  qrCodeUrl?: string;
+  otpAuthUri?: string;
+  recoveryCodes?: string[];
+}
+
+export interface MfaVerifyRequest {
+  code: string;
+}
+
+export interface MfaVerifyData {
+  enabled: boolean;
+  message?: string;
+  recoveryCodes?: string[];
+}
+
 // Contact Management Types
 export interface Contact {
   id: string;
@@ -151,10 +175,44 @@ export interface StellarTransaction {
   operations: StellarOperation[];
 }
 
+/**
+ * Lifecycle of a wallet action.
+ *
+ * `pending` means the action was submitted but no authoritative data has
+ * confirmed its outcome yet. Only authoritative ledger data may move an entry
+ * to `confirmed`, and only an authoritative failure (or a definitive submission
+ * rejection) may move it to `failed`.
+ */
+export type TransactionLifecycleStatus = "pending" | "confirmed" | "failed";
+
+export interface PendingTransactionConfirmation {
+  /** Normalized transaction hash — the stable reconciliation key. */
+  hash: string;
+  /** Human-readable description of the wallet action. */
+  label: string;
+  status: TransactionLifecycleStatus;
+  /** ISO timestamp of the last status change for this entry. */
+  updatedAt: string;
+}
+
 export interface TransactionHistory {
   transactions: StellarTransaction[];
   isLoading: boolean;
   error: string | null;
+  /** True while a newest-page refresh is in flight (background refresh). */
+  isRefreshing: boolean;
+  /** Error from the most recent refresh attempt; existing history is preserved. */
+  refreshError: string | null;
+  /** ISO timestamp of the last successful authoritative sync of the newest page. */
+  lastUpdatedAt: string | null;
+  /** Cursor for the next (older) page, or null when there is no next page. */
+  nextCursor: string | null;
+  /** True while an older page is being loaded. */
+  isLoadingMore: boolean;
+  /** Error from the most recent older-page load; existing history is preserved. */
+  loadMoreError: string | null;
+  /** Submitted transactions awaiting authoritative confirmation, keyed by hash. */
+  pending: PendingTransactionConfirmation[];
 }
 
 // Agent Query Types

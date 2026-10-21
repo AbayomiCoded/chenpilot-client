@@ -8,6 +8,8 @@ import { ChatLayout } from "@/components/layout/ChatLayout";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
+import { t, LANGUAGES } from "@/lib/i18n/i18n";
+import { MfaSettingsSection } from "@/components/settings/MfaSettingsSection";
 import { DangerZone } from "@/components/settings/DangerZone";
 import apiService from "@/services/api";
 import { t, LANGUAGES } from "@/lib/i18n/i18n";
@@ -265,6 +267,7 @@ export default function SettingsPage() {
                     {t(language, "settings.security")}
                   </h3>
                   <div className="space-y-4">
+                    <MfaSettingsSection language={language} />
                     <Button variant="ghost" className="w-full justify-start">
                       Change Password
                     </Button>

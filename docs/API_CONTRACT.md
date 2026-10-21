@@ -65,6 +65,29 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | `POST /auth/change-password` | `{"currentPassword":"Example123!","newPassword":"NewExample123!"}` | `{"success":true,"data":{"message":"Password changed"}}` | Service method only; no direct screen caller found. |
 | `DELETE /auth/account` | No body; bearer token when available. | `{"success":true,"data":{"message":"Account deleted"}}` | Service method only; clears the in-memory/local token after the request resolves. |
 
+### Multi-Factor Authentication (MFA) Specification & Contract Notes
+
+**Current Implementation Status:**
+- Authoritative backend MFA endpoints are currently **NOT implemented or deployed** on the backend.
+- The client provides typed service integration (`ApiService.getMfaStatus`, `ApiService.initiateMfaEnrollment`, `ApiService.verifyMfaEnrollment` and `AuthService`) that safely detects unsupported/missing backend routes (HTTP 404/501) and presents clear states without fabricating backend enrollment or falsely marking MFA as enabled.
+- The settings UI exposes explicit states: `Disabled`, `Enrollment in progress`, `Awaiting verification`, `Enabled`, `Recovery in progress` (when recovery codes are returned), and `Error / Unsupported`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /auth/mfa/status` | No body; bearer token required. | `{"success":true,"data":{"enabled":false,"method":"totp"}}` | Settings security panel; checks authoritative MFA status. 404 is treated as unsupported (disabled). |
+| `POST /auth/mfa/enroll` | `{}`; bearer token required. | `{"success":true,"data":{"secret":"JBSWY3DPEHPK3PXP","qrCodeUrl":"https://...","otpAuthUri":"otpauth://totp/ChenPilot:user?secret=...","recoveryCodes":["REC-1111","REC-2222"]}}` | Settings security panel; initiates enrollment. Returns secret key and TOTP URI. 404 displays unsupported capability error. |
+| `POST /auth/mfa/verify` | `{"code":"123456"}`; bearer token required. | `{"success":true,"data":{"enabled":true,"message":"MFA enabled successfully","recoveryCodes":["REC-1111","REC-2222"]}}` | Settings security panel; verifies 6-digit TOTP code. Authoritative confirmation is required before enabling MFA. |
+
+**MFA Challenge During Login:**
+- `POST /auth/login` currently returns full tokens immediately and does not issue an intermediate MFA challenge.
+- When MFA login enforcement is implemented on the backend, `POST /auth/login` must return a challenge state (e.g., `{ success: true, data: { mfaRequired: true, challengeToken: "<temp-token>", method: "totp" } }`) and a corresponding `POST /auth/mfa/challenge` endpoint must be established.
+
+**MFA Recovery and Cancellation:**
+- Recovery: The backend does not currently provide an endpoint for regenerating recovery codes or authenticating via recovery code. When recovery codes are provided during initial enrollment, the client displays them once and instructs the user to store them securely.
+- Cancellation: The user can cancel setup at any time prior to verification. Cancellation immediately purges all transient enrollment secrets and one-time codes from memory.
+- Storage & Security: The client **never** persists MFA secrets, temporary OTP codes, or recovery codes in `localStorage` or `sessionStorage`. All sensitive values reside in volatile React state and are cleared on component unmount, cancellation, or flow completion.
+- Blockers: Production MFA cannot be marked enabled for accounts until the backend implements and confirms the `/auth/mfa/enroll` and `/auth/mfa/verify` routes.
+
 ### Data Export Fallbacks
 
 `exportUserData()` tries these paths in order, moving to the next only on HTTP 404. Each successful response is consumed as a binary `Blob`, not JSON.
