@@ -224,7 +224,7 @@ export interface ChatMessage {
     transactionHash?: string;
     amount?: string;
     tokenType?: string;
-    status?: "pending" | "success" | "failed";
+    status?: "pending" | "success" | "failed" | "cancelled";
     success?: boolean;
     error?: string;
     type?: string;
