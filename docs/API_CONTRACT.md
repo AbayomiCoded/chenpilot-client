@@ -41,7 +41,25 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | `GET /tools` | No body. | `[]` (the service currently does not declare tool item fields). | Service method only; failure returns an empty list. |
 | `POST /tools/{toolName}/execute` | `POST /tools/swap/execute` with `{"from":"XLM","to":"USDC","amount":"10"}` | Example pass-through: `{"result":"..."}`. The service does not define or validate this response shape. | Service method only; errors are rethrown as a tool failure. |
 
-`getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
+`getStatus()` returns a local object and makes no HTTP request; do not document `/status` as a backend route unless that call is implemented.
+
+### Agent Capabilities (#270)
+
+**Proposed; backend support not yet confirmed.** `agentService.getCapabilities()` / `apiService.getAgentCapabilities()` call:
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /capabilities` | No body; 5s timeout. | `{"supportedActions":["swap","check_balance"],"supportedAssets":["XLM","USDC"],"supportedProtocols":["Soroswap"],"features":{"swapping":true,"lending":false},"limits":{"maxQueryLength":500},"updatedAt":"2026-10-21T09:00:00Z"}` | `AgentStatus` capability section. `supportedActions`, `supportedAssets` and `supportedProtocols` must be string arrays. Missing feature flags count as `false`, missing limits as `0`. |
+
+The call never throws. It returns an `AgentCapabilitiesResult` with a source and freshness:
+
+| `availability` | When | `source` | `capabilities` | UI |
+| --- | --- | --- | --- | --- |
+| `available` | `2xx` with a valid body | `backend` | Backend data | "Reported by agent"; features shown as enabled |
+| `unsupported` | `404` / `405` / `501` | `local_fallback` | The app's built-in list (`LOCAL_CAPABILITIES`) | "App defaults (not confirmed)"; features shown disabled (`aria-disabled`, struck through), with an explanation |
+| `unavailable` | Network error, other HTTP errors, or a malformed body | `none` | `null` | "Couldn't be reached" explanation; no actions shown |
+
+`fetchedAt` records when the client asked, and `updatedAt` echoes the backend's value if sent. Results older than 5 minutes (`CAPABILITIES_MAX_AGE_MS`) show an "out of date" note. An `unavailable` result no longer counts as the agent being connected. Previously a fixed list was returned as if live, and outages became an empty, all-disabled object.
 
 ## Authentication Endpoints
 

@@ -870,37 +870,13 @@ class ApiService {
   }
 
   /**
-   * Retrieve agent capabilities configuration. Does NOT throw on failure; returns default empty capabilities object on error.
+   * Retrieve agent capabilities with their source and freshness (#270). Never throws; an
+   * outage is reported as `availability: 'unavailable'` instead of an empty capability list.
    *
-   * @returns Promise resolving to agent capabilities object.
+   * @returns Promise resolving to `AgentCapabilitiesResult`.
    */
   async getAgentCapabilities() {
-    try {
-      return await agentService.getCapabilities();
-    } catch (error) {
-      console.error('Failed to get agent capabilities:', error);
-      // Return default capabilities instead of throwing
-      return {
-        supportedActions: [],
-        supportedAssets: [],
-        supportedProtocols: [],
-        features: {
-          defi: false,
-          crossChain: false,
-          voiceCommands: false,
-          smartContracts: false,
-          yieldFarming: false,
-          lending: false,
-          borrowing: false,
-          swapping: false
-        },
-        limits: {
-          maxQueryLength: 0,
-          maxConcurrentQueries: 0,
-          rateLimitPerMinute: 0
-        }
-      };
-    }
+    return agentService.getCapabilities();
   }
 
   /**

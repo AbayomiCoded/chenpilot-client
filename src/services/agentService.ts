@@ -5,6 +5,7 @@ import {
   AgentQueryResponse,
   AgentStatus,
   AgentCapabilities,
+  AgentCapabilitiesResult,
   AgentHealthCheck,
   AgentTool,
   AgentMemoryResult,
@@ -22,6 +23,82 @@ export function normalizeMemoryError(error: unknown): { kind: AgentMemoryErrorKi
     return { kind: 'not_found', message: 'Agent memory is not available for this account.', status };
   }
   return { kind: 'unavailable', message: 'Agent memory is temporarily unavailable.', status };
+}
+
+/**
+ * Built-in capability list, used only when the backend has no capabilities endpoint (#270).
+ * It describes what the client knows how to ask for, not what this deployment enables.
+ */
+export const LOCAL_CAPABILITIES: AgentCapabilities = {
+  supportedActions: [
+    'transfer_xlm', 'swap', 'lend', 'borrow', 'withdraw', 'repay', 'check_balance', 'get_apy',
+    'health_check', 'liquidate', 'claim_rewards', 'add_collateral',
+    'remove_collateral', 'deposit_vault', 'withdraw_vault', 'get_vaults',
+    'get_vault_positions', 'harvest_vault', 'get_strategies', 'swap_stellar_dex',
+    'add_liquidity', 'remove_liquidity'
+  ],
+  supportedAssets: ['XLM', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA'],
+  supportedProtocols: ['Soroswap', 'Blend', 'Aquarius', 'Phoenix'],
+  features: {
+    defi: true,
+    crossChain: true,
+    voiceCommands: false,
+    smartContracts: true,
+    yieldFarming: true,
+    lending: true,
+    borrowing: true,
+    swapping: true
+  },
+  limits: {
+    maxQueryLength: 1000,
+    maxConcurrentQueries: 10,
+    rateLimitPerMinute: 60
+  }
+};
+
+/** Capability data older than this is shown as stale (#270). */
+export const CAPABILITIES_MAX_AGE_MS = 5 * 60 * 1000;
+
+export function isCapabilitiesStale(result: Pick<AgentCapabilitiesResult, 'fetchedAt'>, now = Date.now()): boolean {
+  return now - Date.parse(result.fetchedAt) > CAPABILITIES_MAX_AGE_MS;
+}
+
+const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every((x) => typeof x === 'string');
+
+/** Validate a `GET /capabilities` body; returns null when it does not match the contract. */
+export function parseCapabilities(body: unknown): { capabilities: AgentCapabilities; updatedAt?: string } | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return null;
+  const b = body as Record<string, unknown>;
+  if (!isStringArray(b.supportedActions) || !isStringArray(b.supportedAssets) || !isStringArray(b.supportedProtocols)) {
+    return null;
+  }
+  const features = (typeof b.features === 'object' && b.features !== null ? b.features : {}) as Record<string, unknown>;
+  const limits = (typeof b.limits === 'object' && b.limits !== null ? b.limits : {}) as Record<string, unknown>;
+  const flag = (k: string) => features[k] === true;
+  const limit = (k: string) => (typeof limits[k] === 'number' ? (limits[k] as number) : 0);
+  return {
+    capabilities: {
+      supportedActions: b.supportedActions,
+      supportedAssets: b.supportedAssets,
+      supportedProtocols: b.supportedProtocols,
+      features: {
+        defi: flag('defi'),
+        crossChain: flag('crossChain'),
+        voiceCommands: flag('voiceCommands'),
+        smartContracts: flag('smartContracts'),
+        yieldFarming: flag('yieldFarming'),
+        lending: flag('lending'),
+        borrowing: flag('borrowing'),
+        swapping: flag('swapping'),
+      },
+      limits: {
+        maxQueryLength: limit('maxQueryLength'),
+        maxConcurrentQueries: limit('maxConcurrentQueries'),
+        rateLimitPerMinute: limit('rateLimitPerMinute'),
+      },
+    },
+    updatedAt: typeof b.updatedAt === 'string' ? b.updatedAt : undefined,
+  };
 }
 
 /**
@@ -153,39 +230,32 @@ class AgentService {
   }
 
   /**
-   * Get available agent capabilities, supported actions, assets, and protocols.
-   *
-   * @returns Promise resolving to `AgentCapabilities` configuration.
+   * Agent capabilities with their source and freshness (#270). Never throws.
+   * Asks `GET /capabilities`; a missing endpoint (404/405/501) yields `unsupported` with the
+   * local fallback list, and an outage or malformed answer yields `unavailable`.
    */
-  async getCapabilities(): Promise<AgentCapabilities> {
-    // Since the experimental backend doesn't have a /capabilities endpoint,
-    // we'll return the capabilities based on the intent agent
-    return {
-      supportedActions: [
-        'transfer_xlm', 'swap', 'lend', 'borrow', 'withdraw', 'repay', 'check_balance', 'get_apy',
-        'health_check', 'liquidate', 'claim_rewards', 'add_collateral',
-        'remove_collateral', 'deposit_vault', 'withdraw_vault', 'get_vaults',
-        'get_vault_positions', 'harvest_vault', 'get_strategies', 'swap_stellar_dex',
-        'add_liquidity', 'remove_liquidity'
-      ],
-      supportedAssets: ['XLM', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA'],
-      supportedProtocols: ['Soroswap', 'Blend', 'Aquarius', 'Phoenix'],
-      features: {
-        defi: true,
-        crossChain: true,
-        voiceCommands: false,
-        smartContracts: true,
-        yieldFarming: true,
-        lending: true,
-        borrowing: true,
-        swapping: true
-      },
-      limits: {
-        maxQueryLength: 1000,
-        maxConcurrentQueries: 10,
-        rateLimitPerMinute: 60
+  async getCapabilities(): Promise<AgentCapabilitiesResult> {
+    const fetchedAt = new Date().toISOString();
+    try {
+      const response = await this.api.get('/capabilities', { timeout: 5000 });
+      const parsed = parseCapabilities(response.data);
+      if (!parsed) {
+        return { availability: 'unavailable', source: 'none', capabilities: null, fetchedAt, error: 'invalid_response' };
       }
-    };
+      return { availability: 'available', source: 'backend', ...parsed, fetchedAt };
+    } catch (error) {
+      const status = (error as { response?: { status?: number } })?.response?.status;
+      if (status === 404 || status === 405 || status === 501) {
+        return { availability: 'unsupported', source: 'local_fallback', capabilities: LOCAL_CAPABILITIES, fetchedAt };
+      }
+      return {
+        availability: 'unavailable',
+        source: 'none',
+        capabilities: null,
+        fetchedAt,
+        error: status ? `http_${status}` : 'network',
+      };
+    }
   }
 
   /**
