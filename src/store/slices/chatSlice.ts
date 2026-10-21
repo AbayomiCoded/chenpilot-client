@@ -35,6 +35,8 @@ interface ChatState {
   /** Server history load state, kept separate from `messages` so a failure is not shown as empty (#265). */
   historyStatus: ChatHistoryStatus;
   historyError: string | null;
+  /** Partial agent reply while a streamed response is in flight (#261); cleared when it settles. */
+  streamingResponse: { requestId: string; text: string } | null;
   /** Cursor for the next older history page (#264); null when unknown or exhausted. */
   historyCursor: string | null;
   historyHasMore: boolean;
@@ -63,6 +65,7 @@ const initialState: ChatState = {
   optimisticUpdates: new Map(),
   historyStatus: "idle",
   historyError: null,
+  streamingResponse: null,
   historyCursor: null,
   historyHasMore: false,
   isLoadingOlderHistory: false,
@@ -232,7 +235,7 @@ export type SendMessageArg = string | { query: string; tempId?: string; clientTi
 
 export const sendMessage = createAsyncThunk(
   'chat/sendMessage',
-  async (arg: SendMessageArg, { getState, rejectWithValue, requestId }) => {
+  async (arg: SendMessageArg, { getState, rejectWithValue, requestId, signal, dispatch }) => {
     const query = typeof arg === 'string' ? arg : arg.query;
     const tempId = typeof arg === 'object' && arg.tempId ? arg.tempId : `msg_optimistic_${requestId}`;
     const clientTimestamp = typeof arg === 'object' && arg.clientTimestamp ? arg.clientTimestamp : Date.now();
@@ -262,19 +265,15 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Generate server timestamp (should come from server in production)
-      const serverTimestamp = new Date().toISOString();
-
-      // Save user message with server timestamp
-      const userMessage: ChatMessage = {
-        id: `msg_user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: "user",
-        content: query,
-        timestamp: serverTimestamp,
-      };
-
-      // Call the API service to get actual response
-      const response = await apiService.queryAgent({ userId, query });
+      // Call the API service to get actual response. Partial text is streamed into
+      // `streamingResponse` when the backend supports it (#261); `signal` is aborted on route change.
+      const response = await apiService.queryAgent(
+        { userId, query },
+        {
+          signal,
+          onDelta: (text) => dispatch(streamingDelta({ requestId, text })),
+        },
+      );
 
       // Handle parsing of the agent response
       let content = response.result.data;
@@ -348,6 +347,10 @@ serverTimestamp: serverTimestamp,
 
       return { response, conversation, userMessage, agentMessage, tempId };
     } catch (error: any) {
+      if (signal.aborted) {
+        // Cancelled (e.g. route change); the rejected action carries meta.aborted
+        throw error;
+      }
       const errorMsg =
         error.response?.data?.message ||
         error.message ||
@@ -784,6 +787,15 @@ state.messages[index] = {
     removeOptimisticUpdate: (state, action: PayloadAction<string>) => {
       state.optimisticUpdates.delete(action.payload);
     },
+    /**
+     * Replace the in-flight streamed text (#261). `text` is the full text so far, so repeated
+     * deltas are idempotent. Deltas for a request that already settled or was cancelled are ignored.
+     */
+    streamingDelta: (state, action: PayloadAction<{ requestId: string; text: string }>) => {
+      if (state.streamingResponse?.requestId === action.payload.requestId) {
+        state.streamingResponse.text = action.payload.text;
+      }
+    },
     resolveOptimisticUpdate: (
       state,
       action: PayloadAction<{ clientId: string; serverMessage: ChatMessage }>,
@@ -863,6 +875,7 @@ state.messages[index] = {
         state.isLoading = true;
         state.isTyping = true;
         state.error = null;
+        state.streamingResponse = { requestId: action.meta.requestId, text: "" };
 
         const query = typeof action.meta.arg === 'string' ? action.meta.arg : action.meta.arg.query;
         const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
@@ -897,6 +910,11 @@ state.messages[index] = {
         state.isLoading = false;
         state.isTyping = false;
         state.currentConversation = action.payload.conversation;
+        // The final agent message replaces the streamed preview in the same update, so the
+        // reply is never shown twice (#261)
+        if (state.streamingResponse?.requestId === action.meta.requestId) {
+          state.streamingResponse = null;
+        }
 
         // Debug logging to see what the server is returning
         logger.debug("[ChatSlice] Full response:", action.payload.response);
@@ -978,6 +996,28 @@ state.messages[index] = {
       .addCase(sendMessage.rejected, (state, action) => {
         state.isLoading = false;
         state.isTyping = false;
+        if (state.streamingResponse?.requestId === action.meta.requestId) {
+          state.streamingResponse = null;
+        }
+
+        if (action.meta.aborted) {
+          // Cancelled by the client (route change): drop the partial reply quietly, no error bubble
+          const cancelledId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
+            ? action.meta.arg.tempId
+            : `msg_optimistic_${action.meta.requestId}`;
+          const idx = state.messages.findIndex(
+            m => m.id === cancelledId || m.metadata?.optimisticId === cancelledId || m.metadata?.tempId === cancelledId
+          );
+          if (idx !== -1) {
+            state.messages[idx].metadata = {
+              ...state.messages[idx].metadata,
+              status: 'failed',
+              error: 'cancelled',
+            };
+          }
+          return;
+        }
+
         state.error = action.payload as string;
 
 const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
@@ -1098,5 +1138,6 @@ export const {
   storeOptimisticUpdate,
   removeOptimisticUpdate,
   resolveOptimisticUpdate,
+  streamingDelta,
 } = chatSlice.actions;
 export default chatSlice.reducer;

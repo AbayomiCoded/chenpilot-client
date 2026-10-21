@@ -12,6 +12,7 @@ import {
   addPendingMessage,
 } from "@/store/slices/chatSlice";
 import AgentMessage from "@/components/chat/AgentMessage";
+import { AgentMarkdown } from "@/components/chat/AgentMarkdown";
 import UserMessage from "@/components/chat/UserMessage";
 import { TagWidget } from "@/components/chat/TagWidget";
 import { OfflineIndicator } from "@/components/chat/OfflineIndicator";
@@ -97,7 +98,10 @@ export const ChatEngine: React.FC = () => {
     currentConversation,
     isOnline,
     pendingMessages,
+    streamingResponse,
   } = useAppSelector((state) => state.chat);
+  // In-flight agent request, aborted on route change/unmount so no updates land afterwards (#261)
+  const activeRequestRef = useRef<{ abort: (reason?: string) => void } | null>(null);
   const { processQueue } = useOfflineQueue();
   const [inputValue, setInputValue] = useState("");
   const [isRecording, setIsRecording] = useState(false);
@@ -151,6 +155,14 @@ export const ChatEngine: React.FC = () => {
   });
 
   // ── Effects ───────────────────────────────────────────────────────────────
+  // Cancel a streaming/in-flight agent request when the route changes or the chat unmounts (#261)
+  useEffect(() => {
+    return () => {
+      activeRequestRef.current?.abort("route-change");
+      activeRequestRef.current = null;
+    };
+  }, [pathname]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: prefersReducedMotion ? "auto" : "smooth" });
   }, [messages, isTyping, voiceStatus, prefersReducedMotion]);
@@ -311,8 +323,16 @@ export const ChatEngine: React.FC = () => {
         return;
       }
 
-      await dispatch(sendMessage(queryWithTool)).unwrap();
+      const request = dispatch(sendMessage(queryWithTool));
+      activeRequestRef.current = request;
+      try {
+        await request.unwrap();
+      } finally {
+        if (activeRequestRef.current === request) activeRequestRef.current = null;
+      }
     } catch (error: any) {
+      // A request cancelled by navigation is not an error worth surfacing
+      if (error?.name === "AbortError") return;
       toast.error(error || "Failed to send message");
     }
   };
@@ -618,7 +638,15 @@ return (
             </div>
           ))}
 
-          {isTyping && (
+          {isTyping && streamingResponse?.text ? (
+            <div className="flex justify-start" data-testid="streaming-response">
+              <div className="max-w-2xl w-full" aria-live="polite" aria-busy="true">
+                <div className="text-white text-left prose prose-invert prose-lg max-w-none leading-relaxed pr-8">
+                  <AgentMarkdown>{streamingResponse.text}</AgentMarkdown>
+                </div>
+              </div>
+            </div>
+          ) : isTyping && (
             <div className="flex justify-start">
               <div className="bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-2xl px-6 py-4 shadow-lg">
                 <div className="flex items-center space-x-3">

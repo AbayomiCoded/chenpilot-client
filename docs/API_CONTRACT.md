@@ -43,6 +43,32 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 
 `getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
 
+### Agent Response Streaming (#261)
+
+**Proposed; backend support not yet confirmed.** Streaming is off unless `NEXT_PUBLIC_ENABLE_AGENT_STREAMING=true`. When it is enabled and the agent service is connected, `apiService.queryAgent` calls `agentService.queryAgentStreaming`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `POST /query/stream` | `{"userId":"user-1","query":"Swap 10 XLM for USDC"}` with `Accept: text/event-stream` | `200`, `Content-Type: text/event-stream`, and a stream of the events below | Chat shows partial text as it arrives, then replaces it with the final message. |
+
+**Transport.** Server-Sent Events over a `fetch` POST; `EventSource` can't send a body. Blank-line-terminated messages, `event:` and `data:` fields, and `:` comment lines as keep-alives are supported.
+
+**Event schema.** Each `data` is JSON:
+
+| `event` | `data` | Client behavior |
+| --- | --- | --- |
+| `delta` | `{"requestId":"...","seq":0,"text":"Checking "}` | Appends `text` in `seq` order; `seq` starts at 0 and increases by 1. A repeated or older `seq` is ignored. |
+| `final` | `{"requestId":"...","result":{"success":true,"data":"Your balance is 100 XLM","error":null}}` | Same `result` shape as `POST /query`. **Authoritative:** it replaces the streamed text, so content is never shown twice. Ends the request. |
+| `error` | `{"requestId":"...","message":"tool crashed"}` | Ends the request with a failed `result` (`error` = `message`). |
+
+Unknown events and malformed JSON are ignored.
+
+**Rules:**
+- **Fallback:** a `404`, `405` or `501` response, or a success response that is not `text/event-stream`, means streaming is unsupported. The client sends the same request to `POST /query` and stops trying streaming for the session. The fallback happens only before any event has been received, so a query is never executed twice.
+- **Interrupted stream:** a stream that ends without `final` is reported as `{"success":false,"error":"stream_incomplete"}`. Partial text is never treated as the answer.
+- **Cancellation:** `ChatEngine` aborts the in-flight `sendMessage` thunk when the route changes or the chat unmounts. The `AbortSignal` cancels the fetch and stops the body reader. The partial preview is cleared without an error bubble, the user message is marked `failed`/`cancelled`, and late deltas are dropped because they no longer match the in-flight request id. The backend should stop work when the client disconnects.
+- **Rendering:** partial text is rendered with `AgentMarkdown`, under the same safety policy as final messages (`docs/MARKDOWN_SAFETY.md`).
+
 ## Chat History Endpoint
 
 **Proposed; backend support not yet confirmed.** This route uses the API base URL through `apiService.getChatHistory`.

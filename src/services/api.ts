@@ -776,14 +776,19 @@ class ApiService {
    * }
    * ```
    */
-  async queryAgent(data: AgentQueryRequest): Promise<AgentQueryResponse> {
-    // First try the experimental agent service
+  async queryAgent(
+    data: AgentQueryRequest,
+    options: { onDelta?: (text: string) => void; signal?: AbortSignal } = {}
+  ): Promise<AgentQueryResponse> {
+    // First try the experimental agent service (streams partial text when supported, #261)
     try {
       if (agentService.isAgentConnected()) {
         logger.debug('[ApiService] Using experimental agent service');
-        return await agentService.queryAgent(data);
+        return await agentService.queryAgentStreaming(data, options);
       }
     } catch (error) {
+      // A cancelled request (route change) must not fall through and re-send the query
+      if (options.signal?.aborted) throw error;
       console.warn('[ApiService] Experimental agent service failed, falling back to backend:', error);
     }
 
@@ -794,7 +799,7 @@ class ApiService {
       }
 
       logger.debug('[ApiService] Querying backend /query endpoint');
-      const response = await this.api.post('/query', data);
+      const response = await this.api.post('/query', data, { signal: options.signal });
       
       // The system returns response.data directly or wrapped in { result: ... }
       if (response.data && response.data.result) {
