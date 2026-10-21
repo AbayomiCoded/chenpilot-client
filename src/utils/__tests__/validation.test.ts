@@ -6,6 +6,9 @@ import {
   stellarAddressSchema,
   tokenAmountSchema,
   createContactSchema,
+  validateSendPayment,
+  getAssetPrecision,
+  getPaymentFailureMessage,
 } from "../validation";
 
 // #141 — table-driven tests for validation schemas.
@@ -69,7 +72,7 @@ describe("nameSchema", () => {
 });
 
 describe("stellarAddressSchema", () => {
-  const validAddr = "GABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB";
+  const validAddr = "G" + "A".repeat(55);
   it("accepts a valid G... 56-char address", () => {
     expect(stellarAddressSchema.safeParse(validAddr).success).toBe(true);
   });
@@ -111,7 +114,7 @@ describe("tokenAmountSchema", () => {
 describe("createContactSchema", () => {
   const valid = {
     name: "Alice",
-    address: "GABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB",
+    address: "G" + "A".repeat(55),
     tokenType: "XLM" as const,
   };
   it("accepts a valid contact", () => {
@@ -128,5 +131,58 @@ describe("createContactSchema", () => {
   it("rejects invalid address", () => {
     const r = createContactSchema.safeParse({ ...valid, address: "bad" });
     expect(r.success).toBe(false);
+  });
+});
+
+describe("payment precision validation", () => {
+  const validAddress = "G" + "A".repeat(55);
+
+  it("accepts XLM values within the asset precision limit", () => {
+    const result = validateSendPayment({
+      recipientAddress: validAddress,
+      amount: "1.1234567",
+      tokenType: "XLM",
+    });
+
+    expect(result.isValid).toBe(true);
+  });
+
+  it("rejects XLM values with too many fractional digits", () => {
+    const result = validateSendPayment({
+      recipientAddress: validAddress,
+      amount: "1.12345678",
+      tokenType: "XLM",
+    });
+
+    expect(result.isValid).toBe(false);
+    expect(result.errors.join(" ")).toContain("7 decimal");
+  });
+
+  it("applies the same precision rule to issued assets like USDC", () => {
+    expect(getAssetPrecision("USDC")).toBe(7);
+
+    const result = validateSendPayment({
+      recipientAddress: validAddress,
+      amount: "12.34567891",
+      tokenType: "USDC",
+    });
+
+    expect(result.isValid).toBe(false);
+    expect(result.errors.join(" ")).toContain("7 decimal");
+  });
+});
+
+describe("payment error guidance", () => {
+  it("explains the activation requirement for unfunded destination errors", () => {
+    const message = getPaymentFailureMessage({
+      response: {
+        data: {
+          message: "Account does not exist. Activate the destination account first.",
+        },
+      },
+    });
+
+    expect(message).toContain("activate");
+    expect(message).toContain("minimum balance");
   });
 });

@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { sendPaymentSchema, validateSendPayment, sanitizePaymentInput } from '@/utils/validation';
+import { sendPaymentSchema, validateSendPayment, sanitizePaymentInput, getAssetPrecision } from '@/utils/validation';
 import { SendPaymentRequest, ContactSelection } from '@/types';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -17,6 +17,7 @@ import {
   Loader2,
   CheckCircle,
   AlertCircle,
+  Copy,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import toast from 'react-hot-toast';
@@ -26,6 +27,7 @@ interface SendPaymentFormProps {
   contacts: any[];
   isLoading?: boolean;
   defaultTokenType?: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  availableBalance?: number | string;
 }
 
 export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
@@ -33,6 +35,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   contacts,
   isLoading = false,
   defaultTokenType = 'XLM',
+  availableBalance,
 }) => {
   const [selectedContact, setSelectedContact] = useState<ContactSelection | null>(null);
   const [isContactPickerOpen, setIsContactPickerOpen] = useState(false);
@@ -55,6 +58,50 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
   const watchedToken = watch('tokenType');
   const watchedMemoType = watch('memoType');
+  const watchedAmount = watch('amount') || '';
+  const recipientAddressValue = watch('recipientAddress') || '';
+  const assetPrecision = getAssetPrecision(watchedToken);
+  const amountStep = assetPrecision > 0 ? `0.${'0'.repeat(assetPrecision - 1)}1` : '1';
+  const numericAvailableBalance = Number(availableBalance ?? 0);
+  const hasInsufficientBalance =
+    watchedToken === 'XLM' &&
+    watchedAmount !== '' &&
+    !Number.isNaN(Number(watchedAmount)) &&
+    Number(watchedAmount) > numericAvailableBalance &&
+    Number.isFinite(numericAvailableBalance);
+
+  const safeCopyText = async (text: string) => {
+    if (!text) {
+      toast.error('There is no recipient address to copy.');
+      return;
+    }
+
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        toast.success('Recipient address copied to clipboard.');
+        return;
+      }
+    } catch {
+      // fall through to explicit fallback below
+    }
+
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      document.execCommand('copy');
+      document.body.removeChild(textarea);
+      toast.success('Recipient address copied to clipboard.');
+      return;
+    } catch {
+      toast.error('Unable to copy the recipient address in this browser.');
+    }
+  };
 
   const handleContactSelect = (contact: ContactSelection) => {
     setSelectedContact(contact);
@@ -164,19 +211,47 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
             <label className="block text-sm font-medium text-gray-300 mb-2">
               Recipient Address
             </label>
-            <Input
-              {...register('recipientAddress')}
-              placeholder="GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
-              className={cn(
-                'font-mono text-sm',
-                selectedContact && 'bg-blue-500/5 border-blue-500/30'
-              )}
-              disabled={!!selectedContact}
-            />
+            <div className="flex gap-2">
+              <Input
+                {...register('recipientAddress')}
+                placeholder="GABCD1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890"
+                className={cn(
+                  'font-mono text-sm flex-1',
+                  selectedContact && 'bg-blue-500/5 border-blue-500/30'
+                )}
+                disabled={!!selectedContact}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => safeCopyText(recipientAddressValue)}
+                className="whitespace-nowrap"
+                disabled={!recipientAddressValue}
+              >
+                <Copy className="h-4 w-4 mr-1" />
+                Copy
+              </Button>
+            </div>
             {errors.recipientAddress && (
               <p className="mt-1 text-xs text-red-400">{errors.recipientAddress.message}</p>
             )}
           </div>
+
+          {availableBalance !== undefined && watchedToken === 'XLM' && (
+            <div className="rounded-lg border border-gray-700 bg-gray-900/50 p-3">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-400">Available balance</span>
+                <span className="font-medium text-white">{Number(availableBalance).toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM</span>
+              </div>
+              {hasInsufficientBalance && (
+                <p className="mt-2 flex items-center gap-2 text-xs text-amber-300">
+                  <AlertCircle className="h-3.5 w-3.5" />
+                  Requested amount exceeds your available XLM balance.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Amount */}
           <div>
@@ -188,7 +263,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                 {...register('amount')}
                 placeholder="0.00"
                 type="number"
-                step="0.0000001"
+                step={amountStep}
                 className="flex-1"
               />
               <select
@@ -208,6 +283,12 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
             )}
             {errors.tokenType && (
               <p className="mt-1 text-xs text-red-400">{errors.tokenType.message}</p>
+            )}
+            {hasInsufficientBalance && !errors.amount && (
+              <p className="mt-1 text-xs text-amber-300 flex items-center gap-1">
+                <AlertCircle className="h-3.5 w-3.5" />
+                Insufficient funds for this XLM transfer.
+              </p>
             )}
           </div>
 
@@ -256,7 +337,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
           {/* Submit Button */}
           <Button
             type="submit"
-            disabled={isSubmitting || isLoading}
+            disabled={isSubmitting || isLoading || hasInsufficientBalance}
             className="w-full"
             size="lg"
           >

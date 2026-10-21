@@ -7,6 +7,7 @@ import { getContacts } from '@/store/slices/contactsSlice';
 import { ChatLayout } from '@/components/layout/ChatLayout';
 import SendPaymentForm from '@/components/payment/SendPaymentForm';
 import { SendPaymentRequest } from '@/types';
+import { getPaymentFailureMessage } from '@/utils/validation';
 import { ArrowLeft, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import toast from 'react-hot-toast';
@@ -16,6 +17,7 @@ export default function SendPaymentPage() {
   const dispatch = useAppDispatch();
   const { isAuthenticated } = useAppSelector((state) => state.auth);
   const { list: contacts, isLoading: contactsLoading } = useAppSelector((state) => state.contacts);
+  const nativeBalance = useAppSelector((state) => state.wallet?.nativeBalance ?? 0);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -38,7 +40,8 @@ export default function SendPaymentPage() {
       router.push('/transactions');
     } catch (error: any) {
       console.error('Payment error:', error);
-      toast.error(error?.message || 'Failed to send payment');
+      const message = getPaymentFailureMessage(error);
+      toast.error(message || 'Failed to send payment');
     }
   };
 
@@ -93,6 +96,7 @@ export default function SendPaymentPage() {
               onSubmit={handleSendPayment}
               contacts={contacts}
               isLoading={contactsLoading}
+              availableBalance={nativeBalance}
             />
           </div>
         </div>
