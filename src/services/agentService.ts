@@ -193,11 +193,11 @@ class AgentService {
    * }
    * ```
    */
-  async queryAgent(request: AgentQueryRequest): Promise<AgentQueryResponse> {
+  async queryAgent(request: AgentQueryRequest, options: { signal?: AbortSignal } = {}): Promise<AgentQueryResponse> {
     try {
       logger.debug('[AgentService] Sending query:', request.query);
       
-      const response = await this.api.post('/query', request);
+      const response = await this.api.post('/query', request, { signal: options.signal });
       
       logger.debug('[AgentService] Query response:', response.data);
       

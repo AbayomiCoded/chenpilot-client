@@ -774,12 +774,12 @@ class ApiService {
    * }
    * ```
    */
-  async queryAgent(data: AgentQueryRequest): Promise<AgentQueryResponse> {
+  async queryAgent(data: AgentQueryRequest, options: { signal?: AbortSignal } = {}): Promise<AgentQueryResponse> {
     // First try the experimental agent service
     try {
       if (agentService.isAgentConnected()) {
         logger.debug('[ApiService] Using experimental agent service');
-        return await agentService.queryAgent(data);
+        return await agentService.queryAgent(data, options);
       }
     } catch (error) {
       console.warn('[ApiService] Experimental agent service failed, falling back to backend:', error);
@@ -792,7 +792,7 @@ class ApiService {
       }
 
       logger.debug('[ApiService] Querying backend /query endpoint');
-      const response = await this.api.post('/query', data);
+      const response = await this.api.post('/query', data, { signal: options.signal });
       
       // The system returns response.data directly or wrapped in { result: ... }
       if (response.data && response.data.result) {

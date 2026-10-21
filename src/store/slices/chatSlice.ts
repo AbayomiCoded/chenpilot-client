@@ -3,6 +3,12 @@ import { logger } from "../../utils/logger";
 import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
+import {
+  CONVERSATION_DELETED,
+  cancelConversationRequests,
+  isConversationDeleted,
+  trackConversationRequest,
+} from "@/store/conversationRequests";
 
 // ─── Voice message payload ────────────────────────────────────────────────────
 export interface SendVoiceMessagePayload {
@@ -152,11 +158,24 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
   });
 };
 
+/**
+ * Delete a conversation safely (#269): abort its in-flight agent requests, mark it deleted so
+ * late responses are ignored, then remove it from state and storage. Confirmation happens in the UI.
+ */
+export const deleteConversation = createAsyncThunk(
+  "chat/deleteConversation",
+  async (conversationId: string, { dispatch }) => {
+    const cancelled = cancelConversationRequests(conversationId);
+    dispatch(chatSlice.actions.deleteConversationLocally(conversationId));
+    return { conversationId, cancelled };
+  },
+);
+
 export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
 
 export const sendMessage = createAsyncThunk(
   'chat/sendMessage',
-  async (arg: SendMessageArg, { getState, rejectWithValue, requestId }) => {
+  async (arg: SendMessageArg, { getState, rejectWithValue, requestId, signal }) => {
     const query = typeof arg === 'string' ? arg : arg.query;
     const tempId = typeof arg === 'object' && arg.tempId ? arg.tempId : `msg_optimistic_${requestId}`;
     const clientTimestamp = typeof arg === 'object' && arg.clientTimestamp ? arg.clientTimestamp : Date.now();
@@ -186,19 +205,22 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Generate server timestamp (should come from server in production)
-      const serverTimestamp = new Date().toISOString();
+      // Track the request against its conversation so deleting the conversation aborts it (#269)
+      const tracked = trackConversationRequest(conversation.id);
+      const onAbort = () => tracked.abort();
+      signal.addEventListener("abort", onAbort);
+      let response: AgentQueryResponse;
+      try {
+        response = await apiService.queryAgent({ userId, query }, { signal: tracked.signal });
+      } finally {
+        tracked.release();
+        signal.removeEventListener("abort", onAbort);
+      }
 
-      // Save user message with server timestamp
-      const userMessage: ChatMessage = {
-        id: `msg_user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: "user",
-        content: query,
-        timestamp: serverTimestamp,
-      };
-
-      // Call the API service to get actual response
-      const response = await apiService.queryAgent({ userId, query });
+      // The conversation was deleted while waiting: drop the late response (#269)
+      if (isConversationDeleted(conversation.id) || tracked.signal.aborted) {
+        return rejectWithValue(CONVERSATION_DELETED);
+      }
 
       // Handle parsing of the agent response
       let content = response.result.data;
@@ -558,6 +580,15 @@ state.messages[index] = {
     },
     deleteConversationLocally: (state, action: PayloadAction<string>) => {
       const conversationId = action.payload;
+      // Deleting the open conversation also clears its view and any pending request state (#269)
+      if (state.currentConversation?.id === conversationId) {
+        state.currentConversation = null;
+        state.messages = [];
+        state.isLoading = false;
+        state.isTyping = false;
+        state.pendingMessages = new Set();
+        state.optimisticUpdates = new Map();
+      }
       state.conversations = state.conversations.filter(
         (conv) => conv.id !== conversationId,
       );
@@ -862,6 +893,10 @@ state.messages[index] = {
       .addCase(sendMessage.rejected, (state, action) => {
         state.isLoading = false;
         state.isTyping = false;
+        // The conversation was deleted mid-request: nothing to show or mark as failed (#269)
+        if (action.payload === CONVERSATION_DELETED) {
+          return;
+        }
         state.error = action.payload as string;
 
 const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
