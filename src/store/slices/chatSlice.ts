@@ -3,6 +3,7 @@ import { logger } from "../../utils/logger";
 import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
+import { classifyAgentError, isRetryableErrorKind, isStateChangingQuery } from "@/services/agentService";
 
 // ─── Voice message payload ────────────────────────────────────────────────────
 export interface SendVoiceMessagePayload {
@@ -152,7 +153,31 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
   });
 };
 
-export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
+export type SendMessageArg =
+  | string
+  | {
+      query: string;
+      tempId?: string;
+      clientTimestamp?: number;
+      /** Reuse the original request id when retrying, so the backend can deduplicate (#262). */
+      clientRequestId?: string;
+    };
+
+const clientRequestIdFor = (arg: SendMessageArg, requestId: string): string =>
+  (typeof arg === 'object' && arg.clientRequestId) || `agent_req_${requestId}`;
+
+/**
+ * Retry metadata for a failed agent reply (#262): whether a retry is offered, plus what is
+ * needed to resend the same prompt with the same request id.
+ */
+const retryMetadata = (query: string, tempId: string, requestId: string, errorKind: ReturnType<typeof classifyAgentError>) => ({
+  errorKind,
+  requestId,
+  retryable: isRetryableErrorKind(errorKind),
+  retryPrompt: query,
+  retryTempId: tempId,
+  stateChanging: isStateChangingQuery(query),
+});
 
 export const sendMessage = createAsyncThunk(
   'chat/sendMessage',
@@ -186,19 +211,10 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Generate server timestamp (should come from server in production)
-      const serverTimestamp = new Date().toISOString();
-
-      // Save user message with server timestamp
-      const userMessage: ChatMessage = {
-        id: `msg_user_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        type: "user",
-        content: query,
-        timestamp: serverTimestamp,
-      };
-
-      // Call the API service to get actual response
-      const response = await apiService.queryAgent({ userId, query });
+      // Call the API service to get actual response. The client request id is the idempotency
+      // key: a retry reuses it so the backend can recognise a repeat (#262).
+      const clientRequestId = clientRequestIdFor(arg, requestId);
+      const response = await apiService.queryAgent({ userId, query, clientRequestId });
 
       // Handle parsing of the agent response
       let content = response.result.data;
@@ -263,6 +279,9 @@ export const sendMessage = createAsyncThunk(
           status: 'success',
           success: response.result.success,
           error: response.result.error,
+          ...(response.result.success === false
+            ? retryMetadata(query, tempId, clientRequestId, response.result.errorKind ?? 'unknown')
+            : { requestId: clientRequestId }),
           executionTrace: response.result.executionTrace,
 serverTimestamp: serverTimestamp,
           // Store raw structured data in metadata if it was JSON
@@ -775,6 +794,14 @@ state.messages[index] = {
           };
           state.messages.push(optimisticUserMessage);
           state.messages = sortMessagesChronologically(state.messages);
+        } else {
+          // Retry of an existing message (#262): reuse the original bubble and show it as pending again
+          const existing = state.messages.find(
+            m => m.id === tempId || m.metadata?.optimisticId === tempId || m.metadata?.tempId === tempId
+          );
+          if (existing) {
+            existing.metadata = { ...existing.metadata, status: 'pending', error: undefined };
+          }
         }
       })
       .addCase(sendMessage.fulfilled, (state, action) => {
@@ -899,6 +926,7 @@ const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
           friendlyMessage = "Please log in to continue the conversation.";
         }
 
+        const failedQuery = typeof action.meta.arg === 'string' ? action.meta.arg : action.meta.arg.query;
         const errorMessage: ChatMessage = {
 id: `msg_err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           type: "agent",
@@ -910,6 +938,12 @@ id: `msg_err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
 type: "error",
             status: "failed",
             error: errorContent,
+            ...retryMetadata(
+              failedQuery,
+              tempId,
+              clientRequestIdFor(action.meta.arg, action.meta.requestId),
+              classifyAgentError({ message: errorContent }),
+            ),
           },
         };
         state.messages.push(errorMessage);

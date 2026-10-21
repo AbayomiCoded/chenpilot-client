@@ -35,11 +35,41 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
 | `HEAD /` | No body; health probe. | `200`, no response body is consumed. The client synthesizes its `AgentHealthCheck`. | Agent connectivity initialization; status object is synthesized, not returned by the server. |
-| `POST /query` | `{"userId":"user-1","query":"What is my XLM balance?"}` | `{"result":{"success":true,"data":"Your balance is ...","error":null}}` (`executionTrace` is optional). | Chat query; failures become friendly `result` messages shown in chat. |
+| `POST /query` | `{"userId":"user-1","query":"What is my XLM balance?","clientRequestId":"agent_req_k3j9"}` | `{"result":{"success":true,"data":"Your balance is ...","error":null}}` (`executionTrace` is optional). | Chat query; failures become friendly `result` messages shown in chat. |
 | `GET /memory/{userId}` | `GET /memory/user-1` | `[]` (declared `string[]`). | Service method only; failures are logged and return an empty list. |
 | `DELETE /memory/{userId}` | `DELETE /memory/user-1` | `204 No Content`; the response body is ignored. | Service method only; failures reject as `Failed to clear agent memory`. |
 | `GET /tools` | No body. | `[]` (the service currently does not declare tool item fields). | Service method only; failure returns an empty list. |
 | `POST /tools/{toolName}/execute` | `POST /tools/swap/execute` with `{"from":"XLM","to":"USDC","amount":"10"}` | Example pass-through: `{"result":"..."}`. The service does not define or validate this response shape. | Service method only; errors are rethrown as a tool failure. |
+
+### Retrying Failed Agent Queries (#262)
+
+**Proposed; backend support not yet confirmed.**
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /query/{clientRequestId}/status` | `GET /query/agent_req_k3j9/status` | `{"status":"completed","result":{"success":true,"data":"Sent 20 XLM","transactionHash":"..."}}`. `status` is `pending`, `completed`, `failed` or `not_found` (use a 200 response with `not_found` for an unseen id). | Checked before retrying a state-changing prompt. An HTTP 404/501, network error or unrecognized body counts as `unknown`. |
+
+**Idempotency.** Every `POST /query` carries a `clientRequestId`. A retry sends the **same** id. The backend should treat it as an idempotency key: if that id already completed, return the stored result instead of executing again.
+
+**Which failures offer a retry** (`isRetryableErrorKind`):
+
+| `errorKind` | Source | Retry shown |
+| --- | --- | --- |
+| `timeout` | Axios `ECONNABORTED`/`ETIMEDOUT`, a "timeout" message, HTTP 408/504 | Yes |
+| `network` | `ERR_NETWORK`, no response | Yes |
+| `server` | HTTP 5xx, 429 | Yes |
+| `unknown` | Anything else | Yes |
+| `invalid_query` | "invalid query", other HTTP 4xx | No: the same prompt would fail again |
+| `unauthenticated` | HTTP 401/403, "User not authenticated" | No: the user must sign in |
+
+**Retry flow** (`AgentRetryAction`, `agentService.checkBeforeRetry`):
+- **Preserved prompt:** the failed reply stores the original prompt (`retryPrompt`), the optimistic user-message id (`retryTempId`) and the `requestId`. A retry resends the prompt exactly as typed, reuses the original user bubble (no duplicate) and removes the failed reply.
+- **Read-only prompts** retry immediately.
+- **State-changing prompts** (send, transfer, swap, lend, borrow, withdraw, repay, deposit, stake, claim, harvest, liquidate, deploy, add/remove liquidity or collateral) query the status endpoint first:
+  - `completed`: nothing is resent; the failed reply is replaced with the stored result.
+  - `pending`: nothing is resent; the user is asked to check again shortly.
+  - `failed` / `not_found`: the query is resent with the same `clientRequestId`.
+  - `unknown`: nothing is resent until the user clicks "Retry anyway", after being told to check their transaction history.
 
 `getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
 

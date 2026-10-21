@@ -3,13 +3,40 @@
 export interface AgentQueryRequest {
   userId: string;
   query: string;
+  /**
+   * Client-generated id for this query (#262). Reused when the query is retried so the backend
+   * can deduplicate it (idempotency key) and report its status via `GET /query/:id/status`.
+   */
+  clientRequestId?: string;
 }
+
+/** Failure category for an agent query (#262). */
+export type AgentErrorKind = 'timeout' | 'network' | 'server' | 'invalid_query' | 'unauthenticated' | 'unknown';
+
+/** Backend-reported status of a previously sent query (#262). */
+export interface AgentOperationStatus {
+  requestId: string;
+  /** `unknown` when the backend cannot report status (endpoint missing or unreachable). */
+  status: 'pending' | 'completed' | 'failed' | 'not_found' | 'unknown';
+  result?: AgentQueryResponse['result'];
+}
+
+/** What to do when the user asks to retry a failed query (#262). */
+export type AgentRetryDecision =
+  | { action: 'retry' }
+  | { action: 'completed'; result?: AgentQueryResponse['result'] }
+  | { action: 'pending' }
+  | { action: 'confirm' };
 
 export interface AgentQueryResponse {
   result: {
     success: boolean;
     data: string;
     error?: string;
+    /** Set on failures so the UI can decide whether a retry is offered (#262). */
+    errorKind?: AgentErrorKind;
+    /** Echo of `clientRequestId`. */
+    requestId?: string;
     transactionHash?: string;
     metadata?: {
       type?: 'defi' | 'wallet' | 'contact' | 'general';

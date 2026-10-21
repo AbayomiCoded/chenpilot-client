@@ -237,6 +237,18 @@ export interface ChatMessage {
     clientTimestamp?: number | string;
     optimisticId?: string;
     tempId?: string;
+    /** Failure category of an agent reply (#262). */
+    errorKind?: "timeout" | "network" | "server" | "invalid_query" | "unauthenticated" | "unknown";
+    /** Client request id / idempotency key of the query this reply belongs to (#262). */
+    requestId?: string;
+    /** Whether a retry action is offered for this failed reply (#262). */
+    retryable?: boolean;
+    /** Original prompt, preserved so a retry resends exactly what the user typed (#262). */
+    retryPrompt?: string;
+    /** Optimistic id of the original user message, reused on retry so no duplicate bubble appears. */
+    retryTempId?: string;
+    /** The prompt looked like a state-changing action; retry requires a status check first. */
+    stateChanging?: boolean;
   };
 }
 

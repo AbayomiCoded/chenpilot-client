@@ -6,9 +6,74 @@ import {
   AgentStatus,
   AgentCapabilities,
   AgentHealthCheck,
-  AgentTool
+  AgentTool,
+  AgentErrorKind,
+  AgentOperationStatus,
+  AgentRetryDecision
 } from '@/types/agent';
 import agentConfig from '@/config/agent';
+
+// Queries that can move funds or change on-chain state. Retrying these blindly could repeat an
+// action that already succeeded, so they require a status check first (#262).
+const STATE_CHANGING_PATTERN =
+  /\b(send|transfer|swap|trade|buy|sell|lend|borrow|withdraw|repay|deposit|stake|unstake|liquidate|claim|harvest|deploy|pay)\b|\b(add|remove)\s+(liquidity|collateral)\b/i;
+
+/** Whether a query looks like a state-changing action rather than a read (balance, APY, ...). */
+export function isStateChangingQuery(query: string): boolean {
+  return STATE_CHANGING_PATTERN.test(query ?? '');
+}
+
+/** Categorize an agent request failure (#262). */
+export function classifyAgentError(error: unknown): AgentErrorKind {
+  const e = error as {
+    code?: string;
+    message?: string;
+    response?: { status?: number; data?: { message?: string } };
+  } | undefined;
+  const message = (e?.response?.data?.message || e?.message || '').toLowerCase();
+  const status = e?.response?.status;
+
+  if (message.includes('invalid query')) return 'invalid_query';
+  if (status === 401 || status === 403 || message.includes('not authenticated')) return 'unauthenticated';
+  if (e?.code === 'ECONNABORTED' || e?.code === 'ETIMEDOUT' || message.includes('timeout') || status === 408 || status === 504) {
+    return 'timeout';
+  }
+  if (status && (status >= 500 || status === 429)) return 'server';
+  if (status) return 'invalid_query';
+  if (e?.code === 'ERR_NETWORK' || message.includes('network')) return 'network';
+  return 'unknown';
+}
+
+/**
+ * Whether a failure of this kind may be retried as-is (#262). Rejected input and missing
+ * auth will fail the same way again, so they are not retryable.
+ */
+export function isRetryableErrorKind(kind: AgentErrorKind | undefined): boolean {
+  return kind === 'timeout' || kind === 'network' || kind === 'server' || kind === 'unknown';
+}
+
+/**
+ * Decide how to retry a failed query (#262). Read-only queries retry directly. State-changing
+ * queries first ask the backend what happened to the original request:
+ * - completed → don't resend; show the result
+ * - pending → don't resend yet
+ * - failed / not_found → safe to resend (with the same request id as idempotency key)
+ * - unknown (no status endpoint / unreachable) → ask the user to confirm
+ */
+export function decideRetry(stateChanging: boolean, status: AgentOperationStatus | null): AgentRetryDecision {
+  if (!stateChanging) return { action: 'retry' };
+  switch (status?.status) {
+    case 'completed':
+      return { action: 'completed', result: status.result };
+    case 'pending':
+      return { action: 'pending' };
+    case 'failed':
+    case 'not_found':
+      return { action: 'retry' };
+    default:
+      return { action: 'confirm' };
+  }
+}
 
 /**
  * Direct client service for communicating with the AI Agent backend.
@@ -197,6 +262,7 @@ class AgentService {
     try {
       logger.debug('[AgentService] Sending query:', request.query);
       
+      // clientRequestId doubles as the idempotency key; retries reuse it (#262)
       const response = await this.api.post('/query', request);
       
       logger.debug('[AgentService] Query response:', response.data);
@@ -205,7 +271,7 @@ class AgentService {
       // Ensure we return the proper AgentQueryResponse format
       if (response.data && response.data.result) {
         return {
-          result: response.data.result
+          result: { ...response.data.result, requestId: request.clientRequestId }
         };
       }
       
@@ -238,10 +304,44 @@ class AgentService {
         result: {
           success: false,
           data: friendlyMessage,
-          error: errorMsg
+          error: errorMsg,
+          errorKind: classifyAgentError(error),
+          requestId: request.clientRequestId
         }
       };
     }
+  }
+
+  /**
+   * Ask the backend what happened to a previously sent query (#262), via
+   * `GET /query/:requestId/status` → `{ status: 'pending' | 'completed' | 'failed' | 'not_found', result? }`.
+   * Never throws: a missing endpoint, an unreachable backend or an unrecognized body resolves
+   * as `unknown`. An HTTP 404 means the endpoint is missing, so it also resolves as `unknown`;
+   * the backend reports an unseen id with a 200 body `{ status: 'not_found' }`.
+   */
+  async getOperationStatus(requestId: string): Promise<AgentOperationStatus> {
+    try {
+      const response = await this.api.get(`/query/${encodeURIComponent(requestId)}/status`, { timeout: 10000 });
+      const body = response.data as { status?: string; result?: AgentQueryResponse['result'] } | undefined;
+      const status = body?.status;
+      if (status === 'pending' || status === 'completed' || status === 'failed' || status === 'not_found') {
+        return { requestId, status, result: body?.result };
+      }
+      return { requestId, status: 'unknown' };
+    } catch (error) {
+      console.error('[AgentService] Operation status check failed:', (error as Error)?.message);
+      return { requestId, status: 'unknown' };
+    }
+  }
+
+  /**
+   * Status check plus decision for retrying a failed query (#262).
+   * Read-only queries skip the network call.
+   */
+  async checkBeforeRetry(requestId: string | undefined, stateChanging: boolean): Promise<AgentRetryDecision> {
+    if (!stateChanging) return { action: 'retry' };
+    const status = requestId ? await this.getOperationStatus(requestId) : null;
+    return decideRetry(stateChanging, status);
   }
 
   /**

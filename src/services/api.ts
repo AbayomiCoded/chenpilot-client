@@ -25,7 +25,7 @@ import {
   AuditLogsResponse,
   AuditLogStats
 } from '@/types';
-import agentService from './agentService';
+import agentService, { classifyAgentError } from './agentService';
 import { tokenRefreshService } from './tokenRefreshService';
 import {
   isRetryableError,
@@ -832,7 +832,9 @@ class ApiService {
         result: {
           success: false,
           data: friendlyMessage,
-          error: errorMsg
+          error: errorMsg,
+          errorKind: classifyAgentError(error),
+          requestId: data.clientRequestId
         }
       };
     }

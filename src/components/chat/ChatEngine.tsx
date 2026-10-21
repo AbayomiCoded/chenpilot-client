@@ -10,8 +10,10 @@ import {
   queueMessage,
   addMessage as reduxAddMessage,
   addPendingMessage,
+  removeMessage,
 } from "@/store/slices/chatSlice";
 import AgentMessage from "@/components/chat/AgentMessage";
+import { AgentRetryAction } from "@/components/chat/AgentRetryAction";
 import UserMessage from "@/components/chat/UserMessage";
 import { TagWidget } from "@/components/chat/TagWidget";
 import { OfflineIndicator } from "@/components/chat/OfflineIndicator";
@@ -317,6 +319,22 @@ export const ChatEngine: React.FC = () => {
     }
   };
 
+  // Resend a failed prompt exactly as typed, reusing its user bubble and request id (#262)
+  const handleRetryFailed = (failed: ChatMessage) => {
+    const meta = failed.metadata;
+    if (!meta?.retryPrompt || isChatLoading || isTyping) return;
+    dispatch(removeMessage(failed.id));
+    dispatch(
+      sendMessage({
+        query: meta.retryPrompt,
+        tempId: meta.retryTempId,
+        clientRequestId: meta.requestId,
+      }),
+    )
+      .unwrap()
+      .catch((error: unknown) => toast.error(String(error || "Failed to send message")));
+  };
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     toast.success("Copied to clipboard");
@@ -613,6 +631,11 @@ return (
               ) : (
                 <div className="max-w-2xl w-full">
                   <AgentMessage message={message} onCopy={copyToClipboard} />
+                  <AgentRetryAction
+                    message={message}
+                    onRetry={handleRetryFailed}
+                    onResolve={(updates) => dispatch(updateMessage({ id: message.id, updates }))}
+                  />
                 </div>
               )}
             </div>
