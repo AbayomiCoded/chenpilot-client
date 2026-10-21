@@ -596,3 +596,37 @@ describe('useSocketConnection - reconnect/exhausted states (#276)', () => {
     expect(result.current.connectionState).toBe('connected');
   });
 });
+
+describe('useSocketResync (#277)', () => {
+  it('reflects resync state from the socket manager and exposes resync()', async () => {
+    const { act } = await import('@testing-library/react');
+    const { useSocketResync } = await import('./useSocket');
+    let notify: (s: unknown) => void = () => {};
+    const manager = {
+      getResyncState: vi.fn(() => ({ isResyncing: false, lastCursor: 'c1', lastResyncCount: 0, lastResyncAt: null, error: null })),
+      onResyncStateChange: vi.fn((listener: (s: unknown) => void) => {
+        notify = listener;
+        return vi.fn();
+      }),
+      resyncMissedEvents: vi.fn().mockResolvedValue(3),
+      setLastCursor: vi.fn(),
+    };
+    capturedSocketContext = { ...createMockContext(), socketManager: manager };
+
+    const { result } = renderHook(() => useSocketResync());
+    expect(result.current.lastCursor).toBe('c1');
+
+    act(() => notify({ isResyncing: true, lastCursor: 'c1', lastResyncCount: 0, lastResyncAt: null, error: null }));
+    expect(result.current.isResyncing).toBe(true);
+
+    await expect(result.current.resync()).resolves.toBe(3);
+  });
+
+  it('is inert without a socket manager', async () => {
+    const { useSocketResync } = await import('./useSocket');
+    capturedSocketContext = createMockContext();
+    const { result } = renderHook(() => useSocketResync());
+    expect(result.current.isResyncing).toBe(false);
+    await expect(result.current.resync()).resolves.toBe(0);
+  });
+});

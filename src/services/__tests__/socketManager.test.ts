@@ -460,6 +460,148 @@ describe('SocketManager', () => {
   });
 });
 
+describe('SocketManager resync after reconnect (#277)', () => {
+  const page = (events: Array<[string, string]>, extra: { hasMore?: boolean; nextCursor?: string } = {}) => ({
+    events: events.map(([cursor, text]) => ({ event: 'chat:message', cursor, data: { cursor, text } })),
+    ...extra,
+  });
+
+  let fetchMissed: ReturnType<typeof vi.fn>;
+  let manager: SocketManager;
+  let received: unknown[];
+
+  beforeEach(() => {
+    fetchMissed = vi.fn().mockResolvedValue(page([]));
+    manager = new SocketManager({
+      url: 'http://localhost:3001',
+      resync: { events: ['chat:message'], fetchMissed },
+    });
+    received = [];
+    manager.connect();
+    manager.on('chat:message', (payload) => received.push(payload));
+    fire(mockSocket, 'connect');
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    mockSocket.connected = false;
+  });
+
+  it('tracks the last acknowledged cursor from live events', () => {
+    fire(mockSocket, 'chat:message', { cursor: 'c1', text: 'a' });
+    fire(mockSocket, 'chat:message', { cursor: 'c2', text: 'b' });
+
+    expect(received).toHaveLength(2);
+    expect(manager.getLastCursor()).toBe('c2');
+    expect(manager.getResyncState().lastCursor).toBe('c2');
+  });
+
+  it('drops live duplicates with a cursor already delivered', () => {
+    fire(mockSocket, 'chat:message', { cursor: 'c1', text: 'a' });
+    fire(mockSocket, 'chat:message', { cursor: 'c1', text: 'a' });
+    expect(received).toHaveLength(1);
+  });
+
+  it('does not resync on the first connect or without a cursor', async () => {
+    expect(fetchMissed).not.toHaveBeenCalled();
+    fire(mockSocket, 'connect');
+    await manager.resyncMissedEvents();
+    expect(fetchMissed).not.toHaveBeenCalled();
+  });
+
+  it('fetches events missed after the last cursor on reconnect and delivers them in order', async () => {
+    fire(mockSocket, 'chat:message', { cursor: 'c1', text: 'a' });
+    fetchMissed.mockResolvedValueOnce(page([['c2', 'b'], ['c3', 'c']]));
+
+    fire(mockSocket, 'disconnect', 'transport close');
+    fire(mockSocket, 'connect');
+    const delivered = await manager.resyncMissedEvents();
+
+    expect(fetchMissed).toHaveBeenCalledTimes(1);
+    expect(fetchMissed).toHaveBeenCalledWith('c1');
+    expect(delivered).toBe(2);
+    expect(received.map((p) => (p as { text: string }).text)).toEqual(['a', 'b', 'c']);
+    expect(manager.getLastCursor()).toBe('c3');
+    expect(manager.getResyncState()).toMatchObject({ isResyncing: false, lastResyncCount: 2, error: null });
+  });
+
+  it('skips replayed events that already arrived live', async () => {
+    fire(mockSocket, 'chat:message', { cursor: 'c1', text: 'a' });
+    fetchMissed.mockImplementationOnce(async () => {
+      // c2 arrives live while the resync request is in flight
+      fire(mockSocket, 'chat:message', { cursor: 'c2', text: 'b' });
+      return page([['c2', 'b'], ['c3', 'c']]);
+    });
+
+    fire(mockSocket, 'connect');
+    await manager.resyncMissedEvents();
+
+    expect(received.map((p) => (p as { text: string }).text)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('follows pages until hasMore is false, bounded by maxPages', async () => {
+    fire(mockSocket, 'chat:message', { cursor: 'c0', text: 'start' });
+    fetchMissed
+      .mockResolvedValueOnce(page([['c1', '1']], { hasMore: true }))
+      .mockResolvedValueOnce(page([['c2', '2']], { hasMore: true, nextCursor: 'c2' }))
+      .mockResolvedValueOnce(page([['c3', '3']], { hasMore: false }));
+
+    fire(mockSocket, 'connect');
+    await manager.resyncMissedEvents();
+
+    expect(fetchMissed.mock.calls.map(([c]) => c)).toEqual(['c0', 'c1', 'c2']);
+    expect(manager.getLastCursor()).toBe('c3');
+
+    const capped = new SocketManager({
+      url: 'http://x',
+      resync: { events: ['chat:message'], fetchMissed: vi.fn(async (c: string) => page([[`${c}+`, 'x']], { hasMore: true })), maxPages: 3 },
+    });
+    capped.setLastCursor('k');
+    await capped.resyncMissedEvents();
+    expect(capped.getLastCursor()).toBe('k+++');
+  });
+
+  it('shares one in-flight resync between concurrent callers', async () => {
+    fire(mockSocket, 'chat:message', { cursor: 'c1', text: 'a' });
+    const [a, b] = await Promise.all([manager.resyncMissedEvents(), manager.resyncMissedEvents()]);
+    expect(fetchMissed).toHaveBeenCalledTimes(1);
+    expect(a).toBe(b);
+  });
+
+  it('reports fetch failures without losing the cursor', async () => {
+    fire(mockSocket, 'chat:message', { cursor: 'c1', text: 'a' });
+    fetchMissed.mockRejectedValueOnce(new Error('Request failed with status code 404'));
+
+    await expect(manager.resyncMissedEvents()).resolves.toBe(0);
+
+    expect(manager.getLastCursor()).toBe('c1');
+    expect(manager.getResyncState()).toMatchObject({ isResyncing: false, error: 'Request failed with status code 404' });
+  });
+
+  it('notifies resync listeners when a run starts and finishes', async () => {
+    fire(mockSocket, 'chat:message', { cursor: 'c1', text: 'a' });
+    const listener = vi.fn();
+    manager.onResyncStateChange(listener);
+
+    await manager.resyncMissedEvents();
+
+    expect(listener).toHaveBeenCalledWith(expect.objectContaining({ isResyncing: true }));
+    expect(listener).toHaveBeenLastCalledWith(expect.objectContaining({ isResyncing: false }));
+  });
+
+  it('off() removes a tracked handler without detaching the internal dispatcher', () => {
+    const extra = vi.fn();
+    manager.on('chat:message', extra);
+    manager.off('chat:message', extra);
+
+    fire(mockSocket, 'chat:message', { cursor: 'c9', text: 'z' });
+
+    expect(extra).not.toHaveBeenCalled();
+    expect(received).toHaveLength(1);
+    expect(mockSocket.off).not.toHaveBeenCalledWith('chat:message', extra);
+  });
+});
+
 describe('getSocketManager', () => {
   afterEach(() => {
     vi.clearAllMocks();

@@ -18,6 +18,7 @@ import UserMessage from "@/components/chat/UserMessage";
 import { TagWidget } from "@/components/chat/TagWidget";
 import { OfflineIndicator } from "@/components/chat/OfflineIndicator";
 import { useOfflineQueue } from "@/hooks/useOfflineQueue";
+import { useChatResync } from "@/hooks/useChatResync";
 import {
   Send,
   Mic,
@@ -104,6 +105,8 @@ export const ChatEngine: React.FC = () => {
     pendingMessages,
   } = useAppSelector((state) => state.chat);
   const { processQueue } = useOfflineQueue();
+  // Merge live chat events and catch up on ones missed during socket downtime (#277)
+  useChatResync();
   const [inputValue, setInputValue] = useState("");
   // Seconds the current agent request has been running; drives the "still working" state (#274)
   const [pendingSeconds, setPendingSeconds] = useState(0);

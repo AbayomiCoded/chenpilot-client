@@ -27,6 +27,7 @@ import {
 } from '@/types';
 import agentService, { classifyAgentError, isStateChangingQuery, agentErrorMessage } from './agentService';
 import { tokenRefreshService } from './tokenRefreshService';
+import type { MissedEventsPage } from './socketManager';
 import {
   isRetryableError,
   computeBackoffMs,
@@ -630,6 +631,27 @@ class ApiService {
   async batchFund(amounts: string[]): Promise<ApiResponse<{ transactionHashes: string[]; totalAmount: string }>> {
     const response = await this.api.post<ApiResponse<{ transactionHashes: string[]; totalAmount: string }>>('/auth/funding/batch-fund', { amounts });
     return response.data;
+  }
+
+  /**
+   * Fetch chat events emitted after `afterCursor`, oldest first, for post-reconnect resync (#277).
+   * Proposed contract: `GET /chat/events?after=<cursor>&limit=<n>` →
+   * `{ events: [{ event, cursor, data }], hasMore, nextCursor? }`.
+   *
+   * @param afterCursor - Last cursor the client acknowledged.
+   * @param limit - Page size (defaults to 100).
+   * @returns Promise resolving to one page of missed events.
+   * @throws {AxiosError} Throws if the request fails; the socket manager reports it as a resync error.
+   */
+  async getMissedChatEvents(afterCursor: string, limit = 100): Promise<MissedEventsPage> {
+    const response = await this.api.get<MissedEventsPage>('/chat/events', {
+      params: { after: afterCursor, limit },
+    });
+    return {
+      events: Array.isArray(response.data?.events) ? response.data.events : [],
+      hasMore: Boolean(response.data?.hasMore),
+      nextCursor: response.data?.nextCursor,
+    };
   }
 
   // Account transaction endpoints

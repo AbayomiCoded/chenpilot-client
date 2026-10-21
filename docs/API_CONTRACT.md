@@ -60,6 +60,16 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 
 Until (2) ships, status checks resolve as `unknown` and users are pointed to their transaction history. The backend fallback in `apiService.queryAgent` sets `errorKind` but sends no `clientRequestId`, so its timeouts can't be status-checked.
 
+### Chat Event Resync (#277)
+
+**Proposed; backend support not yet confirmed.** The client sends these requests to the API base URL through `apiService.getMissedChatEvents`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /chat/events` | `GET /chat/events?after=c_1042&limit=100` | `{"events":[{"event":"chat:message","cursor":"c_1043","data":{"cursor":"c_1043","message":{"id":"srv_88","type":"agent","content":"...","timestamp":"2026-01-01T00:00:00Z","metadata":{"requestId":"agent_query_..."}}}}],"hasMore":false,"nextCursor":"c_1043"}` | Called after each socket reconnect to replay events missed during downtime, oldest first. Failures are recorded as a resync error; live events keep working. |
+
+The live socket event `chat:message` must carry the same `{ cursor, message }` payload. See `src/docs/MESSAGE_ORDERING.md` §6 for cursor and dedupe rules.
+
 `getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
 
 ## Authentication Endpoints

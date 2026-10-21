@@ -15,7 +15,55 @@ export interface SocketConfig {
   };
   queueEnabled?: boolean;
   maxQueueSize?: number;
+  /** Cursor-based catch-up for events missed while disconnected (#277). Off when omitted. */
+  resync?: SocketResyncConfig;
 }
+
+/** An event replayed from the backend after a reconnect (#277). */
+export interface MissedEvent {
+  event: string;
+  cursor: string;
+  data: unknown;
+}
+
+export interface MissedEventsPage {
+  events: MissedEvent[];
+  /** More events exist after this page. */
+  hasMore?: boolean;
+  /** Cursor to request the next page from; defaults to the last event's cursor. */
+  nextCursor?: string;
+}
+
+export interface SocketResyncConfig {
+  /** Live events whose payload carries a cursor; these are tracked, deduped and replayed. */
+  events: string[];
+  /** Fetch events after `afterCursor`, oldest first. */
+  fetchMissed: (afterCursor: string) => Promise<MissedEventsPage>;
+  /** Read the cursor from a live payload. Defaults to `payload.cursor`. */
+  getCursor?: (payload: unknown) => string | undefined;
+  /** Upper bound on pages fetched per resync. Default 10. */
+  maxPages?: number;
+}
+
+export interface SocketResyncState {
+  isResyncing: boolean;
+  lastCursor: string | null;
+  /** Events delivered by the most recent resync. */
+  lastResyncCount: number;
+  lastResyncAt: string | null;
+  error: string | null;
+}
+
+export type SocketResyncListener = (state: SocketResyncState) => void;
+
+const DEFAULT_RESYNC_MAX_PAGES = 10;
+// How many delivered cursors to remember for dedupe across live/replayed overlap
+const SEEN_CURSOR_LIMIT = 500;
+
+const defaultGetCursor = (payload: unknown): string | undefined => {
+  const cursor = (payload as { cursor?: unknown } | null | undefined)?.cursor;
+  return typeof cursor === 'string' || typeof cursor === 'number' ? String(cursor) : undefined;
+};
 
 interface QueuedEvent {
   event: string;
@@ -91,6 +139,19 @@ export class SocketManager {
   private connectionState: SocketConnectionState = 'idle';
   private stateListeners = new Set<SocketStateListener>();
   private managerHandlers: Array<[string, SocketEventHandler]> = [];
+  private hasConnected = false;
+  private lastCursor: string | null = null;
+  private seenCursors = new Set<string>();
+  private trackedHandlers = new Map<string, Set<SocketEventHandler>>();
+  private resyncInFlight: Promise<number> | null = null;
+  private resyncState: SocketResyncState = {
+    isResyncing: false,
+    lastCursor: null,
+    lastResyncCount: 0,
+    lastResyncAt: null,
+    error: null,
+  };
+  private resyncListeners = new Set<SocketResyncListener>();
   private eventQueue: QueuedEvent[] = [];
   private queueEnabled: boolean;
   private maxQueueSize: number;
@@ -136,7 +197,18 @@ export class SocketManager {
       this.reconnectAttempts = 0;
       this.setState('connected');
       this.flushQueue();
+      // 'connect' fires on every (re)connection; only later ones can have missed events
+      if (this.hasConnected) {
+        void this.resyncMissedEvents();
+      }
+      this.hasConnected = true;
     });
+
+    for (const event of this.config.resync?.events ?? []) {
+      this.registerHandler(event, (payload) => {
+        this.deliverTracked(event, payload, this.readCursor(payload));
+      });
+    }
 
     this.registerHandler('disconnect', (reason) => {
       logger.debug('Socket disconnected:', reason);
@@ -198,6 +270,130 @@ export class SocketManager {
     this.reconnectAttempts = 0;
     this.setState('connecting');
     this.socket.connect();
+  }
+
+  /** Last cursor delivered to handlers, i.e. the client's acknowledged position. */
+  getLastCursor(): string | null {
+    return this.lastCursor;
+  }
+
+  /** Seed the cursor, e.g. from the newest message in loaded history. */
+  setLastCursor(cursor: string | null): void {
+    this.lastCursor = cursor;
+    this.updateResyncState({ lastCursor: cursor });
+  }
+
+  getResyncState(): SocketResyncState {
+    return this.resyncState;
+  }
+
+  onResyncStateChange(listener: SocketResyncListener): () => void {
+    this.resyncListeners.add(listener);
+    return () => {
+      this.resyncListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Fetch and deliver events missed since the last acknowledged cursor (#277).
+   * Concurrent calls share one run. Resolves with the number of events delivered;
+   * never rejects (errors are reported via resync state).
+   */
+  resyncMissedEvents(): Promise<number> {
+    const resync = this.config.resync;
+    if (!resync || !this.lastCursor) {
+      return Promise.resolve(0);
+    }
+    if (this.resyncInFlight) {
+      return this.resyncInFlight;
+    }
+
+    this.resyncInFlight = (async () => {
+      this.updateResyncState({ isResyncing: true, error: null });
+      let delivered = 0;
+      let cursor = this.lastCursor as string;
+      const maxPages = resync.maxPages ?? DEFAULT_RESYNC_MAX_PAGES;
+
+      try {
+        for (let page = 0; page < maxPages; page++) {
+          const result = await resync.fetchMissed(cursor);
+          const events = result?.events ?? [];
+          for (const missed of events) {
+            if (this.deliverTracked(missed.event, missed.data, missed.cursor)) {
+              delivered++;
+            }
+          }
+          const next = result?.nextCursor ?? events[events.length - 1]?.cursor;
+          if (!result?.hasMore || !next || next === cursor) {
+            break;
+          }
+          cursor = next;
+        }
+        this.updateResyncState({
+          isResyncing: false,
+          lastResyncCount: delivered,
+          lastResyncAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        logger.warn('Socket resync failed:', (error as Error)?.message ?? String(error));
+        this.updateResyncState({
+          isResyncing: false,
+          lastResyncCount: delivered,
+          error: (error as Error)?.message ?? 'Resync failed',
+        });
+      } finally {
+        this.resyncInFlight = null;
+      }
+      return delivered;
+    })();
+
+    return this.resyncInFlight;
+  }
+
+  private readCursor(payload: unknown): string | undefined {
+    return (this.config.resync?.getCursor ?? defaultGetCursor)(payload);
+  }
+
+  private isTracked(event: string): boolean {
+    return this.config.resync?.events.includes(event) ?? false;
+  }
+
+  /**
+   * Deliver a tracked event once per cursor and advance the acknowledged cursor.
+   * Returns false when the event was a duplicate.
+   */
+  private deliverTracked(event: string, payload: unknown, cursor: string | undefined): boolean {
+    if (cursor !== undefined) {
+      if (this.seenCursors.has(cursor)) {
+        return false;
+      }
+      this.seenCursors.add(cursor);
+      if (this.seenCursors.size > SEEN_CURSOR_LIMIT) {
+        const oldest = this.seenCursors.values().next().value;
+        if (oldest !== undefined) this.seenCursors.delete(oldest);
+      }
+    }
+
+    for (const handler of this.trackedHandlers.get(event) ?? []) {
+      try {
+        handler(payload);
+      } catch (error) {
+        console.error('Socket event handler failed:', event, error);
+      }
+    }
+
+    if (cursor !== undefined) {
+      this.lastCursor = cursor;
+      this.updateResyncState({ lastCursor: cursor });
+    }
+    return true;
+  }
+
+  private updateResyncState(patch: Partial<SocketResyncState>): void {
+    this.resyncState = { ...this.resyncState, ...patch };
+    for (const listener of this.resyncListeners) {
+      listener(this.resyncState);
+    }
   }
 
   getConnectionState(): SocketConnectionState {
@@ -332,15 +528,32 @@ export class SocketManager {
       socket.io?.off(event as never, handler);
     }
     this.managerHandlers = [];
+    this.trackedHandlers.clear();
   }
 
   on(event: string, callback: (...args: unknown[]) => void): void {
+    if (this.socket && this.isTracked(event)) {
+      // Tracked events go through deliverTracked so live and replayed copies are deduped
+      const handlers = this.trackedHandlers.get(event) ?? new Set<SocketEventHandler>();
+      handlers.add(callback);
+      this.trackedHandlers.set(event, handlers);
+      return;
+    }
     if (this.socket) {
       this.registerHandler(event, callback);
     }
   }
 
   off(event: string, callback?: (...args: unknown[]) => void): void {
+    if (this.isTracked(event)) {
+      const handlers = this.trackedHandlers.get(event);
+      if (callback) {
+        handlers?.delete(callback);
+      } else {
+        handlers?.clear();
+      }
+      return;
+    }
     if (this.socket) {
       this.socket.off(event, callback);
 

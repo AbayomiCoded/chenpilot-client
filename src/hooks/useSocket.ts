@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSocket as useSocketContext } from '@/components/providers/SocketProvider';
-import type { SocketConnectionState } from '@/services/socketManager';
+import type { SocketConnectionState, SocketResyncState } from '@/services/socketManager';
 
 export function useSocket() {
   const context = useSocketContext();
@@ -74,5 +74,36 @@ export function useSocketConnection() {
     retry,
     connect,
     disconnect,
+  };
+}
+
+const IDLE_RESYNC_STATE: SocketResyncState = {
+  isResyncing: false,
+  lastCursor: null,
+  lastResyncCount: 0,
+  lastResyncAt: null,
+  error: null,
+};
+
+/**
+ * Post-reconnect resync status (#277): whether missed events are being fetched, the last
+ * acknowledged cursor, and a manual `resync()` trigger.
+ */
+export function useSocketResync() {
+  const { socketManager } = useSocket();
+  const [state, setState] = useState<SocketResyncState>(
+    () => socketManager?.getResyncState?.() ?? IDLE_RESYNC_STATE
+  );
+
+  useEffect(() => {
+    if (!socketManager?.onResyncStateChange) return;
+    setState(socketManager.getResyncState());
+    return socketManager.onResyncStateChange(setState);
+  }, [socketManager]);
+
+  return {
+    ...state,
+    resync: () => socketManager?.resyncMissedEvents() ?? Promise.resolve(0),
+    setLastCursor: (cursor: string | null) => socketManager?.setLastCursor(cursor),
   };
 }

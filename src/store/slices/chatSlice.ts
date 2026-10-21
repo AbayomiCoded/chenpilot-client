@@ -152,6 +152,52 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
   });
 };
 
+/**
+ * Keys that identify the same logical message across local, optimistic and server copies (#277).
+ * `requestId` is shared by the user and agent message of one query, so it only matches within a type.
+ */
+const messageIdentityKeys = (message: ChatMessage): string[] => {
+  const keys = [`id:${message.id}`];
+  const meta = message.metadata;
+  if (meta?.optimisticId) keys.push(`id:${meta.optimisticId}`);
+  if (meta?.tempId) keys.push(`id:${meta.tempId}`);
+  if (meta?.requestId) keys.push(`req:${message.type}:${meta.requestId}`);
+  return keys;
+};
+
+/**
+ * Merge messages received from the server (live socket events or a post-reconnect resync)
+ * into the local list without duplicates (#277). An incoming message replaces the local
+ * message it matches (same id, or its optimistic/temp id or request id), so the server
+ * copy wins over the optimistic one. Unmatched messages are appended. Result is sorted.
+ */
+export const mergeIncomingMessages = (existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] => {
+  const merged = [...existing];
+  const index = new Map<string, number>();
+  merged.forEach((message, i) => {
+    for (const key of messageIdentityKeys(message)) index.set(key, i);
+  });
+
+  for (const message of incoming) {
+    const keys = messageIdentityKeys(message);
+    const matchIdx = keys.map((key) => index.get(key)).find((i) => i !== undefined);
+
+    if (matchIdx !== undefined) {
+      const local = merged[matchIdx];
+      merged[matchIdx] = {
+        ...message,
+        metadata: { ...local.metadata, ...message.metadata, status: message.metadata?.status ?? 'success' },
+      };
+      for (const key of messageIdentityKeys(merged[matchIdx])) index.set(key, matchIdx);
+    } else {
+      merged.push(message);
+      for (const key of keys) index.set(key, merged.length - 1);
+    }
+  }
+
+  return sortMessagesChronologically(merged);
+};
+
 export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
 
 export const sendMessage = createAsyncThunk(
@@ -711,6 +757,17 @@ state.messages[index] = {
     removeOptimisticUpdate: (state, action: PayloadAction<string>) => {
       state.optimisticUpdates.delete(action.payload);
     },
+    /** Merge server-delivered messages (live or resynced) with dedupe against local/optimistic copies (#277). */
+    mergeSyncedMessages: (state, action: PayloadAction<ChatMessage[]>) => {
+      state.messages = mergeIncomingMessages(state.messages, action.payload);
+      for (const message of action.payload) {
+        const optimisticId = message.metadata?.optimisticId ?? message.metadata?.tempId;
+        if (optimisticId) {
+          state.optimisticUpdates.delete(optimisticId);
+          state.pendingMessages.delete(optimisticId);
+        }
+      }
+    },
     resolveOptimisticUpdate: (
       state,
       action: PayloadAction<{ clientId: string; serverMessage: ChatMessage }>,
@@ -985,5 +1042,6 @@ export const {
   storeOptimisticUpdate,
   removeOptimisticUpdate,
   resolveOptimisticUpdate,
+  mergeSyncedMessages,
 } = chatSlice.actions;
 export default chatSlice.reducer;
