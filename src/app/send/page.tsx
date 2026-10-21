@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { getContacts } from '@/store/slices/contactsSlice';
@@ -11,6 +11,14 @@ import apiService from '@/services/api';
 import { StellarNetworkBadge } from '@/components/wallet/StellarNetworkBadge';
 import { ArrowLeft, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import toast from 'react-hot-toast';
+import apiService from '@/services/api';
+import { getPaymentFailureMessage } from '@/utils/validation';
+
+interface NativeBalanceBreakdown {
+  total: string;
+  reserve: string;
+}
 
 export default function SendPaymentPage() {
   const router = useRouter();
@@ -26,20 +34,31 @@ export default function SendPaymentPage() {
     }
 
     dispatch(getContacts());
+    let isActive = true;
+    void apiService.getBalance().then((response) => {
+      const total = response.data?.nativeBalance;
+      const reserve = response.data?.required;
+      if (isActive && response.success && total && reserve && Number.isFinite(Number(total)) && Number.isFinite(Number(reserve))) {
+        setNativeBalance({ total, reserve });
+      }
+    }).catch(() => {
+      // Balance guidance is omitted when the backend cannot provide its breakdown.
+    });
+
+    return () => {
+      isActive = false;
+    };
   }, [dispatch, isAuthenticated, router]);
 
   const handleSendPayment = async (data: SendPaymentRequest) => {
     try {
-      // In a real implementation, this would call the payment API
-      console.log('Sending payment:', data);
-      
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      
+      await apiService.sendPayment(data);
       toast.success('Payment sent successfully!');
       router.push('/transactions');
     } catch (error: any) {
       console.error('Payment error:', error);
+      toast.error(getPaymentFailureMessage(error));
+      throw error;
       const message = getPaymentFailureMessage(error);
       toast.error(message || 'Failed to send payment');
     }
@@ -103,6 +122,8 @@ export default function SendPaymentPage() {
               onCheckStatus={handleCheckPaymentStatus}
               contacts={contacts}
               isLoading={contactsLoading}
+              nativeBalance={nativeBalance?.total}
+              requiredReserve={nativeBalance?.reserve}
               availableBalance={nativeBalance}
             />
           </div>

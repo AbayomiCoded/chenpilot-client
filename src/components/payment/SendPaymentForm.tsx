@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { sendPaymentSchema, validateSendPayment, sanitizePaymentInput } from '@/utils/validation';
@@ -24,6 +24,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
+import { calculateSpendableNativeBalance } from '@/utils/nativeBalance';
 import toast from 'react-hot-toast';
 
 interface SendPaymentFormProps {
@@ -32,6 +33,8 @@ interface SendPaymentFormProps {
   contacts: Contact[];
   isLoading?: boolean;
   defaultTokenType?: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  nativeBalance?: string;
+  requiredReserve?: string;
   availableBalance?: number | string;
 }
 
@@ -41,6 +44,8 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   contacts,
   isLoading = false,
   defaultTokenType = 'XLM',
+  nativeBalance,
+  requiredReserve,
   availableBalance,
 }) => {
   const [selectedContact, setSelectedContact] = useState<ContactSelection | null>(null);
@@ -61,6 +66,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
     setValue,
     watch,
     reset,
+    setFocus,
   } = useForm<SendPaymentRequest>({
     resolver: zodResolver(sendPaymentSchema),
     defaultValues: {
@@ -71,6 +77,13 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
   const watchedToken = watch('tokenType');
   const watchedMemoType = watch('memoType');
+  const paymentAttemptSignatureRef = useRef<string | null>(null);
+  const paymentAttemptKeyRef = useRef<string | null>(null);
+  const nativeBalanceValue = Number(nativeBalance);
+  const requiredReserveValue = Number(requiredReserve);
+  const spendableBalance = nativeBalance !== undefined && requiredReserve !== undefined
+    ? calculateSpendableNativeBalance(nativeBalance, requiredReserve)
+    : null;
   const watchedAmount = watch('amount') || '';
   const recipientAddressValue = watch('recipientAddress') || '';
   const assetPrecision = getAssetPrecision(watchedToken);
@@ -124,10 +137,65 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   };
 
   const handleClearContact = () => {
+    paymentAttemptSignatureRef.current = null;
+    paymentAttemptKeyRef.current = null;
     setSelectedContact(null);
     setValue('recipientAddress', '');
   };
 
+  const getActiveIdempotencyKey = (data: SendPaymentRequest): string => {
+    const requestFromForm = {
+      recipientAddress: data.recipientAddress?.trim() ?? '',
+      amount: data.amount?.trim() ?? '',
+      tokenType: data.tokenType ?? '',
+      memo: data.memo?.trim() ?? '',
+      memoType: data.memoType ?? 'none',
+      recipientContactId: data.recipientContactId ?? selectedContact?.id ?? '',
+    };
+    const signature = JSON.stringify(requestFromForm);
+
+    if (paymentAttemptSignatureRef.current === signature && paymentAttemptKeyRef.current) {
+      return paymentAttemptKeyRef.current;
+    }
+
+    const nextKey = buildPaymentIdempotencyKey(requestFromForm);
+    paymentAttemptSignatureRef.current = signature;
+    paymentAttemptKeyRef.current = nextKey;
+    return nextKey;
+  };
+
+  const handleFormSubmit = async (data: SendPaymentRequest) => {
+    try {
+      setIsSubmitting(true);
+
+      const sanitizedData = sanitizePaymentInput(data);
+
+      if (selectedContact) {
+        sanitizedData.recipientContactId = selectedContact.id;
+      }
+
+      const validation = validateSendPayment(sanitizedData);
+      if (!validation.isValid) {
+        setFocus('recipientAddress');
+        validation.errors.forEach((error) => toast.error(error));
+        return;
+      }
+
+      const paymentRequest = {
+        ...sanitizedData,
+        idempotencyKey: getActiveIdempotencyKey(sanitizedData),
+      };
+
+      await onSubmit(paymentRequest);
+
+      paymentAttemptSignatureRef.current = null;
+      paymentAttemptKeyRef.current = null;
+      reset();
+      setSelectedContact(null);
+    } catch (error: any) {
+      console.error('Payment submission error:', error);
+      setFocus('recipientAddress');
+      toast.error(getPaymentFailureMessage(error));
   const handleFormSubmit = (data: SendPaymentRequest) => {
     const sanitizedData = sanitizePaymentInput(data);
     if (selectedContact) {
@@ -274,6 +342,26 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
   return (
     <div className="space-y-6">
+      {spendableBalance !== null && (
+        <Card className="p-4" aria-label="Native XLM balance">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs text-gray-400">Total XLM</p>
+              <p className="font-semibold text-white">{nativeBalanceValue.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM</p>
+            </div>
+            <div>
+              <p className="text-xs text-gray-400">Spendable after reserve</p>
+              <p className="font-semibold text-white">{spendableBalance.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM</p>
+            </div>
+          </div>
+          {requiredReserveValue > 0 && (
+            <p className="mt-2 text-xs text-gray-400">
+              Keep at least {requiredReserveValue.toLocaleString(undefined, { maximumFractionDigits: 7 })} XLM in your account for its minimum reserve.
+            </p>
+          )}
+        </Card>
+      )}
+
       {/* Contact Selection */}
       <Card className="p-4">
         <div className="flex items-center justify-between mb-4">
@@ -426,7 +514,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                   {...register('memo')}
                   placeholder={
                     watchedMemoType === 'text'
-                      ? 'Enter memo text (max 28 characters)'
+                      ? 'Enter memo text (max 28 UTF-8 bytes)'
                       : watchedMemoType === 'id'
                       ? 'Enter numeric ID'
                       : 'Enter 64-character hex hash'
@@ -435,7 +523,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
                     'font-mono text-sm',
                     watchedMemoType === 'hash' && 'uppercase'
                   )}
-                  maxLength={watchedMemoType === 'hash' ? 64 : 28}
+                  maxLength={watchedMemoType === 'hash' ? 64 : watchedMemoType === 'id' ? 20 : 28}
                 />
               )}
             </div>

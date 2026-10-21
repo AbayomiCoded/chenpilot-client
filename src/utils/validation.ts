@@ -57,15 +57,17 @@ export const hasValidAssetPrecision = (amount: string, tokenType?: string): bool
 export const createContactSchema = z.object({
   name: nameSchema,
   address: stellarAddressSchema,
-  tokenType: z.enum(['XLM', 'USDC', 'USDT', 'BTC', 'ETH'], {
+  tokenType: z.enum(['XLM', 'STRK', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA'], {
     required_error: 'Please select a token type',
   }),
+  note: z.string().max(280, 'Contact notes are limited to 280 characters').optional(),
 });
 
 export const updateContactSchema = z.object({
   name: nameSchema.optional(),
   address: stellarAddressSchema.optional(),
-  tokenType: z.enum(['XLM', 'USDC', 'USDT', 'BTC', 'ETH']).optional(),
+  tokenType: z.enum(['XLM', 'STRK', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA']).optional(),
+  note: z.string().max(280, 'Contact notes are limited to 280 characters').optional(),
 });
 
 // Authentication schemas
@@ -125,10 +127,7 @@ export const sendPaymentSchema = z.object({
   tokenType: z.enum(PAYMENT_LIMITS.SUPPORTED_TOKENS, {
     required_error: VALIDATION_MESSAGES.TOKEN_TYPE_REQUIRED,
   }),
-  memo: z
-    .string()
-    .max(PAYMENT_LIMITS.MAX_MEMO_LENGTH, VALIDATION_MESSAGES.MEMO_TOO_LONG)
-    .optional(),
+  memo: z.string().optional(),
   memoType: z.enum(PAYMENT_LIMITS.MEMO_TYPES).optional(),
   recipientContactId: z.string().optional(),
 }).superRefine((data, context) => {
@@ -221,6 +220,7 @@ export const validateSendPayment = (data: {
   memo?: string;
   memoType?: string;
   recipientContactId?: string;
+  idempotencyKey?: string;
 }): { isValid: boolean; errors: string[] } => {
   try {
     sendPaymentSchema.parse(data);
@@ -263,18 +263,19 @@ export const getPaymentFailureMessage = (error: unknown): string => {
 };
 
 export const validateMemo = (memo: string, memoType: string): boolean => {
-  if (!memo || memo.length === 0) return true;
+  if (memoType === 'none') return true;
+  if (!memo || memo.trim().length === 0) return false;
   
   if (memoType === 'id') {
-    return SECURITY_VALIDATION.MEMO_ID_REGEX.test(memo);
+    return SECURITY_VALIDATION.MEMO_ID_REGEX.test(memo) && BigInt(memo) <= 18446744073709551615n;
   }
   if (memoType === 'hash') {
     return SECURITY_VALIDATION.MEMO_HASH_REGEX.test(memo);
   }
   if (memoType === 'text') {
-    return memo.length <= PAYMENT_LIMITS.MAX_MEMO_LENGTH;
+    return new TextEncoder().encode(memo).length <= PAYMENT_LIMITS.MAX_MEMO_LENGTH;
   }
-  return true;
+  return false;
 };
 
 export const validateAmountRange = (
@@ -294,6 +295,7 @@ export const sanitizePaymentInput = (data: {
   memo?: string;
   memoType?: string;
   recipientContactId?: string;
+  idempotencyKey?: string;
 }): {
   recipientAddress: string;
   amount: string;
@@ -301,13 +303,36 @@ export const sanitizePaymentInput = (data: {
   memo?: string;
   memoType?: string;
   recipientContactId?: string;
+  idempotencyKey?: string;
 } => {
   return {
     recipientAddress: data.recipientAddress.trim(),
     amount: data.amount.trim(),
     tokenType: data.tokenType.toUpperCase(),
-    memo: data.memo?.trim(),
+    ...(data.memoType?.toLowerCase() === 'none'
+      ? {}
+      : data.memo?.trim()
+        ? { memo: data.memo.trim() }
+        : {}),
     memoType: data.memoType?.toLowerCase(),
     recipientContactId: data.recipientContactId?.trim(),
+    idempotencyKey: data.idempotencyKey?.trim() || undefined,
   };
+};
+
+export const getPaymentFailureMessage = (error: unknown): string => {
+  let message = error instanceof Error ? error.message : String(error || '');
+
+  if (typeof error === 'object' && error !== null && 'response' in error) {
+    const response = (error as { response?: { data?: { message?: unknown } } }).response;
+    if (typeof response?.data?.message === 'string') {
+      message = response.data.message;
+    }
+  }
+
+  if (/reserve|minimum\s+(native\s+)?balance|insufficient\s+native\s+balance/i.test(message)) {
+    return "This payment would leave too little XLM to meet Stellar's minimum account reserve. Reduce the amount or add XLM.";
+  }
+
+  return message || 'Failed to send payment';
 };
