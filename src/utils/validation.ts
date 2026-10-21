@@ -1,9 +1,11 @@
 import { z } from 'zod';
 import { VALIDATION_MESSAGES, PAYMENT_LIMITS, SECURITY_VALIDATION } from '@/constants';
 
-// Email validation schema
+// Email validation schema. Surrounding whitespace is accepted (and trimmed in the parsed
+// value) so an accidental space doesn't block sign-in; see normalizeEmail (#259).
 export const emailSchema = z
   .string()
+  .trim()
   .min(1, 'Email is required')
   .email('Please enter a valid email address');
 

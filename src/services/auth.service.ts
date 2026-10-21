@@ -1,6 +1,25 @@
 import apiService from './api';
 
 /**
+ * The one email normalization used for authentication requests (#259), matching the API
+ * contract (docs/API_CONTRACT.md "Email Normalization"):
+ * - trim leading/trailing whitespace (including non-breaking and zero-width spaces)
+ * - lowercase the whole address
+ * Nothing else: no provider-specific rules (Gmail dots, `+tags`) and no punycode conversion.
+ * Apply it to request payloads only; the input keeps what the user typed.
+ */
+export function normalizeEmail(email: string): string {
+  return email.replace(/^[\s\u200B-\u200D\uFEFF]+|[\s\u200B-\u200D\uFEFF]+$/g, '').toLowerCase();
+}
+
+/**
+ * Build the credentials sent for login/registration: normalized email, password untouched (#259).
+ */
+export function toAuthPayload<T extends { email: string; password: string }>(data: T): T {
+  return { ...data, email: normalizeEmail(data.email), password: data.password };
+}
+
+/**
  * Sensitive actions that the backend may gate behind recent authentication (#255).
  * See docs/adr/0006-idle-session-reauthentication.md for the agreed list and contract.
  */

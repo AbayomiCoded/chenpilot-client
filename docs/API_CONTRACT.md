@@ -103,6 +103,21 @@ Events with an unknown type, unknown outcome or invalid date are dropped. `devic
 - `ipAddress` is never shown by default. "Show network details" reveals only a coarsened form (`203.0.113.x`; the first three groups of an IPv6 address).
 - The backend should not send precise location or full fingerprints.
 
+### Email Normalization (#259)
+
+**Proposed contract; the backend must confirm it applies the same rule.** `POST /auth/login`, `POST /auth/register`, `POST /auth/forgot-password` and `POST /auth/resend-verification` should treat email addresses as follows:
+
+1. Trim leading and trailing whitespace, including tabs, newlines, non-breaking spaces and zero-width spaces.
+2. Lowercase the entire address. Comparison and uniqueness are case-insensitive.
+3. Nothing else. No provider-specific rules: Gmail dots and `+tags` are kept, `googlemail.com` is not rewritten, and there is no punycode conversion. Whitespace inside the address is invalid and rejected by validation.
+
+The client applies exactly this rule with `normalizeEmail` (`src/services/auth.service.ts`), shared by the login and registration forms through `toAuthPayload`. The input field keeps what the user typed; only the request payload is normalized. **Passwords are never trimmed or changed.** `emailSchema` accepts surrounding whitespace so an accidental space doesn't block submission, and whitespace-only input reports "Email is required".
+
+| Typed | Sent |
+| --- | --- |
+| `  Ada.Lovelace@Example.COM ` | `ada.lovelace@example.com` |
+| `first.last+tag@gmail.com` | `first.last+tag@gmail.com` |
+
 ### Data Export Fallbacks
 
 `exportUserData()` tries these paths in order, moving to the next only on HTTP 404. Each successful response is consumed as a binary `Blob`, not JSON.

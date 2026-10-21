@@ -14,6 +14,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
 import { isTerminalAuthError, useClearPasswordOnLeave } from "@/components/auth/passwordHygiene";
+import { toAuthPayload } from "@/services/auth.service";
 
 interface RegisterFormData {
   email: string;
@@ -44,11 +45,12 @@ export function RegisterForm() {
 
   const onSubmit = async (data: RegisterFormData) => {
     try {
-      const cleanData = {
+      // Same email normalization as login; the password is sent exactly as typed (#259)
+      const cleanData = toAuthPayload({
         email: String(data.email),
         password: String(data.password),
         name: data.name ? String(data.name) : undefined,
-      };
+      });
       await dispatch(registerUser(cleanData)).unwrap();
       toast.success("Account created successfully! Welcome to ChenPilot!");
       router.push("/chat");

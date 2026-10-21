@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
 import { isTerminalAuthError, useClearPasswordOnLeave } from "@/components/auth/passwordHygiene";
+import { toAuthPayload } from "@/services/auth.service";
 
 interface LoginFormData {
   email: string;
@@ -40,7 +41,8 @@ export default function LoginForm() {
 
   const onSubmit = async (data: LoginFormData) => {
     try {
-      await dispatch(login(data)).unwrap();
+      // Send the normalized email; the field keeps what the user typed (#259)
+      await dispatch(login(toAuthPayload(data))).unwrap();
       toast.success("Successfully logged in!");
       router.push("/chat");
     } catch (error: any) {
