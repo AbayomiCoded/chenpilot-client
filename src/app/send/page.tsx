@@ -17,6 +17,7 @@ export default function SendPaymentPage() {
   const dispatch = useAppDispatch();
   const { isAuthenticated } = useAppSelector((state) => state.auth);
   const { list: contacts, isLoading: contactsLoading } = useAppSelector((state) => state.contacts);
+  const nativeBalance = useAppSelector((state) => state.wallet?.nativeBalance ?? 0);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -27,6 +28,22 @@ export default function SendPaymentPage() {
     dispatch(getContacts());
   }, [dispatch, isAuthenticated, router]);
 
+  const handleSendPayment = async (data: SendPaymentRequest) => {
+    try {
+      // In a real implementation, this would call the payment API
+      console.log('Sending payment:', data);
+      
+      // Simulate API call
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      
+      toast.success('Payment sent successfully!');
+      router.push('/transactions');
+    } catch (error: any) {
+      console.error('Payment error:', error);
+      const message = getPaymentFailureMessage(error);
+      toast.error(message || 'Failed to send payment');
+    }
+  };
   const handleSendPayment = (data: SendPaymentRequest, idempotencyKey: string): Promise<PaymentSubmissionResult> =>
     apiService.sendPayment(data, idempotencyKey);
 
@@ -86,6 +103,7 @@ export default function SendPaymentPage() {
               onCheckStatus={handleCheckPaymentStatus}
               contacts={contacts}
               isLoading={contactsLoading}
+              availableBalance={nativeBalance}
             />
           </div>
         </div>
