@@ -1,4 +1,3 @@
-
 import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
 import { logger } from "../utils/logger";
 import {
@@ -412,6 +411,28 @@ class ApiService {
     return response.data;
   }
 
+  /**
+   * Verify current credentials without changing the active session token.
+   */
+  async reauthenticate(email: string, password: string): Promise<void> {
+    const response = await axios.post<LoginResponse>(
+      this.api.getUri({ url: "/auth/login" }),
+      { email, password },
+      { headers: { "Content-Type": "application/json" } },
+    );
+
+    if (!response.data?.success) {
+      throw new Error(response.data?.message || "Re-authentication failed");
+    }
+  }
+
+  /**
+   * Authenticate a user using email and password.
+   *
+   * @param data - Login credentials containing email and password.
+   * @returns Promise resolving to `LoginResponse` containing token and user profile data.
+   * @throws {Error} Throws an Error if input validation fails or if network/auth request fails.
+   */
   async login(data: LoginRequest): Promise<LoginResponse> {
     if (!data || typeof data !== "object") {
       throw new Error("Invalid login data");
@@ -577,8 +598,9 @@ class ApiService {
   }
 
   /**
-   * Account deletion used by the Settings page.
-   * Local data is cleared even if the server deletion fails.
+   * Request account deletion. Local token, conversations and drafts are cleared
+   * even when the API call fails so the client does not keep private copies.
+   * On-chain history cannot be deleted from this client.
    */
   async deleteAccount(): Promise<{
     api: boolean;
@@ -1539,138 +1561,6 @@ class ApiService {
 
       throw error;
     }
-  }
-}
-
-// Singleton instance
-
-export const apiService = new ApiService();
-export default apiService;
-
-// Standalone trustline helpers
-
-export const fetchAccountTrustlines = (
-  publicKey: string,
-): Promise<Trustline[]> =>
-  apiService.fetchAccountTrustlines(publicKey);
-
-export const addTrustline = (
-  publicKey: string,
-  data: AddTrustlineRequest,
-): Promise<ApiResponse<Trustline> | unknown> =>
-  apiService.addTrustline(publicKey, data);
-
-export const removeTrustline = (
-  publicKey: string,
-  assetCode: string,
-  assetIssuer: string,
-): Promise<ApiResponse<void> | unknown> =>
-  apiService.removeTrustline(publicKey, assetCode, assetIssuer);
-
-export const getAccountTransactions = (
-  userId: string,
-  page = 1,
-  limit = 10,
-) => apiService.getAccountTransactions(userId, page, limit);
-
-    try {
-      const response = await this.api.get<
-        ApiResponse<Trustline[]> | Trustline[]
-      >(
-        `/account/${encodeURIComponent(publicKey)}/trustlines`,
-      );
-
-      if (Array.isArray(response.data)) {
-        return response.data;
-      }
-
-      if (
-        response.data &&
-        "data" in response.data &&
-        Array.isArray(response.data.data)
-      ) {
-        return response.data.data;
-      }
-    } catch {
-      // If the backend endpoint fails, try the secure Horizon proxy.
-      try {
-        const response = await horizonFetch(
-          `/accounts/${encodeURIComponent(publicKey)}`,
-        );
-
-        if (response.ok) {
-          const accountData = await response.json();
-          const balances = Array.isArray(accountData.balances)
-            ? accountData.balances
-            : [];
-
-          return balances
-            .filter(
-              (balance: { asset_type?: string }) =>
-                balance.asset_type !== "native",
-            )
-            .map(
-              (balance: {
-                asset_code?: string;
-                asset_issuer?: string;
-                balance?: string;
-                limit?: string;
-                asset_type?: string;
-                buying_liabilities?: string;
-                selling_liabilities?: string;
-              }) => ({
-                assetCode: balance.asset_code || "",
-                assetIssuer: balance.asset_issuer || "",
-                balance: balance.balance || "0",
-                limit: balance.limit || "0",
-                assetType: balance.asset_type,
-                buyingLiabilities:
-                  balance.buying_liabilities,
-                sellingLiabilities:
-                  balance.selling_liabilities,
-              }),
-            );
-        }
-      } catch (fallbackError) {
-        logger.warn(
-          "Horizon fallback for trustlines failed",
-          fallbackError,
-        );
-      }
-    }
-
-    return [];
-  }
-
-  async addTrustline(
-    publicKey: string,
-    data: AddTrustlineRequest,
-  ): Promise<ApiResponse<Trustline> | unknown> {
-    const response = await this.api.post<
-      ApiResponse<Trustline> | Trustline
-    >(
-      `/account/${encodeURIComponent(publicKey)}/trustlines`,
-      data,
-    );
-
-    return response.data;
-  }
-
-  async removeTrustline(
-    publicKey: string,
-    assetCode: string,
-    assetIssuer: string,
-  ): Promise<ApiResponse<void> | unknown> {
-    const response = await this.api.delete<
-      ApiResponse<void>
-    >(
-      `/account/${encodeURIComponent(publicKey)}/trustlines`,
-      {
-        data: { assetCode, assetIssuer },
-      },
-    );
-
-    return response.data;
   }
 }
 

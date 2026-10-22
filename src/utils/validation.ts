@@ -319,20 +319,3 @@ export const sanitizePaymentInput = (data: {
     idempotencyKey: data.idempotencyKey?.trim() || undefined,
   };
 };
-
-export const getPaymentFailureMessage = (error: unknown): string => {
-  let message = error instanceof Error ? error.message : String(error || '');
-
-  if (typeof error === 'object' && error !== null && 'response' in error) {
-    const response = (error as { response?: { data?: { message?: unknown } } }).response;
-    if (typeof response?.data?.message === 'string') {
-      message = response.data.message;
-    }
-  }
-
-  if (/reserve|minimum\s+(native\s+)?balance|insufficient\s+native\s+balance/i.test(message)) {
-    return "This payment would leave too little XLM to meet Stellar's minimum account reserve. Reduce the amount or add XLM.";
-  }
-
-  return message || 'Failed to send payment';
-};

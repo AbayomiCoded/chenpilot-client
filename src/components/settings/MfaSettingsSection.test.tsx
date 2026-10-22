@@ -17,6 +17,7 @@ describe('MfaSettingsSection Component', () => {
       sessionStorage.clear();
     }
     vi.restoreAllMocks();
+    vi.spyOn(authService, 'hasRecentAuthentication').mockReturnValue(true);
   });
 
   afterEach(() => {
@@ -25,6 +26,102 @@ describe('MfaSettingsSection Component', () => {
       sessionStorage.clear();
     }
     vi.restoreAllMocks();
+  });
+
+  it('requires recent authentication before starting MFA enrollment', async () => {
+    vi.spyOn(authService, 'getMfaStatus').mockResolvedValueOnce({
+      enabled: false,
+      supported: true,
+    });
+    vi.spyOn(authService, 'hasRecentAuthentication')
+      .mockReturnValueOnce(false)
+      .mockReturnValue(true);
+    const reauthenticate = vi
+      .spyOn(authService, 'reauthenticate')
+      .mockResolvedValue();
+    const initiateSetup = vi.spyOn(authService, 'initiateMfaSetup').mockResolvedValue({
+      secret: 'SECRET-KEY-1234',
+    });
+
+    render(
+      <MfaSettingsSection
+        authProvider="email"
+        email="test@example.com"
+        language="en"
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /set up two-factor authentication/i,
+      }),
+    );
+
+    expect(
+      screen.getByText(/verify your identity before changing mfa settings/i),
+    ).toBeInTheDocument();
+    expect(initiateSetup).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/current password/i), {
+      target: { value: 'current-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /verify identity/i }));
+
+    expect(await screen.findByText('SECRET-KEY-1234')).toBeInTheDocument();
+    expect(reauthenticate).toHaveBeenCalledWith(
+      'test@example.com',
+      'current-password',
+    );
+    expect(initiateSetup).toHaveBeenCalledOnce();
+  });
+
+  it('does not start MFA enrollment when credential verification is denied', async () => {
+    vi.spyOn(authService, 'getMfaStatus').mockResolvedValueOnce({
+      enabled: false,
+      supported: true,
+    });
+    vi.spyOn(authService, 'hasRecentAuthentication').mockReturnValue(false);
+    vi.spyOn(authService, 'reauthenticate').mockRejectedValue(
+      new Error('Invalid credentials'),
+    );
+    const initiateSetup = vi.spyOn(authService, 'initiateMfaSetup');
+
+    render(<MfaSettingsSection email="test@example.com" />);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /set up two-factor authentication/i,
+      }),
+    );
+    fireEvent.change(screen.getByLabelText(/current password/i), {
+      target: { value: 'wrong-password' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /verify identity/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Invalid credentials',
+    );
+    expect(initiateSetup).not.toHaveBeenCalled();
+  });
+
+  it('blocks MFA changes for Google-only accounts without provider re-authentication', async () => {
+    vi.spyOn(authService, 'getMfaStatus').mockResolvedValueOnce({
+      enabled: false,
+      supported: true,
+    });
+    vi.spyOn(authService, 'hasRecentAuthentication').mockReturnValue(false);
+    const initiateSetup = vi.spyOn(authService, 'initiateMfaSetup');
+
+    render(<MfaSettingsSection authProvider="google" />);
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: /set up two-factor authentication/i,
+      }),
+    );
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /provider re-authentication.*not available/i,
+    );
+    expect(initiateSetup).not.toHaveBeenCalled();
   });
 
   it('renders in disabled state initially when backend reports disabled', async () => {

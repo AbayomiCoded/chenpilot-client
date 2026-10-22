@@ -30,11 +30,15 @@ export type MfaFlowState =
 interface MfaSettingsSectionProps {
   language?: Language;
   initialEnabled?: boolean;
+  email?: string;
+  authProvider?: 'email' | 'google';
 }
 
 export function MfaSettingsSection({
   language = 'en',
   initialEnabled = false,
+  email = '',
+  authProvider = 'email',
 }: MfaSettingsSectionProps) {
   const [isEnabled, setIsEnabled] = useState<boolean>(initialEnabled);
   const [flowState, setFlowState] = useState<MfaFlowState>('idle');
@@ -47,8 +51,30 @@ export function MfaSettingsSection({
   const [verificationCode, setVerificationCode] = useState<string>('');
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [copiedSecret, setCopiedSecret] = useState<boolean>(false);
+  const [reauthenticationPassword, setReauthenticationPassword] = useState('');
+  const [reauthenticationError, setReauthenticationError] = useState<string | null>(null);
+  const [isReauthenticating, setIsReauthenticating] = useState(false);
+  const [showReauthentication, setShowReauthentication] = useState(false);
 
   const isMountedRef = useRef<boolean>(true);
+  const pendingProtectedActionRef = useRef<(() => Promise<void>) | null>(null);
+
+  const requireRecentAuthentication = (action: () => Promise<void>) => {
+    if (authService.hasRecentAuthentication()) return true;
+
+    if (authProvider === 'google') {
+      setReauthenticationError(
+        'MFA changes require provider re-authentication, which is not available for this Google-only account.',
+      );
+      return false;
+    }
+
+    pendingProtectedActionRef.current = action;
+    setReauthenticationError(null);
+    setReauthenticationPassword('');
+    setShowReauthentication(true);
+    return false;
+  };
 
   // Clear all transient sensitive state
   const clearSensitiveState = () => {
@@ -91,6 +117,8 @@ export function MfaSettingsSection({
   }, []);
 
   const handleStartSetup = async () => {
+    if (!requireRecentAuthentication(handleStartSetup)) return;
+
     setErrorMessage(null);
     setFlowState('enrolling');
 
@@ -138,6 +166,7 @@ export function MfaSettingsSection({
 
   const handleVerify = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (!requireRecentAuthentication(() => handleVerify())) return;
 
     const code = verificationCode.trim();
     if (!/^\d{6}$/.test(code)) {
@@ -180,6 +209,35 @@ export function MfaSettingsSection({
     clearSensitiveState();
     setErrorMessage(null);
     setFlowState('idle');
+  };
+
+  const handleReauthentication = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setReauthenticationError(null);
+    setIsReauthenticating(true);
+
+    try {
+      await authService.reauthenticate(email, reauthenticationPassword);
+      setReauthenticationPassword('');
+      const pendingAction = pendingProtectedActionRef.current;
+      pendingProtectedActionRef.current = null;
+      setShowReauthentication(false);
+      if (pendingAction) await pendingAction();
+    } catch (error) {
+      setReauthenticationError(
+        error instanceof Error ? error.message : 'Re-authentication failed',
+      );
+    } finally {
+      setIsReauthenticating(false);
+    }
+  };
+
+  const handleCancelReauthentication = () => {
+    pendingProtectedActionRef.current = null;
+    setReauthenticationPassword('');
+    setReauthenticationError(null);
+    setShowReauthentication(false);
+    authService.clearRecentAuthentication();
   };
 
   const handleCopySecret = () => {
@@ -240,6 +298,55 @@ export function MfaSettingsSection({
             )}
           </div>
         </div>
+
+        {showReauthentication && authProvider !== 'google' && (
+          <form
+            className="mb-4 space-y-3 rounded-lg border border-gray-700 bg-black/30 p-4"
+            onSubmit={handleReauthentication}
+          >
+            <p className="text-sm text-gray-300">
+              Verify your identity before changing MFA settings.
+            </p>
+            <Input
+              aria-label="Current password for MFA verification"
+              autoComplete="current-password"
+              label="Current password"
+              onChange={(event) =>
+                setReauthenticationPassword(event.target.value)
+              }
+              required
+              type="password"
+              value={reauthenticationPassword}
+            />
+            {reauthenticationError && (
+              <p className="text-sm text-red-400" role="alert">
+                {reauthenticationError}
+              </p>
+            )}
+            <div className="flex justify-end gap-2">
+              <Button
+                disabled={isReauthenticating}
+                onClick={handleCancelReauthentication}
+                type="button"
+                variant="ghost"
+              >
+                Cancel
+              </Button>
+              <Button
+                disabled={isReauthenticating}
+                loading={isReauthenticating}
+                type="submit"
+              >
+                Verify identity
+              </Button>
+            </div>
+          </form>
+        )}
+        {reauthenticationError && authProvider === 'google' && (
+          <p className="mb-4 text-sm text-red-400" role="alert">
+            {reauthenticationError}
+          </p>
+        )}
 
         {/* Global / Flow Error Alert */}
         {errorMessage && (

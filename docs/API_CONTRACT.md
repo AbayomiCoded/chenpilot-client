@@ -65,6 +65,8 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | `POST /auth/change-password` | `{"currentPassword":"Example123!","newPassword":"NewExample123!"}` | `{"success":true,"data":{"message":"Password changed"}}` | Service method only; no direct screen caller found. |
 | `DELETE /auth/account` | No body; bearer token when available. | `{"success":true,"data":{"message":"Account deleted"}}` | Service method only; clears the in-memory/local token after the request resolves. |
 
+Protected settings actions include password changes, MFA changes, and device management. Password and MFA changes require re-verifying the current email/password with `POST /auth/login`; the response token is discarded and the in-memory verification grant expires after five minutes or when leaving settings. Password changes still send `currentPassword` to `POST /auth/change-password` as required by its existing contract. The settings UI validates password and confirmation with the shared `changePasswordSchema` (at least eight characters, uppercase, lowercase, and a number) and shows the shared strength meter. Google-only accounts cannot use the password-change flow, and provider re-authentication for MFA is not available for Google-only accounts. MFA enrollment and verification are described below. Device-management routes are not defined in this client. The backend must enforce recent authentication itself for protected operations (a client-side gate is not an authorization boundary).
+
 ### Multi-Factor Authentication (MFA) Specification & Contract Notes
 
 **Current Implementation Status:**
@@ -112,6 +114,16 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `GET /auth/funding/funded-account-balance` | No body. | `{"success":true,"data":{"balance":"10","hasBalance":true}}` | Service method only; no direct screen caller found. |
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
 | `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
+
+### Transaction Schema & Direction Contract
+
+`StellarTransaction` records returned by `GET /account/{userId}/transactions` contain `id`, `hash`, `ledger`, `created_at`, `source_account`, `fee_charged`, `operation_count`, `successful`, `operations: StellarOperation[]`, and optional `direction`. Each `StellarOperation` contains `id`, `type`, `source_account`, optional `amount`, optional `asset`, optional `from`, optional `to`, and optional `direction`.
+
+Direction classification (`incoming | outgoing | self | unknown`) is resolved dynamically for transaction rows against the signed-in user's active account address:
+- **`incoming`**: Destination account (`to`) matches active account address, and source account does not. Formatted with a `+` prefix and emerald styling.
+- **`outgoing`**: Source account (`from`, `source_account`, or transaction `source_account`) matches active account address, and destination account is specified and does not match active account. Formatted with a `-` prefix and rose styling.
+- **`self`**: Both source and destination accounts match active account address (self-transfers). Formatted neutrally without directional signs.
+- **`unknown`**: Missing active address, missing operation accounts (neither source nor destination present), non-transfer operations, or third-party operations. Formatted neutrally with `-` for missing amounts.
 
 ## Payment Submission And Status (Backend Support Required)
 
