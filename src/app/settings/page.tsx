@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { FormEvent, useEffect, useState } from "react";
 import { useAppDispatch, useAppSelector } from "@/store";
 import { fetchProfile, logout } from "@/store/slices/authSlice";
 import { setLanguage } from "@/store/slices/uiSlice";
@@ -12,8 +12,11 @@ import { t, LANGUAGES } from "@/lib/i18n/i18n";
 import { MfaSettingsSection } from "@/components/settings/MfaSettingsSection";
 import { DangerZone } from "@/components/settings/DangerZone";
 import apiService from "@/services/api";
-import { t, LANGUAGES } from "@/lib/i18n/i18n";
+import authService from "@/services/auth.service";
 import { StellarNetworkBadge } from "@/components/wallet/StellarNetworkBadge";
+import toast from "react-hot-toast";
+import { PasswordStrengthMeter } from "@/components/auth/(register)/passwordStrengthMeter";
+import { changePasswordSchema } from "@/utils/validation";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
@@ -24,12 +27,27 @@ export default function SettingsPage() {
     mode: "dark",
     language: "en",
   };
+  const [passwordChangeStage, setPasswordChangeStage] = useState<
+    "reauthenticate" | "change-password" | null
+  >(null);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [securityError, setSecurityError] = useState("");
+  const [isSecurityActionLoading, setIsSecurityActionLoading] = useState(false);
+  const [deletionStatus, setDeletionStatus] = useState<string | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     if (isAuthenticated) {
       dispatch(fetchProfile());
     }
   }, [isAuthenticated, dispatch]);
+
+  useEffect(() => {
+    authService.clearRecentAuthentication();
+    return () => authService.clearRecentAuthentication();
+  }, [isAuthenticated]);
 
   if (!isAuthenticated) {
     return (
@@ -55,8 +73,74 @@ export default function SettingsPage() {
     dispatch(setLanguage(lang));
   };
 
-  const [deletionStatus, setDeletionStatus] = useState<string | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const closePasswordChange = () => {
+    authService.clearRecentAuthentication();
+    setPasswordChangeStage(null);
+    setCurrentPassword("");
+    setNewPassword("");
+    setConfirmPassword("");
+    setSecurityError("");
+  };
+
+  const handleReauthentication = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSecurityError("");
+    setIsSecurityActionLoading(true);
+
+    try {
+      await authService.reauthenticate(user?.email ?? "", currentPassword);
+      setPasswordChangeStage("change-password");
+    } catch (error) {
+      setSecurityError(
+        error instanceof Error ? error.message : "Re-authentication failed",
+      );
+    } finally {
+      setIsSecurityActionLoading(false);
+    }
+  };
+
+  const handlePasswordChange = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setSecurityError("");
+
+    if (!authService.hasRecentAuthentication()) {
+      setCurrentPassword("");
+      setPasswordChangeStage("reauthenticate");
+      setSecurityError(
+        "Your verification expired. Please verify your identity again.",
+      );
+      return;
+    }
+
+    const validation = changePasswordSchema.safeParse({
+      currentPassword,
+      newPassword,
+      confirmPassword,
+    });
+    if (!validation.success) {
+      setSecurityError(validation.error.issues[0]?.message ?? "Invalid password");
+      return;
+    }
+
+    setIsSecurityActionLoading(true);
+    try {
+      const response = await apiService.changePassword(
+        currentPassword,
+        newPassword,
+      );
+      if (!response.success) {
+        throw new Error(response.message || "Password change failed");
+      }
+      toast.success("Password changed successfully");
+      closePasswordChange();
+    } catch (error) {
+      setSecurityError(
+        error instanceof Error ? error.message : "Password change failed",
+      );
+    } finally {
+      setIsSecurityActionLoading(false);
+    }
+  };
 
   const handleDeleteAccount = async () => {
     if (isDeleting) return;
@@ -267,10 +351,40 @@ export default function SettingsPage() {
                     {t(language, "settings.security")}
                   </h3>
                   <div className="space-y-4">
-                    <MfaSettingsSection language={language} />
-                    <Button variant="ghost" className="w-full justify-start">
-                      Change Password
-                    </Button>
+                    <MfaSettingsSection
+                      authProvider={user?.authProvider}
+                      email={user?.email}
+                      language={language}
+                    />
+                    {user?.authProvider === "google" ? (
+                      <div>
+                        <Button
+                          disabled
+                          variant="ghost"
+                          className="w-full justify-start"
+                        >
+                          Change Password
+                        </Button>
+                        <p className="mt-2 text-sm text-gray-400">
+                          Password changes are unavailable for Google sign-in
+                          accounts.
+                        </p>
+                      </div>
+                    ) : (
+                      <Button
+                        variant="ghost"
+                        className="w-full justify-start"
+                        onClick={() => {
+                          setCurrentPassword("");
+                          setNewPassword("");
+                          setConfirmPassword("");
+                          setSecurityError("");
+                          setPasswordChangeStage("reauthenticate");
+                        }}
+                      >
+                        Change Password
+                      </Button>
+                    )}
                     <DangerZone
                       email={user?.email || ""}
                       disabled={isDeleting}
@@ -285,6 +399,106 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
+        {passwordChangeStage && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+            role="presentation"
+          >
+            <section
+              aria-labelledby="password-change-title"
+              aria-modal="true"
+              className="w-full max-w-md rounded-lg border border-gray-700 bg-gray-900 p-6 shadow-xl"
+              role="dialog"
+            >
+              <h2
+                className="mb-4 text-lg font-semibold text-white"
+                id="password-change-title"
+              >
+                {passwordChangeStage === "reauthenticate"
+                  ? "Verify your identity"
+                  : "Change password"}
+              </h2>
+              <form
+                onSubmit={
+                  passwordChangeStage === "reauthenticate"
+                    ? handleReauthentication
+                    : handlePasswordChange
+                }
+              >
+                <div className="space-y-4">
+                  {passwordChangeStage === "reauthenticate" ? (
+                    <Input
+                      autoComplete="current-password"
+                      autoFocus
+                      aria-label="Current password"
+                      label="Current password"
+                      onChange={(event) =>
+                        setCurrentPassword(event.target.value)
+                      }
+                      placeholder="Enter your current password"
+                      required
+                      type="password"
+                      value={currentPassword}
+                    />
+                  ) : (
+                    <>
+                      <p className="text-sm text-gray-300">
+                        Identity verified. This verification expires after five
+                        minutes.
+                      </p>
+                      <Input
+                        autoComplete="new-password"
+                        aria-label="New password"
+                        label="New password"
+                        onChange={(event) => setNewPassword(event.target.value)}
+                        placeholder="Enter a new password"
+                        required
+                        type="password"
+                        value={newPassword}
+                      />
+                      <Input
+                        autoComplete="new-password"
+                        aria-label="Confirm new password"
+                        label="Confirm new password"
+                        onChange={(event) =>
+                          setConfirmPassword(event.target.value)
+                        }
+                        placeholder="Confirm your new password"
+                        required
+                        type="password"
+                        value={confirmPassword}
+                      />
+                      <PasswordStrengthMeter password={newPassword} />
+                    </>
+                  )}
+                  {securityError && (
+                    <p className="text-sm text-red-400" role="alert">
+                      {securityError}
+                    </p>
+                  )}
+                  <div className="flex justify-end gap-3">
+                    <Button
+                      disabled={isSecurityActionLoading}
+                      onClick={closePasswordChange}
+                      variant="ghost"
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      disabled={isSecurityActionLoading}
+                      loading={isSecurityActionLoading}
+                      type="submit"
+                    >
+                      {passwordChangeStage === "reauthenticate"
+                        ? "Verify identity"
+                        : "Save password"}
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
       </div>
     </ChatLayout>
   );

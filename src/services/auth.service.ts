@@ -1,10 +1,49 @@
 import apiService, { singleFlight } from './api';
 
+const REAUTHENTICATION_WINDOW_MS = 5 * 60 * 1000;
+
 /**
  * Service for handling authentication-related tasks beyond basic API calls,
  * such as state persistence in local browser storage and session destruction.
  */
 class AuthService {
+  private recentAuthenticationAt: number | null = null;
+
+  /**
+   * Verify the user's current password and grant a short-lived security-settings gate.
+   */
+  async reauthenticate(email: string, password: string): Promise<void> {
+    if (!email.trim()) {
+      throw new Error('Email is required for re-authentication');
+    }
+    if (!password) {
+      throw new Error('Password is required for re-authentication');
+    }
+
+    this.clearRecentAuthentication();
+    await apiService.reauthenticate(email, password);
+    this.recentAuthenticationAt = Date.now();
+  }
+
+  /**
+   * Check whether a successful re-authentication is still within the five-minute window.
+   */
+  hasRecentAuthentication(): boolean {
+    if (this.recentAuthenticationAt === null) return false;
+
+    const elapsed = Date.now() - this.recentAuthenticationAt;
+    if (elapsed < 0 || elapsed >= REAUTHENTICATION_WINDOW_MS) {
+      this.clearRecentAuthentication();
+      return false;
+    }
+
+    return true;
+  }
+
+  clearRecentAuthentication(): void {
+    this.recentAuthenticationAt = null;
+  }
+
   /**
    * Performs a logout by invalidating the session on the backend and
    * clearing all local authentication state.
@@ -21,6 +60,7 @@ class AuthService {
    * ```
    */
   async logout(): Promise<void> {
+    this.clearRecentAuthentication();
     try {
       // Call the API service to perform the backend logout
       await apiService.logout();
