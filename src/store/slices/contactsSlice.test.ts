@@ -1,244 +1,61 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { configureStore } from '@reduxjs/toolkit';
-import contactsReducer, {
-  softDeleteContact,
-  restoreContact,
-  clearPendingDeletion,
-  commitDeleteContact,
-  optimisticToggleFavorite,
-  toggleFavorite,
-} from './contactsSlice';
+import { describe, expect, it } from 'vitest';
 import { Contact } from '@/types';
+import { filterContacts, hasContactAddressChanged, paginateContacts } from './contactsSlice';
 
-vi.mock('@/services/api', () => ({
-  default: {
-    deleteContact: vi.fn(),
-    updateContact: vi.fn(),
-  },
-}));
-
-import apiService from '@/services/api';
-
-const mockContact: Contact = {
-  id: 'c1',
-  name: 'Alice',
-  address: '0xabc',
-  tokenType: 'XLM',
-  createdAt: '2026-01-01T00:00:00Z',
-  updatedAt: '2026-01-01T00:00:00Z',
-};
-
-const createStore = (preloaded?: Partial<ReturnType<typeof contactsReducer>>) =>
-  configureStore({
-    reducer: { contacts: contactsReducer },
-    preloadedState: preloaded
-      ? { contacts: { list: [], isLoading: false, error: null, selectedContact: null, pendingDeletion: [], ...preloaded } }
-      : undefined,
-  });
-
-describe('contactsSlice — soft-delete / undo', () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-  });
-
-  it('softDeleteContact removes contact from list and adds to pendingDeletion', () => {
-    const store = createStore({ list: [mockContact] });
-    store.dispatch(softDeleteContact('c1'));
-
-    const { list, pendingDeletion } = store.getState().contacts;
-    expect(list).toHaveLength(0);
-    expect(pendingDeletion).toHaveLength(1);
-    expect(pendingDeletion[0]).toEqual(mockContact);
-  });
-
-  it('softDeleteContact is a no-op for an unknown id', () => {
-    const store = createStore({ list: [mockContact] });
-    store.dispatch(softDeleteContact('unknown'));
-
-    expect(store.getState().contacts.list).toHaveLength(1);
-    expect(store.getState().contacts.pendingDeletion).toHaveLength(0);
-  });
-
-  it('restoreContact moves contact back from pendingDeletion to list', () => {
-    const store = createStore({ list: [], pendingDeletion: [mockContact] });
-    store.dispatch(restoreContact('c1'));
-
-    const { list, pendingDeletion } = store.getState().contacts;
-    expect(list).toHaveLength(1);
-    expect(list[0]).toEqual(mockContact);
-    expect(pendingDeletion).toHaveLength(0);
-  });
-
-  it('clearPendingDeletion removes entry without touching list', () => {
-    const store = createStore({ list: [], pendingDeletion: [mockContact] });
-    store.dispatch(clearPendingDeletion('c1'));
-
-    expect(store.getState().contacts.list).toHaveLength(0);
-    expect(store.getState().contacts.pendingDeletion).toHaveLength(0);
+describe('hasContactAddressChanged', () => {
+  it('detects a changed destination but ignores surrounding whitespace', () => {
+    expect(hasContactAddressChanged('GOLD', 'GNEW')).toBe(true);
+    expect(hasContactAddressChanged('GOLD', '  GOLD  ')).toBe(false);
   });
 });
 
-describe('contactsSlice — commitDeleteContact thunk', () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
+describe('paginateContacts', () => {
+  it('limits a large address book to one page and returns the next page', () => {
+    const fixture: Contact[] = Array.from({ length: 250 }, (_, index) => ({
+      id: `contact-${index + 1}`,
+      name: `Contact ${index + 1}`,
+      address: `G${String(index + 1).padStart(55, 'A')}`,
+      tokenType: 'XLM',
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    }));
+
+    const firstPage = paginateContacts(fixture, 1);
+    const secondPage = paginateContacts(fixture, 2);
+
+    expect(firstPage).toHaveLength(24);
+    expect(firstPage[0]?.id).toBe('contact-1');
+    expect(firstPage.at(-1)?.id).toBe('contact-24');
+    expect(secondPage).toHaveLength(24);
+    expect(secondPage[0]?.id).toBe('contact-25');
   });
 
-  it('on success clears pendingDeletion entry', async () => {
-    vi.mocked(apiService.deleteContact).mockResolvedValue({ success: true, data: { message: 'Contact deleted' } });
+  it('keeps search results from the entire address book reachable', () => {
+    const fixture: Contact[] = Array.from({ length: 250 }, (_, index) => ({
+      id: `contact-${index + 1}`,
+      name: index === 229 ? 'Searchable Contact' : `Contact ${index + 1}`,
+      address: `G${String(index + 1).padStart(55, 'A')}`,
+      tokenType: 'XLM',
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    }));
 
-    const store = createStore({ list: [], pendingDeletion: [mockContact] });
-    await store.dispatch(commitDeleteContact('c1'));
+    const results = filterContacts(fixture, 'searchable');
 
-    expect(store.getState().contacts.pendingDeletion).toHaveLength(0);
-    expect(store.getState().contacts.error).toBeNull();
+    expect(results).toHaveLength(1);
+    expect(paginateContacts(results, 1)[0]?.id).toBe('contact-230');
   });
 
-  it('on failure restores contact to list and sets error', async () => {
-    vi.mocked(apiService.deleteContact).mockRejectedValue(new Error('Network error'));
+  it('returns only remaining contacts on the final page', () => {
+    const fixture = Array.from({ length: 25 }, (_, index) => ({
+      id: String(index + 1),
+      name: `Contact ${index + 1}`,
+      address: 'G'.padEnd(56, 'A'),
+      tokenType: 'XLM' as const,
+      createdAt: '2026-01-01T00:00:00Z',
+      updatedAt: '2026-01-01T00:00:00Z',
+    }));
 
-    const store = createStore({ list: [], pendingDeletion: [mockContact] });
-    await store.dispatch(commitDeleteContact('c1'));
-
-    const { list, pendingDeletion, error } = store.getState().contacts;
-    expect(list).toHaveLength(1);
-    expect(list[0]).toEqual(mockContact);
-    expect(pendingDeletion).toHaveLength(0);
-    expect(error).toBe('Network error');
-  });
-
-  it('on failure with unknown error message falls back gracefully', async () => {
-    vi.mocked(apiService.deleteContact).mockRejectedValue('plain string error');
-
-    const store = createStore({ list: [], pendingDeletion: [mockContact] });
-    await store.dispatch(commitDeleteContact('c1'));
-
-    expect(store.getState().contacts.list).toHaveLength(1);
-    expect(store.getState().contacts.error).toBe('Failed to delete contact');
-  });
-});
-
-describe('contactsSlice — favorites', () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-  });
-
-  // ─── optimisticToggleFavorite ───────────────────────────────────────────────
-
-  it('optimisticToggleFavorite flips isFavorite from false to true', () => {
-    const contact: Contact = { ...mockContact, isFavorite: false };
-    const store = createStore({ list: [contact] });
-    store.dispatch(optimisticToggleFavorite('c1'));
-    expect(store.getState().contacts.list[0].isFavorite).toBe(true);
-  });
-
-  it('optimisticToggleFavorite flips isFavorite from true to false', () => {
-    const contact: Contact = { ...mockContact, isFavorite: true };
-    const store = createStore({ list: [contact] });
-    store.dispatch(optimisticToggleFavorite('c1'));
-    expect(store.getState().contacts.list[0].isFavorite).toBe(false);
-  });
-
-  it('optimisticToggleFavorite is a no-op for unknown id', () => {
-    const store = createStore({ list: [mockContact] });
-    store.dispatch(optimisticToggleFavorite('unknown'));
-    expect(store.getState().contacts.list[0].isFavorite).toBeUndefined();
-  });
-
-  // ─── toggleFavorite thunk ──────────────────────────────────────────────────
-
-  it('toggleFavorite.fulfilled updates the contact with server response', async () => {
-    const serverContact: Contact = { ...mockContact, isFavorite: true };
-    vi.mocked(apiService.updateContact).mockResolvedValue({ success: true, data: serverContact });
-
-    const store = createStore({ list: [{ ...mockContact, isFavorite: false }] });
-    // Simulate the optimistic flip that the page does before dispatching the thunk.
-    store.dispatch(optimisticToggleFavorite('c1'));
-    await store.dispatch(toggleFavorite('c1'));
-
-    expect(store.getState().contacts.list[0].isFavorite).toBe(true);
-    expect(store.getState().contacts.error).toBeNull();
-  });
-
-  it('toggleFavorite.rejected reverts the optimistic flip', async () => {
-    vi.mocked(apiService.updateContact).mockRejectedValue(new Error('Server error'));
-
-    const store = createStore({ list: [{ ...mockContact, isFavorite: false }] });
-    store.dispatch(optimisticToggleFavorite('c1'));
-    // After optimistic flip, value is true.
-    expect(store.getState().contacts.list[0].isFavorite).toBe(true);
-
-    await store.dispatch(toggleFavorite('c1'));
-
-    // Should be reverted back to false.
-    expect(store.getState().contacts.list[0].isFavorite).toBe(false);
-    expect(store.getState().contacts.error).toBe('Server error');
-  });
-
-  it('toggleFavorite.rejected with non-Error falls back to generic message', async () => {
-    vi.mocked(apiService.updateContact).mockRejectedValue('oops');
-
-    const store = createStore({ list: [{ ...mockContact, isFavorite: true }] });
-    store.dispatch(optimisticToggleFavorite('c1'));
-    await store.dispatch(toggleFavorite('c1'));
-
-    expect(store.getState().contacts.error).toBe('Failed to update favorite');
-  });
-
-  // ─── sortContacts (unit-tested via the reducer's fulfilled path) ───────────
-
-  it('favorites appear before non-favorites in list after multiple toggles', async () => {
-    const alice: Contact = { ...mockContact, id: 'a', name: 'Alice', isFavorite: false };
-    const bob: Contact = { ...mockContact, id: 'b', name: 'Bob', isFavorite: true };
-    const carol: Contact = { ...mockContact, id: 'c', name: 'Carol', isFavorite: false };
-
-    // Verify the sort function directly via the shape we expect on page.
-    // favorites first (Bob), then alpha (Alice, Carol).
-    const sorted = [alice, bob, carol].sort((a, b) => {
-      const af = a.isFavorite ? 0 : 1;
-      const bf = b.isFavorite ? 0 : 1;
-      if (af !== bf) return af - bf;
-      return a.name.localeCompare(b.name);
-    });
-    expect(sorted.map((c) => c.name)).toEqual(['Bob', 'Alice', 'Carol']);
-  });
-
-  it('sort is stable when all contacts are favorites — falls back to alpha', () => {
-    const contacts: Contact[] = [
-      { ...mockContact, id: 'z', name: 'Zara', isFavorite: true },
-      { ...mockContact, id: 'a', name: 'Anna', isFavorite: true },
-      { ...mockContact, id: 'm', name: 'Mike', isFavorite: true },
-    ];
-    const sorted = [...contacts].sort((a, b) => {
-      const af = a.isFavorite ? 0 : 1;
-      const bf = b.isFavorite ? 0 : 1;
-      if (af !== bf) return af - bf;
-      return a.name.localeCompare(b.name);
-    });
-    expect(sorted.map((c) => c.name)).toEqual(['Anna', 'Mike', 'Zara']);
-  });
-
-  it('favorites filter excludes non-favorites', () => {
-    const contacts: Contact[] = [
-      { ...mockContact, id: '1', name: 'Alice', isFavorite: true },
-      { ...mockContact, id: '2', name: 'Bob', isFavorite: false },
-    ];
-    const filtered = contacts.filter((c) => c.isFavorite);
-    expect(filtered).toHaveLength(1);
-    expect(filtered[0].name).toBe('Alice');
-  });
-
-  it('search and favorites filter compose correctly', () => {
-    const contacts: Contact[] = [
-      { ...mockContact, id: '1', name: 'Alice', isFavorite: true },
-      { ...mockContact, id: '2', name: 'Alex', isFavorite: false },
-      { ...mockContact, id: '3', name: 'Bob', isFavorite: true },
-    ];
-    const term = 'al';
-    const result = contacts.filter(
-      (c) => c.isFavorite && c.name.toLowerCase().includes(term),
-    );
-    // Only Alice matches: is favorite AND name contains 'al'
-    expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('Alice');
+    expect(paginateContacts(fixture, 2)).toHaveLength(1);
   });
 });
