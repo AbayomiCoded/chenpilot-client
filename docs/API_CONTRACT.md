@@ -113,6 +113,16 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 | `POST /auth/funding/batch-fund` | `{"amounts":["1","2.5"]}` | `{"success":true,"data":{"transactionHashes":["0xabc","0xdef"],"totalAmount":"3.5"}}` | Service method only; no direct screen caller found. |
 | `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[],"total":0,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. |
 
+### Transaction Schema & Direction Contract
+
+`StellarTransaction` records returned by `GET /account/{userId}/transactions` contain `id`, `hash`, `ledger`, `created_at`, `source_account`, `fee_charged`, `operation_count`, `successful`, `operations: StellarOperation[]`, and optional `direction`. Each `StellarOperation` contains `id`, `type`, `source_account`, optional `amount`, optional `asset`, optional `from`, optional `to`, and optional `direction`.
+
+Direction classification (`incoming | outgoing | self | unknown`) is resolved dynamically for transaction rows against the signed-in user's active account address:
+- **`incoming`**: Destination account (`to`) matches active account address, and source account does not. Formatted with a `+` prefix and emerald styling.
+- **`outgoing`**: Source account (`from`, `source_account`, or transaction `source_account`) matches active account address, and destination account is specified and does not match active account. Formatted with a `-` prefix and rose styling.
+- **`self`**: Both source and destination accounts match active account address (self-transfers). Formatted neutrally without directional signs.
+- **`unknown`**: Missing active address, missing operation accounts (neither source nor destination present), non-transfer operations, or third-party operations. Formatted neutrally with `-` for missing amounts.
+
 ## Payment Submission And Status (Backend Support Required)
 
 The send-payment UI now requires explicit confirmation before calling the payment service. The frontend declares the following backend contract, but no existing payment route was present in this repository; verify and implement these routes on the backend before enabling real payments.
