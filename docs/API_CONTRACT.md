@@ -117,13 +117,20 @@ The service includes methods for Stellar/Starknet account and funding paths, but
 
 ### Transaction Schema & Direction Contract
 
-`StellarTransaction` records returned by `GET /account/{userId}/transactions` contain `id`, `hash`, `ledger`, `created_at`, `source_account`, `fee_charged`, `operation_count`, `successful`, `operations: StellarOperation[]`, and optional `direction`. Each `StellarOperation` contains `id`, `type`, `source_account`, optional `amount`, optional `asset`, optional `from`, optional `to`, and optional `direction`.
+`StellarTransaction` records returned by `GET /account/{userId}/transactions` contain `id`, `hash`, `ledger`, `created_at`, `source_account`, `fee_charged`, `operation_count`, `successful`, `operations: StellarOperation[]`, and optional `direction`. Each `StellarOperation` contains `id`, `type`, `source_account`, optional `amount`, optional `asset` (or `asset_code`, `asset_issuer`, `asset_type`), optional `from`, optional `to`, and optional `direction`.
 
 Direction classification (`incoming | outgoing | self | unknown`) is resolved dynamically for transaction rows against the signed-in user's active account address:
 - **`incoming`**: Destination account (`to`) matches active account address, and source account does not. Formatted with a `+` prefix and emerald styling.
 - **`outgoing`**: Source account (`from`, `source_account`, or transaction `source_account`) matches active account address, and destination account is specified and does not match active account. Formatted with a `-` prefix and rose styling.
 - **`self`**: Both source and destination accounts match active account address (self-transfers). Formatted neutrally without directional signs.
 - **`unknown`**: Missing active address, missing operation accounts (neither source nor destination present), non-transfer operations, or third-party operations. Formatted neutrally with `-` for missing amounts.
+
+### Asset Canonical Identification & Issuer Handling
+
+Asset codes alone do not globally identify issued assets on Stellar (multiple distinct issuers may issue tokens with identical tickers, e.g., `USDC`). The client prevents ambiguous ticker presentation through the following contract:
+- **Canonical Asset Identifier**: Issued assets are uniquely identified by `<CODE>:<ISSUER>` (e.g., `USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`). Native currency resolves canonically to `XLM` without an issuer.
+- **Same-Code Distinct Issuers**: Transactions involving the same asset code (e.g., `USDC`) from distinct issuers display the formatted issuer address alongside the ticker and expose the full canonical identifier on title/hover, ensuring distinct assets cannot be conflated.
+- **Incomplete Metadata Fallback**: When an operation specifies an issued asset code without an issuer or canonical pair, the client applies a safe fallback: the ticker is rendered with an explicit `unverified issuer` badge to alert the user of incomplete metadata, while native fallbacks default safely to `XLM`.
 
 ## Payment Submission And Status (Backend Support Required)
 
