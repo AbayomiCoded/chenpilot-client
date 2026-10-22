@@ -9,7 +9,7 @@ A modern, responsive web client for **ChenPilot** - a crypto wallet management s
 ### Prerequisites
 
 - Node.js 18+
-- pnpm (recommended) or npm
+- pnpm
 - ChenPilot Experimental Backend (see [AGENT_INTEGRATION.md](./AGENT_INTEGRATION.md))
 
 ### Installation
