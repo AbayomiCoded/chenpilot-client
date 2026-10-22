@@ -27,8 +27,8 @@ You MUST submit a new ADR PR when proposing or implementing:
 ## Development Workflow
 
 1. **Branching**: Create a feature branch off main/build (e.g., `feat/my-feature` or `fix/issue-description`).
-2. **Code Style & Linting**: Run `npm run lint` before committing code changes. Ensure TypeScript types are exact.
-3. **Testing**: Run `npm run test` to verify unit and integration tests pass.
+2. **Code Style & Linting**: Run `pnpm lint` before committing code changes. Ensure TypeScript types are exact.
+3. **Testing**: Run `pnpm test` to verify unit and integration tests pass.
 
 ---
 
