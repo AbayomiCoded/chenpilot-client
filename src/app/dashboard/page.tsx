@@ -2,8 +2,6 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import React, { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { useAppDispatch, useAppSelector } from '@/store';
 import { getAccountStatus, getBalance, deployAccount, fundAccount, getStellarNetworkStatus, getAccountTransactions } from '@/store/slices/accountSlice';
 import { loadUser } from '@/store/slices/authSlice';
@@ -34,11 +32,7 @@ import {
   ShieldLine,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { ChatLayout } from '@/components/layout/ChatLayout';
-import { Button } from '@/components/ui/Button';
-import { Card } from '@/components/ui/Card';
 import apiService from '@/services/api';
-import { useAppSelector } from '@/store';
 import { PromptVersion, PromptVersionRecord } from '@/types';
 
 const DEFAULT_TEST_INPUT = 'Help a user move idle USDC into the highest-yield low-risk strategy.';

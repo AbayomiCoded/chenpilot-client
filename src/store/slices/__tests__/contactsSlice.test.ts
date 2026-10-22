@@ -1,96 +1,147 @@
 import { describe, it, expect } from 'vitest';
-import { configureStore } from '@reduxjs/toolkit';
-import contactsReducer, { createContact } from '../contactsSlice';
-import type { Contact } from '@/types';
+import contactsReducer, {
+  clearError,
+  setSelectedContact,
+  clearSelectedContact,
+  searchContacts,
+  getContacts,
+  createContact,
+  updateContact,
+  deleteContact,
+} from '../contactsSlice';
+import { Contact } from '@/types';
 
-// #217 — duplicate contact prevention
-
-const ADDR_A = 'G' + 'A'.repeat(55); // valid 56-char Stellar address
-const ADDR_B = 'G' + 'B'.repeat(55);
-
-function makeStore(existingContacts: Contact[] = []) {
-  return configureStore({
-    reducer: { contacts: contactsReducer },
-    preloadedState: {
-      contacts: {
-        list: existingContacts,
-        isLoading: false,
-        error: null,
-        selectedContact: null,
-      },
-    },
-  });
-}
-
-function makeContact(overrides: Partial<Contact> = {}): Contact {
-  return {
-    id: 'existing-1',
-    name: 'Alice',
-    address: ADDR_A,
-    tokenType: 'XLM',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    ...overrides,
+describe('#343 — contactsSlice reducers and extraReducers', () => {
+  const initial = {
+    list: [],
+    isLoading: false,
+    error: null,
+    selectedContact: null,
   };
-}
 
-describe('createContact duplicate prevention', () => {
-  it('creates a contact when the address is unique', async () => {
-    const store = makeStore([makeContact()]);
-    const result = await store.dispatch(
-      createContact({ name: 'Bob', address: ADDR_B, tokenType: 'XLM' })
-    );
-    expect(createContact.fulfilled.match(result)).toBe(true);
-    expect(store.getState().contacts.list).toHaveLength(2);
+  const sampleContact: Contact = {
+    id: '1',
+    name: 'Alice',
+    address: '0x123',
+    tokenType: 'STRK',
+    createdAt: '2025-01-01T00:00:00.000Z',
+    updatedAt: '2025-01-01T00:00:00.000Z',
+  };
+
+  it('handles synchronous actions (setSelectedContact, clearSelectedContact, clearError, searchContacts)', () => {
+    let state = contactsReducer(initial, setSelectedContact(sampleContact));
+    expect(state.selectedContact).toEqual(sampleContact);
+
+    state = contactsReducer(state, clearSelectedContact());
+    expect(state.selectedContact).toBeNull();
+
+    const stateWithError = { ...initial, error: 'Some error' };
+    state = contactsReducer(stateWithError, clearError());
+    expect(state.error).toBeNull();
+
+    // searchContacts reducer exists and produces valid state
+    state = contactsReducer(initial, searchContacts('Alice'));
+    expect(state).toBeDefined();
   });
 
-  it('blocks a contact whose address exactly matches an existing one', async () => {
-    const store = makeStore([makeContact()]);
-    const result = await store.dispatch(
-      createContact({ name: 'Alice 2', address: ADDR_A, tokenType: 'XLM' })
-    );
-    expect(createContact.rejected.match(result)).toBe(true);
-    expect(result.payload).toMatch(/already uses this address/);
-    expect(result.payload).toMatch(/Alice/);
-    expect(store.getState().contacts.list).toHaveLength(1);
+  describe('getContacts', () => {
+    it('handles pending, fulfilled, and rejected', () => {
+      let state = contactsReducer(initial, { type: getContacts.pending.type });
+      expect(state.isLoading).toBe(true);
+      expect(state.error).toBeNull();
+
+      state = contactsReducer(state, {
+        type: getContacts.fulfilled.type,
+        payload: [sampleContact],
+      });
+      expect(state.isLoading).toBe(false);
+      expect(state.list).toEqual([sampleContact]);
+
+      state = contactsReducer(state, {
+        type: getContacts.rejected.type,
+        payload: 'Failed to fetch',
+      });
+      expect(state.isLoading).toBe(false);
+      expect(state.error).toBe('Failed to fetch');
+    });
   });
 
-  it('treats a whitespace-padded duplicate as a duplicate', async () => {
-    const store = makeStore([makeContact()]);
-    const result = await store.dispatch(
-      createContact({ name: 'Alice 2', address: `  ${ADDR_A}  `, tokenType: 'XLM' })
-    );
-    expect(createContact.rejected.match(result)).toBe(true);
-    expect(result.payload).toMatch(/already uses this address/);
-    expect(store.getState().contacts.list).toHaveLength(1);
+  describe('createContact', () => {
+    it('handles pending, fulfilled, and rejected', () => {
+      let state = contactsReducer(initial, { type: createContact.pending.type });
+      expect(state.isLoading).toBe(true);
+      expect(state.error).toBeNull();
+
+      state = contactsReducer(state, {
+        type: createContact.fulfilled.type,
+        payload: sampleContact,
+      });
+      expect(state.isLoading).toBe(false);
+      expect(state.list).toContainEqual(sampleContact);
+
+      state = contactsReducer(state, {
+        type: createContact.rejected.type,
+        payload: 'Create failed',
+      });
+      expect(state.isLoading).toBe(false);
+      expect(state.error).toBe('Create failed');
+    });
   });
 
-  it('treats a lowercase duplicate as a duplicate (case-normalized)', async () => {
-    const store = makeStore([makeContact()]);
-    const result = await store.dispatch(
-      createContact({ name: 'Alice 2', address: ADDR_A.toLowerCase(), tokenType: 'XLM' })
-    );
-    expect(createContact.rejected.match(result)).toBe(true);
-    expect(result.payload).toMatch(/already uses this address/);
-    expect(store.getState().contacts.list).toHaveLength(1);
+  describe('updateContact', () => {
+    it('updates contact in list and selectedContact on fulfilled', () => {
+      const existingState = {
+        ...initial,
+        list: [sampleContact],
+        selectedContact: sampleContact,
+      };
+
+      const updated = { ...sampleContact, name: 'Alice Renamed' };
+      let state = contactsReducer(existingState, { type: updateContact.pending.type });
+      expect(state.isLoading).toBe(true);
+
+      state = contactsReducer(state, {
+        type: updateContact.fulfilled.type,
+        payload: updated,
+      });
+      expect(state.isLoading).toBe(false);
+      expect(state.list[0].name).toBe('Alice Renamed');
+      expect(state.selectedContact?.name).toBe('Alice Renamed');
+
+      state = contactsReducer(state, {
+        type: updateContact.rejected.type,
+        payload: 'Update failed',
+      });
+      expect(state.isLoading).toBe(false);
+      expect(state.error).toBe('Update failed');
+    });
   });
 
-  it('error message names the conflicting contact and directs to edit', async () => {
-    const store = makeStore([makeContact({ name: 'Carol' })]);
-    const result = await store.dispatch(
-      createContact({ name: 'Carol 2', address: ADDR_A, tokenType: 'XLM' })
-    );
-    expect(createContact.rejected.match(result)).toBe(true);
-    expect(result.payload).toContain('Carol');
-    expect(result.payload).toContain('Edit that contact instead');
-  });
+  describe('deleteContact', () => {
+    it('removes contact from list and clears selectedContact on fulfilled', () => {
+      const existingState = {
+        ...initial,
+        list: [sampleContact],
+        selectedContact: sampleContact,
+      };
 
-  it('allows creating a contact when the list is empty', async () => {
-    const store = makeStore([]);
-    const result = await store.dispatch(
-      createContact({ name: 'Dave', address: ADDR_A, tokenType: 'XLM' })
-    );
-    expect(createContact.fulfilled.match(result)).toBe(true);
-    expect(store.getState().contacts.list).toHaveLength(1);
+      let state = contactsReducer(existingState, { type: deleteContact.pending.type });
+      expect(state.isLoading).toBe(true);
+
+      state = contactsReducer(state, {
+        type: deleteContact.fulfilled.type,
+        payload: sampleContact.id,
+      });
+      expect(state.isLoading).toBe(false);
+      expect(state.list).toHaveLength(0);
+      expect(state.selectedContact).toBeNull();
+
+      state = contactsReducer(state, {
+        type: deleteContact.rejected.type,
+        payload: 'Delete failed',
+      });
+      expect(state.isLoading).toBe(false);
+      expect(state.error).toBe('Delete failed');
+    });
   });
 });

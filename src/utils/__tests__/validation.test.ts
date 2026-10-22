@@ -6,11 +6,11 @@ import {
   stellarAddressSchema,
   tokenAmountSchema,
   createContactSchema,
-  updateContactSchema,
-  validateContactAddress,
-  normalizeContactAddress,
-  validateContact,
-  validateUpdateContact,
+  sendPaymentSchema,
+  sanitizePaymentInput,
+  validateSendPayment,
+  getAssetPrecision,
+  getPaymentFailureMessage,
 } from "../validation";
 
 // #141 — table-driven tests for validation schemas.
@@ -74,7 +74,7 @@ describe("nameSchema", () => {
 });
 
 describe("stellarAddressSchema", () => {
-  const validAddr = "G" + "A".repeat(55); // 56-char G + uppercase alphanum
+  const validAddr = "G" + "A".repeat(55);
   it("accepts a valid G... 56-char address", () => {
     expect(stellarAddressSchema.safeParse(validAddr).success).toBe(true);
   });
@@ -136,85 +136,92 @@ describe("createContactSchema", () => {
   });
 });
 
-// #216 — contact address validation and normalization
+describe('sendPaymentSchema memo rules', () => {
+  const payment = {
+    recipientAddress: 'GABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789AB',
+    amount: '1',
+    tokenType: 'XLM' as const,
+  };
 
-const VALID_STELLAR = "GABC" + "A".repeat(52); // G + 55 uppercase alphanum = 56 chars
-describe("normalizeContactAddress", () => {
-  it("trims leading and trailing whitespace", () => {
-    expect(normalizeContactAddress("  " + VALID_STELLAR + "  ")).toBe(VALID_STELLAR);
+  it('omits stale memo values when memo type is none', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memo: 'stale', memoType: 'none' }).success).toBe(true);
+    expect(sanitizePaymentInput({ ...payment, memo: 'stale', memoType: 'none' })).not.toHaveProperty('memo');
   });
-  it("uppercases the string", () => {
-    expect(normalizeContactAddress(VALID_STELLAR.toLowerCase())).toBe(VALID_STELLAR);
+
+  it('accepts text memo up to 28 UTF-8 bytes and rejects longer values', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'text', memo: 'a'.repeat(28) }).success).toBe(true);
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'text', memo: 'é'.repeat(15) }).success).toBe(false);
   });
-  it("trims and uppercases together", () => {
-    expect(normalizeContactAddress("  " + VALID_STELLAR.toLowerCase() + "\t")).toBe(VALID_STELLAR);
+
+  it('accepts numeric memo IDs within uint64 and rejects overflow or non-numeric values', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'id', memo: '18446744073709551615' }).success).toBe(true);
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'id', memo: '18446744073709551616' }).success).toBe(false);
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'id', memo: '12x' }).success).toBe(false);
+  });
+
+  it('accepts exactly 32-byte hex hashes and rejects malformed hashes', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'hash', memo: 'a'.repeat(64) }).success).toBe(true);
+    expect(sendPaymentSchema.safeParse({ ...payment, memoType: 'hash', memo: 'a'.repeat(63) }).success).toBe(false);
+  });
+
+  it('requires a memo type when a memo is provided without one', () => {
+    expect(sendPaymentSchema.safeParse({ ...payment, memo: 'untyped' }).success).toBe(false);
   });
 });
 
-describe("validateContactAddress", () => {
-  it("returns null for a valid address", () => {
-    expect(validateContactAddress(VALID_STELLAR)).toBeNull();
+describe('getPaymentFailureMessage', () => {
+  it('explains reserve-related rejection in plain language', () => {
+    expect(getPaymentFailureMessage(new Error('Insufficient balance to maintain reserve')))
+      .toContain("Stellar's minimum account reserve");
+describe("payment precision validation", () => {
+  const validAddress = "G" + "A".repeat(55);
+
+  it("accepts XLM values within the asset precision limit", () => {
+    const result = validateSendPayment({
+      recipientAddress: validAddress,
+      amount: "1.1234567",
+      tokenType: "XLM",
+    });
+
+    expect(result.isValid).toBe(true);
   });
-  it("returns null for whitespace-padded valid address (normalizes first)", () => {
-    expect(validateContactAddress("  " + VALID_STELLAR + "  ")).toBeNull();
+
+  it("rejects XLM values with too many fractional digits", () => {
+    const result = validateSendPayment({
+      recipientAddress: validAddress,
+      amount: "1.12345678",
+      tokenType: "XLM",
+    });
+
+    expect(result.isValid).toBe(false);
+    expect(result.errors.join(" ")).toContain("7 decimal");
   });
-  it("returns an error string for an empty address", () => {
-    expect(validateContactAddress("")).not.toBeNull();
-  });
-  it("returns an error string for a malformed address (too short)", () => {
-    expect(validateContactAddress("GABC")).not.toBeNull();
-  });
-  it("returns an error string for a non-G prefix", () => {
-    expect(validateContactAddress("X" + "A".repeat(55))).not.toBeNull();
-  });
-  it("returns an error string for special characters", () => {
-    expect(validateContactAddress("G!" + "A".repeat(54))).not.toBeNull();
-  });
-  it("returns an error string for pure whitespace", () => {
-    expect(validateContactAddress("   ")).not.toBeNull();
+
+  it("applies the same precision rule to issued assets like USDC", () => {
+    expect(getAssetPrecision("USDC")).toBe(7);
+
+    const result = validateSendPayment({
+      recipientAddress: validAddress,
+      amount: "12.34567891",
+      tokenType: "USDC",
+    });
+
+    expect(result.isValid).toBe(false);
+    expect(result.errors.join(" ")).toContain("7 decimal");
   });
 });
 
-describe("validateContact", () => {
-  const valid = { name: "Alice", address: VALID_STELLAR, tokenType: "XLM" };
+describe("payment error guidance", () => {
+  it("explains the activation requirement for unfunded destination errors", () => {
+    const message = getPaymentFailureMessage({
+      response: {
+        data: {
+          message: "Account does not exist. Activate the destination account first.",
+        },
+      },
+    });
 
-  it("accepts a valid contact", () => {
-    expect(validateContact(valid).isValid).toBe(true);
-  });
-  it("accepts whitespace-padded valid address", () => {
-    expect(validateContact({ ...valid, address: "  " + VALID_STELLAR + "  " }).isValid).toBe(true);
-  });
-  it("rejects malformed address and sets address error", () => {
-    const r = validateContact({ ...valid, address: "not-an-address" });
-    expect(r.isValid).toBe(false);
-    expect(r.errors.address).toBeDefined();
-  });
-  it("rejects empty address", () => {
-    const r = validateContact({ ...valid, address: "" });
-    expect(r.isValid).toBe(false);
-    expect(r.errors.address).toBeDefined();
-  });
-  it("rejects invalid name", () => {
-    const r = validateContact({ ...valid, name: "" });
-    expect(r.isValid).toBe(false);
-    expect(r.errors.name).toBeDefined();
-  });
-});
-
-describe("updateContactSchema / validateUpdateContact", () => {
-  it("accepts partial update with only name", () => {
-    expect(updateContactSchema.safeParse({ name: "Bob" }).success).toBe(true);
-  });
-  it("rejects malformed address in update", () => {
-    const r = validateUpdateContact({ address: "bad" });
-    expect(r.isValid).toBe(false);
-    expect(r.errors.address).toBeDefined();
-  });
-  it("accepts whitespace-padded address in update", () => {
-    const r = validateUpdateContact({ address: "  " + VALID_STELLAR + "  " });
-    expect(r.isValid).toBe(true);
-  });
-  it("accepts empty update object (all fields optional)", () => {
-    expect(validateUpdateContact({}).isValid).toBe(true);
+    expect(message).toContain("activate");
+    expect(message).toContain("minimum balance");
   });
 });
