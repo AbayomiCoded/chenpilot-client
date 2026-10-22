@@ -1,15 +1,22 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { StellarTransaction } from '@/types';
-import { formatAddress, formatTokenAmount } from '@/utils/format';
+import React from 'react';
+import { StellarTransaction, StellarOperation } from '@/types';
+import {
+  formatAddress,
+  formatTransactionAmount,
+  formatTransactionDate,
+  formatTransactionFee,
+  ASSET_PRECISION,
+} from '@/utils/format';
+import { useAppSelector } from '@/store';
+import { Language } from '@/lib/i18n/i18n';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import {
   ChevronLeft,
   ChevronRight,
   ArrowUpRight,
-  ArrowDownLeft,
   ExternalLink,
   Check,
   AlertCircle,
@@ -26,6 +33,8 @@ interface TransactionTableProps {
   totalCount: number;
   onPageChange: (page: number) => void;
   onPageSizeChange: (size: number) => void;
+  language?: Language;
+  locale?: string;
 }
 
 const OPERATION_TYPE_LABELS: { [key: string]: string } = {
@@ -52,7 +61,12 @@ export default function TransactionTable({
   totalCount,
   onPageChange,
   onPageSizeChange,
+  language,
+  locale,
 }: TransactionTableProps) {
+  const reduxLanguage = useAppSelector((state) => state.ui?.language) as Language | undefined;
+  const currentLanguage = language || reduxLanguage || 'en';
+
   const totalPages = Math.ceil(totalCount / pageSize);
   const startIndex = (currentPage - 1) * pageSize + 1;
   const endIndex = Math.min(currentPage * pageSize, totalCount);
@@ -62,16 +76,22 @@ export default function TransactionTable({
     toast.success('Transaction hash copied');
   };
 
-  const getOperationType = (operations: any[]): string => {
+  const getOperationType = (operations: StellarOperation[]): string => {
     if (!operations || operations.length === 0) return 'Unknown';
     const mainOp = operations[0];
     return OPERATION_TYPE_LABELS[mainOp.type] || mainOp.type;
   };
 
-  const getOperationDetails = (operations: any[]): string | null => {
+  const getOperationDetails = (operations: StellarOperation[]): string | null => {
     if (!operations || operations.length === 0) return null;
     const mainOp = operations[0];
-    return mainOp.amount ? `${formatTokenAmount(mainOp.amount, 2)} ${mainOp.asset}` : null;
+    if (!mainOp.amount) return null;
+    return formatTransactionAmount(mainOp.amount, {
+      language: currentLanguage,
+      locale,
+      asset: mainOp.asset,
+      decimals: mainOp.asset ? ASSET_PRECISION[mainOp.asset.toUpperCase()] : undefined,
+    });
   };
 
   if (error) {
@@ -184,20 +204,23 @@ export default function TransactionTable({
                     </button>
                   </td>
                   <td className="py-3 px-4">
-                    <span className="text-gray-300">
+                    <span className="text-gray-300 block">
                       {getOperationDetails(tx.operations) || '-'}
                     </span>
+                    {tx.fee_charged && (
+                      <span className="text-xs text-gray-500 block">
+                        Fee: {formatTransactionFee(tx.fee_charged, { language: currentLanguage, locale, asset: 'XLM' })}
+                      </span>
+                    )}
                   </td>
                   <td className="py-3 px-4">
                     <span className="text-gray-300">#{tx.ledger}</span>
                   </td>
                   <td className="py-3 px-4">
                     <span className="text-gray-300">
-                      {new Date(tx.created_at).toLocaleDateString('en-US', {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
+                      {formatTransactionDate(tx.created_at, {
+                        language: currentLanguage,
+                        locale,
                       })}
                     </span>
                   </td>

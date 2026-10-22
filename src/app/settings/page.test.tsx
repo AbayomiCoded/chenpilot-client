@@ -62,6 +62,18 @@ vi.mock("@/components/layout/ChatLayout", () => ({
   ),
 }));
 
+vi.mock("@/components/settings/MfaSettingsSection", () => ({
+  MfaSettingsSection: () => null,
+}));
+
+vi.mock("@/components/settings/DangerZone", () => ({
+  DangerZone: () => null,
+}));
+
+vi.mock("@/components/wallet/StellarNetworkBadge", () => ({
+  StellarNetworkBadge: () => null,
+}));
+
 vi.mock("react-hot-toast", () => ({
   default: { success: vi.fn() },
 }));
