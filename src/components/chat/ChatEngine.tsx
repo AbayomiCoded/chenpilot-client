@@ -12,12 +12,18 @@ import {
   queueMessage,
   addMessage as reduxAddMessage,
   addPendingMessage,
+  removeMessage,
 } from "@/store/slices/chatSlice";
 import AgentMessage from "@/components/chat/AgentMessage";
+import { AgentRetryAction } from "@/components/chat/AgentRetryAction";
+import { AgentMarkdown } from "@/components/chat/AgentMarkdown";
+import { AgentTimeoutNotice } from "@/components/chat/AgentTimeoutNotice";
+import agentConfig from "@/config/agent";
 import UserMessage from "@/components/chat/UserMessage";
 import { TagWidget } from "@/components/chat/TagWidget";
 import { OfflineIndicator } from "@/components/chat/OfflineIndicator";
 import { useOfflineQueue } from "@/hooks/useOfflineQueue";
+import { useChatResync } from "@/hooks/useChatResync";
 import {
   Send,
   Mic,
@@ -85,6 +91,9 @@ function formatSeconds(secs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+// After this long, the typing indicator explains the request is still running (#274)
+const LONG_RUNNING_NOTICE_SECONDS = 10;
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export const ChatEngine: React.FC = () => {
@@ -100,9 +109,14 @@ export const ChatEngine: React.FC = () => {
     currentConversation,
     isOnline,
     pendingMessages,
+    streamingResponse,
   } = useAppSelector((state) => state.chat);
   const { processQueue } = useOfflineQueue();
+  // Merge live chat events and catch up on ones missed during socket downtime (#277)
+  useChatResync();
   const [inputValue, setInputValue] = useState("");
+  // Seconds the current agent request has been running; drives the "still working" state (#274)
+  const [pendingSeconds, setPendingSeconds] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
@@ -156,6 +170,27 @@ export const ChatEngine: React.FC = () => {
   });
 
   // ── Effects ───────────────────────────────────────────────────────────────
+  // Cancel a streaming/in-flight agent request when the route changes (#261). Uses the same
+  // in-flight ref as the Stop button, so there is one source of truth for the active request.
+  useEffect(() => {
+    return () => {
+      inflightRef.current?.abort();
+      inflightRef.current = null;
+    };
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!isTyping) {
+      setPendingSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      setPendingSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isTyping]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: prefersReducedMotion ? "auto" : "smooth" });
   }, [messages, isTyping, voiceStatus, prefersReducedMotion]);
@@ -329,6 +364,41 @@ export const ChatEngine: React.FC = () => {
         return;
       }
       toast.error(error || "Failed to send message");
+    }
+  };
+
+  // Resend a failed prompt exactly as typed, reusing its user bubble and request id (#262)
+  const handleRetryFailed = (failed: ChatMessage) => {
+    const meta = failed.metadata;
+    if (!meta?.retryPrompt || isChatLoading || isTyping) return;
+    dispatch(removeMessage(failed.id));
+    dispatch(
+      sendMessage({
+        query: meta.retryPrompt,
+        tempId: meta.retryTempId,
+        clientRequestId: meta.requestId,
+      }),
+    )
+      .unwrap()
+      .catch((error: unknown) => toast.error(String(error || "Failed to send message")));
+  };
+
+  const handleResolveTimeout = (messageId: string, updates: Partial<ChatMessage>) => {
+    dispatch(updateMessage({ id: messageId, updates }));
+    if (updates.metadata?.actionStatus === "completed") {
+      toast.success("The action completed");
+    }
+  };
+
+  // Resend the user query that preceded a timed-out agent reply (read-only queries only)
+  const handleRetryTimedOut = (messageId: string) => {
+    const idx = messages.findIndex((m) => m.id === messageId);
+    const original = messages
+      .slice(0, idx)
+      .reverse()
+      .find((m) => m.type === "user");
+    if (original && !isChatLoading && !isTyping) {
+      dispatch(sendMessage(original.content));
     }
   };
 
@@ -659,12 +729,34 @@ return (
                       currentConversation?.isActive !== false
                     }
                   />
+                  {/* Timeouts are handled by AgentTimeoutNotice (status check first); other
+                      retryable failures get the #262 retry action */}
+                  {message.metadata?.errorKind !== "timeout" && (
+                    <AgentRetryAction
+                      message={message}
+                      onRetry={handleRetryFailed}
+                      onResolve={(updates) => dispatch(updateMessage({ id: message.id, updates }))}
+                    />
+                  )}
+                  <AgentTimeoutNotice
+                    message={message}
+                    onResolve={(updates) => handleResolveTimeout(message.id, updates)}
+                    onRetry={() => handleRetryTimedOut(message.id)}
+                  />
                 </div>
               )}
             </div>
           ))}
 
-          {isTyping && (
+          {isTyping && streamingResponse?.text ? (
+            <div className="flex justify-start" data-testid="streaming-response">
+              <div className="max-w-2xl w-full" aria-live="polite" aria-busy="true">
+                <div className="text-white text-left prose prose-invert prose-lg max-w-none leading-relaxed pr-8">
+                  <AgentMarkdown>{streamingResponse.text}</AgentMarkdown>
+                </div>
+              </div>
+            </div>
+          ) : isTyping && (
             <div className="flex justify-start">
               <div className="bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-2xl px-6 py-4 shadow-lg">
                 <div className="flex items-center space-x-3">
@@ -679,8 +771,10 @@ return (
                       style={{ animationDelay: "0.2s" }}
                     />
                   </div>
-                  <span className="text-sm text-gray-400">
-                    ChenPilot is thinking...
+                  <span className="text-sm text-gray-400" role="status" aria-live="polite">
+                    {pendingSeconds >= LONG_RUNNING_NOTICE_SECONDS
+                      ? `Still working on it (${pendingSeconds}s). Long actions can take up to ${Math.round(agentConfig.timeout / 1000)}s.`
+                      : "ChenPilot is thinking..."}
                   </span>
                 </div>
               </div>

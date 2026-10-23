@@ -2,6 +2,10 @@
 
 This document records the HTTP requests made by [`src/services/api.ts`](../src/services/api.ts) and [`src/services/agentService.ts`](../src/services/agentService.ts). Types and examples below describe the frontend's declared/consumed shapes; they are not evidence that every experimental backend route currently implements them. Confirm the backend before treating an example as a server guarantee. Fields shown with `...` are explanatory omissions, not literal JSON.
 
+## Signing And Authorization Boundary (#260)
+
+The browser never holds private keys and never signs. Every endpoint below that changes on-chain state (`POST /query` for agent actions, `POST /auth/starknet/deploy`, `POST /auth/funding/*`, `POST /api/fund`) is signed and submitted by the backend, which must authorize each call against the bearer token's user. Client-side checks (validation, guards, confirmation UI) are not authorization. See `SECURITY.md` → "Wallet Key Ownership & Signing Boundary".
+
 ## Base URLs And Authentication
 
 - `ApiService` uses `NEXT_PUBLIC_API_BASE_URL`, defaulting to `http://localhost:2333`.
@@ -25,7 +29,7 @@ This document records the HTTP requests made by [`src/services/api.ts`](../src/s
 - A 401 on an `ApiService` request triggers one queued refresh attempt and then retries the original request once. If refresh fails, local auth is cleared and the browser is sent to `/auth/login`. The auth UI may show the rejected thunk/error message.
 - The retry interceptor retries eligible network failures and the configured 408, 429, and 5xx statuses, subject to method safety; 503 is retried for any method. It exposes retry state to the UI. This is transport retry behavior, not an application error envelope.
 - Contact wrappers specially handle 404: `GET /contacts` becomes `{ success: true, data: [], message: ... }`; contact create/update/delete become `{ success: false, status: 404, message: ... }`. Other failures reject.
-- Agent query wrappers catch failures and return `result.success: false`. Messages containing `invalid query`, `timeout`, or `network` map to friendly text; other failures use a generic unavailable/query-failed message. Chat displays the returned error/message to the user.
+- Agent query wrappers catch failures and return `result.success: false` with a `result.errorKind` of `timeout`, `network`, `invalid_query`, `server` or `unknown` (#274). Timeouts (Axios `ECONNABORTED`/`ETIMEDOUT`, a "timeout" message, or HTTP 408/504) are kept separate from connectivity failures (`ERR_NETWORK`, no response). Each kind maps to its own friendly text, and chat displays it to the user. See [Agent Timeouts And Status Checks](#agent-timeouts-and-status-checks).
 - The Google sign-in surface displays the caught error text. The liquidity widget displays generic inline errors (`Failed to fetch liquidity data` or `Error loading liquidity statistics`) rather than the backend message.
 - Login/register forms dispatch auth thunks; the backend response contract is documented in the Authentication Endpoints table below.
 
@@ -48,16 +52,211 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
-| `HEAD /` | No body; health probe. | `200`, no response body is consumed. The client synthesizes its `AgentHealthCheck`. | Agent connectivity initialization; status object is synthesized, not returned by the server. |
-| `POST /query` | `{"userId":"user-1","query":"What is my XLM balance?"}` | `{"result":{"success":true,"data":"Your balance is ...","error":null}}` (`executionTrace` is optional). | Chat query; failures become friendly `result` messages shown in chat. |
+| `GET /health` | No body; unauthenticated; 5s timeout. | `{"status":"ok"}`. `status` is `ok`/`healthy`/`up`, `degraded`, or `down`/`unhealthy`. A `503` may carry the same body. | **Proposed; backend support not yet confirmed.** The primary probe in `agentService.healthCheck()` (#272); the measured round trip is reported as `responseTimeMs`. |
+| `HEAD /` | No body; fallback probe. | Any HTTP status below 500; the body is ignored. | Used only when `GET /health` answers `404`/`405`/`501`. The result is connectivity-only: `probe: "connectivity"`, `healthEndpointSupported: false`. |
+| `POST /query` | `{"userId":"user-1","query":"What is my XLM balance?","clientRequestId":"agent_query_1767225600_k3j9xz"}` | `{"result":{"success":true,"data":"Your balance is ...","error":null}}` (`executionTrace` is optional). | Chat query; failures become friendly `result` messages shown in chat. The client adds `requestId`, `stateChanging` and, on failure, `errorKind` to the returned `result`. |
+| `GET /query/{clientRequestId}/status` | `GET /query/agent_query_1767225600_k3j9xz/status` | `{"status":"completed","result":{"success":true,"data":"Sent 50 XLM","transactionHash":"..."}}`; `status` is `pending`, `completed` or `failed`. | **Proposed; backend support not yet confirmed.** The "Check status" action shown after a state-changing query times out. A 404/501, network error or unrecognized body resolves as `unknown`. Also checked before retrying a state-changing prompt (#262), where `not_found` means the id was never seen. |
 | `GET /memory/{userId}` | `GET /memory/user-1` | `[]` (declared `string[]`). | Service method only; failures are logged and return an empty list. |
 | `DELETE /memory/{userId}` | `DELETE /memory/user-1` | `204 No Content`; the response body is ignored. | Service method only; failures reject as `Failed to clear agent memory`. |
 | `GET /tools` | No body. | `[]` (the service currently does not declare tool item fields). | Service method only; failure returns an empty list. |
 | `POST /tools/{toolName}/execute` | `POST /tools/swap/execute` with `{"from":"XLM","to":"USDC","amount":"10"}` | Example pass-through: `{"result":"..."}`. The service does not define or validate this response shape. | Service method only; errors are rethrown as a tool failure. |
 
-`getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
+**Health result (#272).** `AgentHealthCheck` reports:
+- `probe`: `health_endpoint` or `connectivity`.
+- `healthEndpointSupported`: whether `GET /health` exists.
+- `responseTimeMs`: the measured round trip of the probe that answered, or `null` if nothing answered.
+- `reason` when unhealthy: `network` and `timeout` mean no answer; `server_error` means a 5xx answer.
+
+An unsupported `/health` is not an outage: the client falls back to `HEAD /` and reports connectivity only. `system` metrics are included only if the backend provides them; the client no longer sends zeroed placeholders.
+
+### Agent Response Envelope (#275)
+
+`POST /query` must answer with one of these bodies. Both `AgentService.queryAgent` and the `apiService.queryAgent` backend fallback validate them with `parseAgentEnvelope` (`src/services/agentEnvelope.ts`).
+
+**Success:**
+```json
+{ "result": { "success": true, "data": "Your balance is 100 XLM", "error": null } }
+{ "result": { "success": true, "data": { "vaults": [] } } }
+{ "result": { "success": true, "data": "Sent 10 XLM", "transactionHash": "abc123",
+              "executionTrace": { "steps": [] },
+              "metadata": { "type": "wallet", "action": "transfer_xlm", "amount": "10", "asset": "XLM" } } }
+```
+`data` is a non-empty string, an object or an array. `error` must be absent, `null` or `""`.
+
+**Failure** (HTTP 200 with a failed result):
+```json
+{ "result": { "success": false, "data": "Not enough XLM", "error": "insufficient_funds" } }
+{ "result": { "success": false, "error": "insufficient_funds" } }
+```
+At least one of `error` or a string `data` is required. When `data` is missing, `error` is shown as the message.
+
+Optional fields, when present, must be: `executionTrace` an object, `transactionHash` a string, `metadata` an object.
+
+**Protocol errors.** Any other body is reported as a failure, never as a success. This includes:
+- plain text
+- a bare object without `result`
+- `success` missing or not a boolean
+- a success with no or empty `data`, or with an `error`
+- a failure with neither `error` nor `data`
+- optional fields of the wrong type
+
+The client returns:
+```json
+{ "result": { "success": false, "data": "The agent sent a response this app could not understand. Please try again.",
+              "error": "protocol_error: <reason>" } }
+```
+Earlier versions defaulted `success` to `true` and wrapped unknown bodies as successful replies; that is no longer the case. HTTP errors (4xx/5xx, network) are unchanged and still become friendly failure results.
+
+### Agent Status (#271)
+
+**Proposed; backend support not yet confirmed.**
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /status` | No body; 5s timeout. | `{"version":"2.3.0","uptimeSeconds":5400,"activeConnections":12,"lastActivity":"2026-10-21T10:00:00Z","services":{"soroswap":{"isActive":true,"isHealthy":true,"lastCheck":"2026-10-21T09:59:00Z"},"blend":{"isActive":true,"isHealthy":false,"lastCheck":"2026-10-21T09:59:00Z","error":"RPC timeout"}}}` | `AgentStatus` dashboard. Each field is validated on its own; missing or invalid fields stay `null`. |
+
+`agentService.getStatus()` no longer invents values:
+- `isOnline` comes only from `healthCheck()`.
+- Metrics (`version`, `uptime`, `activeConnections`, `lastActivity`) come only from `GET /status`. If the endpoint is missing or fails, they are `null` and `source` is `"unavailable"`.
+- `services` holds only the protocols the backend reports. It is empty, not "all healthy", when nothing was reported.
+
+The dashboard shows "Unavailable" for `null` metrics and "Protocol health is unavailable" for empty `services`. A service whose health is `null` gets an "Unknown" marker. The probe's measured response time is shown, labelled "connectivity check only" when `/health` is unsupported.
+
+`getCapabilities()` still returns a local object and makes no HTTP request. Its success no longer counts as the agent being online.
+
+### Agent Timeouts And Status Checks
+
+`AgentService` gives up waiting after `NEXT_PUBLIC_AGENT_TIMEOUT` (default 30000 ms). A client timeout does not mean the backend stopped: a transfer or swap may still complete.
+
+- **While waiting:** after 10s the chat typing indicator changes to "Still working on it (Ns)" and names the timeout.
+- **Read-only queries** (balance, APY, ...): the timed-out reply shows a **Retry** button that resends the previous user message.
+- **State-changing queries** (send, transfer, swap, lend, borrow, withdraw, repay, deposit, stake, claim, harvest, liquidate, deploy, add/remove liquidity or collateral): no retry is offered, so the action can't be submitted twice. The reply says the action may still be running and shows **Check status**, which calls `agentService.getActionStatus(requestId)`:
+  - `completed` / `failed`: the message is replaced with the late result, including `transactionHash` when present.
+  - `pending`: "Still running. Check again in a moment."
+  - `unknown`: the user is asked to check their wallet's transaction history before trying again.
+
+**Backend requirements (unconfirmed):**
+1. Accept the extra `clientRequestId` field on `POST /query`. Backends that ignore unknown fields are unaffected.
+2. Implement `GET /query/{clientRequestId}/status` and keep status for at least as long as the slowest action plus a few minutes.
+3. Ideally, dedupe `POST /query` by `clientRequestId` so a resend cannot run an action twice.
+
+Until (2) ships, status checks resolve as `unknown` and users are pointed to their transaction history. The backend fallback in `apiService.queryAgent` sets `errorKind` but sends no `clientRequestId`, so its timeouts can't be status-checked.
+
+### Retrying Failed Agent Queries (#262)
+
+Uses the same `clientRequestId` and `GET /query/{clientRequestId}/status` endpoint as the timeout flow above. For the retry flow, the status endpoint may also answer `not_found` (a `200` with `{"status":"not_found"}`) for an id it has never seen. Timed-out replies are handled by `AgentTimeoutNotice` above; `AgentRetryAction` covers the other retryable failures.
+
+**Idempotency.** Every `POST /query` carries a `clientRequestId`. A retry sends the **same** id. The backend should treat it as an idempotency key: if that id already completed, return the stored result instead of executing again.
+
+**Which failures offer a retry** (`isRetryableErrorKind`):
+
+| `errorKind` | Source | Retry shown |
+| --- | --- | --- |
+| `timeout` | Axios `ECONNABORTED`/`ETIMEDOUT`, a "timeout" message, HTTP 408/504 | Yes |
+| `network` | `ERR_NETWORK`, no response | Yes |
+| `server` | HTTP 5xx, 429 | Yes |
+| `unknown` | Anything else | Yes |
+| `invalid_query` | "invalid query", other HTTP 4xx | No: the same prompt would fail again |
+| `unauthenticated` | HTTP 401/403, "User not authenticated" | No: the user must sign in |
+
+**Retry flow** (`AgentRetryAction`, `agentService.checkBeforeRetry`):
+- **Preserved prompt:** the failed reply stores the original prompt (`retryPrompt`), the optimistic user-message id (`retryTempId`) and the `requestId`. A retry resends the prompt exactly as typed, reuses the original user bubble (no duplicate) and removes the failed reply.
+- **Read-only prompts** retry immediately.
+- **State-changing prompts** (send, transfer, swap, lend, borrow, withdraw, repay, deposit, stake, claim, harvest, liquidate, deploy, add/remove liquidity or collateral) query the status endpoint first:
+  - `completed`: nothing is resent; the failed reply is replaced with the stored result.
+  - `pending`: nothing is resent; the user is asked to check again shortly.
+  - `failed` / `not_found`: the query is resent with the same `clientRequestId`.
+  - `unknown`: nothing is resent until the user clicks "Retry anyway", after being told to check their transaction history.
+
+### Chat Event Resync (#277)
+
+**Proposed; backend support not yet confirmed.** The client sends these requests to the API base URL through `apiService.getMissedChatEvents`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /chat/events` | `GET /chat/events?after=c_1042&limit=100` | `{"events":[{"event":"chat:message","cursor":"c_1043","data":{"cursor":"c_1043","message":{"id":"srv_88","type":"agent","content":"...","timestamp":"2026-01-01T00:00:00Z","metadata":{"requestId":"agent_query_..."}}}}],"hasMore":false,"nextCursor":"c_1043"}` | Called after each socket reconnect to replay events missed during downtime, oldest first. Failures are recorded as a resync error; live events keep working. |
+
+The live socket event `chat:message` must carry the same `{ cursor, message }` payload. See `src/docs/MESSAGE_ORDERING.md` §6 for cursor and dedupe rules.
+
+### Agent Response Streaming (#261)
+
+**Proposed; backend support not yet confirmed.** Streaming is off unless `NEXT_PUBLIC_ENABLE_AGENT_STREAMING=true`. When it is enabled and the agent service is connected, `apiService.queryAgent` calls `agentService.queryAgentStreaming`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `POST /query/stream` | `{"userId":"user-1","query":"Swap 10 XLM for USDC"}` with `Accept: text/event-stream` | `200`, `Content-Type: text/event-stream`, and a stream of the events below | Chat shows partial text as it arrives, then replaces it with the final message. |
+
+**Transport.** Server-Sent Events over a `fetch` POST; `EventSource` can't send a body. Blank-line-terminated messages, `event:` and `data:` fields, and `:` comment lines as keep-alives are supported.
+
+**Event schema.** Each `data` is JSON:
+
+| `event` | `data` | Client behavior |
+| --- | --- | --- |
+| `delta` | `{"requestId":"...","seq":0,"text":"Checking "}` | Appends `text` in `seq` order; `seq` starts at 0 and increases by 1. A repeated or older `seq` is ignored. |
+| `final` | `{"requestId":"...","result":{"success":true,"data":"Your balance is 100 XLM","error":null}}` | Same `result` shape as `POST /query`. **Authoritative:** it replaces the streamed text, so content is never shown twice. Ends the request. |
+| `error` | `{"requestId":"...","message":"tool crashed"}` | Ends the request with a failed `result` (`error` = `message`). |
+
+Unknown events and malformed JSON are ignored.
+
+**Rules:**
+- **Fallback:** a `404`, `405` or `501` response, or a success response that is not `text/event-stream`, means streaming is unsupported. The client sends the same request to `POST /query` and stops trying streaming for the session. The fallback happens only before any event has been received, so a query is never executed twice.
+- **Interrupted stream:** a stream that ends without `final` is reported as `{"success":false,"error":"stream_incomplete"}`. Partial text is never treated as the answer.
+- **Cancellation:** `ChatEngine` aborts the in-flight `sendMessage` thunk when the route changes or the chat unmounts. The `AbortSignal` cancels the fetch and stops the body reader. The partial preview is cleared without an error bubble, the user message is marked `failed`/`cancelled`, and late deltas are dropped because they no longer match the in-flight request id. The backend should stop work when the client disconnects.
+- **Rendering:** partial text is rendered with `AgentMarkdown`, under the same safety policy as final messages (`docs/MARKDOWN_SAFETY.md`).
+
+## Chat History Endpoint
+
+**Proposed; backend support not yet confirmed.** This route uses the API base URL through `apiService.getChatHistory`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /chat/history` | Newest page: `GET /chat/history?limit=50`. Older page: `GET /chat/history?before=<nextCursor>&limit=50`. Bearer token when available. `limit` is clamped to 1–100. | `{"messages":[{"id":"msg_1","type":"user","content":"What is my XLM balance?","timestamp":"2026-01-01T00:00:00Z"}],"nextCursor":"c_0041","hasMore":true}` | Chat history page: `fetchChatHistory` loads the newest page, and `loadOlderHistory` loads the next older page. Server messages are merged into locally cached messages by `id`. |
+
+Load states on `/chat/history` (#265):
+- **Loading, nothing cached:** a loading indicator, not the empty state.
+- **Loaded and empty:** "No chat history yet" with a "Start new chat" action.
+- **Failed, nothing cached:** a dedicated error state (`EmptyState tone="error"`, `role="alert"`) with "Try again" and "Start new chat".
+- **Failed with cached messages:** the cached conversations stay visible under an inline alert with "Try again". A failed request never clears cached messages.
+- **404 or 501:** treated as "this backend has no server history". The page shows the local cache, or the empty state, without an error.
+
+Pagination (#264):
+- **Cursor:** `nextCursor` is opaque and must stay valid for the same position even when new messages arrive. For example, encode the oldest returned message's `(timestamp, id)` rather than an offset. `hasMore: false` or `nextCursor: null` ends paging.
+- **Order:** messages in a page may come in any order. The client merges them by `id`, so overlapping or repeated pages never create duplicate rows, and re-sorts chronologically.
+- **Stale or stuck cursors:** the client only advances the cursor if the response belongs to the cursor it currently holds, so a late response cannot move it backwards. A page that returns the same cursor it was requested with is treated as the end.
+- **One request at a time:** a page request is skipped while another is in flight or when there is nothing older. A failed page keeps the cursor and shows "Retry loading older messages".
+- **Scroll position:** the history view records `scrollTop`/`scrollHeight` before requesting an older page and shifts `scrollTop` by the added height after it is prepended (`usePrependScrollAnchor`), so the view does not jump.
 
 ## Authentication Endpoints
+
+### Auth Validation Errors (#258)
+
+When `POST /auth/login` or `POST /auth/register` rejects input, the backend should respond with `400` or `422` and one of these bodies. Each is normalized by `normalizeAuthError` (`src/services/auth.service.ts`):
+
+```json
+{ "success": false, "status": 422, "message": "Validation failed",
+  "errors": { "email": "Email is already registered", "password": ["Too short", "Needs a number"] } }
+```
+```json
+{ "success": false, "status": 400, "message": "Validation failed",
+  "errors": [{ "field": "email", "message": "Invalid email" }] }
+```
+
+Also accepted:
+- `param` / `msg` instead of `field` / `message` (express-validator style)
+- `path` as a string (`"user.email"`) or an array (`["body","email"]`, zod style)
+- `details` instead of `errors`
+
+Field names map onto form inputs `email`, `password` and `name`. The aliases `username` and `emailAddress` map to `email`, and `fullName` and `displayName` map to `name`.
+
+**What the forms show.** "Privacy-Safe Authentication Errors" above takes precedence:
+- **Login:** every failure shows only the generic message (`authService.normalizeLoginError`). No server field errors are attached, because any of them could reveal whether an account exists.
+- **Registration:** the toast is always the generic message (`authService.normalizeRegisterError`). Server field errors are attached to inputs (`aria-invalid`, first errored field focused) only when they cannot reveal account existence (`applyAuthErrors` with `hideAccountExistence`): every server error on `email` is dropped, as is any message matching `ACCOUNT_EXISTENCE_PATTERNS`. A password-policy or name-format message is still shown on its field.
+
+**Rules:**
+- Email and name stay in the form after a failure. The password input is cleared.
+- The submitted password is masked as `••••••` in every displayed message, and echoed `value` fields are ignored. Servers must not echo passwords at all.
+- Failures with no structured body show a generic message rather than raw HTML or stack text.
+- The login/register thunks reject with this normalized payload (`rejectWithValue`). They still return mock users today (see the note below), so the mapping takes effect once they call `apiService.login` / `apiService.register`.
 
 `User` response fields are `id`, `email`, `name`, `address`, `publicKey`, `isDeployed`, `isFunded`, `tokenType`, `authProvider`, `isEmailVerified`, `createdAt`, and `updatedAt`. `RegisterResponse` additionally declares `stellarAccount`, the backward-compatible `starknetAccount` alias, and `setupStatus` with funding/deployment results.
 
@@ -164,8 +363,8 @@ The backend should return an explicit `confirmed` result only after it has autho
 | --- | --- | --- | --- |
 | `GET /contacts` | No body; bearer token when available. | `{"success":true,"data":[{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}]}` | Contacts page/send flow; wrappers handle 404 specially. |
 | `POST /contacts` | `{"name":"Ada","address":"G...","tokenType":"XLM"}` | `{"success":true,"data":{"id":"c1","name":"Ada","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
-| `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
-| `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. |
+| `PUT /contacts/{id}` | `PUT /contacts/c1` with `{"name":"Ada Lovelace"}` | `{"success":true,"data":{"id":"c1","name":"Ada Lovelace","address":"G...","tokenType":"XLM","createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-02T00:00:00Z"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. Also used to toggle `isFavorite`; the client sends `{"isFavorite":true}` or `{"isFavorite":false}`. The flip is applied optimistically in Redux and reverted if the request fails. |
+| `DELETE /contacts/{id}` | `DELETE /contacts/c1` | `{"success":true,"data":{"message":"Contact deleted"}}` | Same wrapper-only caveat; 404 becomes an explanatory failure envelope. The client uses a soft-delete / undo pattern: the contact is removed from the UI immediately (`softDeleteContact`) and the backend call (`commitDeleteContact`) is deferred by 5 s to allow undo. If the backend call fails the contact is automatically restored in Redux state and an error toast is shown. |
 
 The contacts screen searches the complete loaded contact list and renders 24 matches per page. This is client-side pagination; the current contacts contract does not define page/limit parameters, so no paginated backend response is assumed.
 

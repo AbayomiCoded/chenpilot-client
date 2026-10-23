@@ -31,6 +31,8 @@ interface ContactsState {
   isLoading: boolean;
   error: string | null;
   selectedContact: Contact | null;
+  /** Contacts optimistically removed pending backend confirmation. */
+  pendingDeletion: Contact[];
 }
 
 const initialState: ContactsState = {
@@ -38,6 +40,7 @@ const initialState: ContactsState = {
   isLoading: false,
   error: null,
   selectedContact: null,
+  pendingDeletion: [],
 };
 
 // Async thunks
@@ -141,35 +144,48 @@ export const deleteContact = createAsyncThunk(
 );
 
 /**
- * Bulk-import a pre-validated list of contacts.
- * Each entry is created sequentially; if an individual creation fails the
- * rest still continue so the import is never silently partial — every
- * failure is collected and surfaced to the caller.
+ * Optimistically flips isFavorite then persists via PUT /contacts/{id}.
+ * On failure the original value is restored and an error is set.
  */
-export const importContacts = createAsyncThunk(
-  'contacts/importContacts',
-  async (rows: CreateContactRequest[], { dispatch, rejectWithValue }) => {
-    const succeeded: Contact[] = [];
-    const failures: { name: string; error: string }[] = [];
+export const toggleFavorite = createAsyncThunk(
+  'contacts/toggleFavorite',
+  async (id: string, { getState, rejectWithValue }) => {
+    const state = (getState() as { contacts: ContactsState }).contacts;
+    const contact = state.list.find((c) => c.id === id);
+    if (!contact) return rejectWithValue('Contact not found');
 
-    for (const row of rows) {
-      try {
-        const contact = await dispatch(createContact(row)).unwrap();
-        succeeded.push(contact);
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err ?? 'Unknown error');
-        failures.push({ name: row.name, error: message });
+    const newValue = !contact.isFavorite;
+    try {
+      const result = await apiService.updateContact(id, { isFavorite: newValue });
+      if (!result.success) {
+        return rejectWithValue((result as { message?: string }).message ?? 'Failed to update favorite');
       }
-    }
-
-    if (failures.length > 0 && succeeded.length === 0) {
+      // Return the server-confirmed contact if available, otherwise a minimal patch.
+      return result.success ? result.data : { ...contact, isFavorite: newValue };
+    } catch (err: unknown) {
       return rejectWithValue(
-        `All ${failures.length} import(s) failed. First error: ${failures[0].error}`,
+        (err as { message?: string }).message ?? 'Failed to update favorite',
       );
     }
-
-    return { succeeded, failures };
   },
+);
+
+/**
+ * Commits a soft-deleted contact to the backend.
+ * On failure the contact is restored to `list` automatically.
+ */
+export const commitDeleteContact = createAsyncThunk(
+  'contacts/commitDeleteContact',
+  async (id: string, { rejectWithValue }) => {
+    try {
+      await apiService.deleteContact(id);
+      return id;
+    } catch (err: unknown) {
+      return rejectWithValue(
+        (err as { message?: string }).message ?? 'Failed to delete contact',
+      );
+    }
+  }
 );
 
 const contactsSlice = createSlice({
@@ -185,9 +201,52 @@ const contactsSlice = createSlice({
     clearSelectedContact: (state) => {
       state.selectedContact = null;
     },
-    searchContacts: (state, action: PayloadAction<string>) => {
-      // This would typically be handled by a selector, but we can store the search term here
-      // The actual filtering would be done in the component or selector
+    searchContacts: (_state, _action: PayloadAction<string>) => {
+      // Filtering is handled by a selector in the component.
+    },
+    /**
+     * Optimistically hides the contact from the list while the undo window
+     * is open.  The contact is saved in `pendingDeletion` so it can be
+     * restored if the user clicks Undo.
+     */
+    softDeleteContact: (state, action: PayloadAction<string>) => {
+      const idx = state.list.findIndex((c) => c.id === action.payload);
+      if (idx === -1) return;
+      const [removed] = state.list.splice(idx, 1);
+      state.pendingDeletion.push(removed);
+      if (state.selectedContact?.id === action.payload) {
+        state.selectedContact = null;
+      }
+    },
+    /**
+     * Moves the contact back from `pendingDeletion` to `list` (undo).
+     */
+    restoreContact: (state, action: PayloadAction<string>) => {
+      const idx = state.pendingDeletion.findIndex((c) => c.id === action.payload);
+      if (idx === -1) return;
+      const [contact] = state.pendingDeletion.splice(idx, 1);
+      state.list.push(contact);
+    },
+    /**
+     * Discards the pending-deletion record without hitting the network
+     * (used when the undo window expires and commitDeleteContact is called
+     * instead, or when cleaning up after a failed commit that was already
+     * restored).
+     */
+    clearPendingDeletion: (state, action: PayloadAction<string>) => {
+      state.pendingDeletion = state.pendingDeletion.filter(
+        (c) => c.id !== action.payload,
+      );
+    },
+    /**
+     * Optimistically flips isFavorite in-place before the network request
+     * completes.  toggleFavorite.rejected restores the previous value.
+     */
+    optimisticToggleFavorite: (state, action: PayloadAction<string>) => {
+      const contact = state.list.find((c) => c.id === action.payload);
+      if (contact) {
+        contact.isFavorite = !contact.isFavorite;
+      }
     },
   },
   extraReducers: (builder) => {
@@ -240,7 +299,7 @@ const contactsSlice = createSlice({
         state.isLoading = false;
         state.error = action.payload as string;
       })
-      // Delete Contact
+      // Delete Contact (legacy — kept for any direct callers)
       .addCase(deleteContact.pending, (state) => {
         state.isLoading = true;
         state.error = null;
@@ -257,22 +316,54 @@ const contactsSlice = createSlice({
         state.isLoading = false;
         state.error = action.payload as string;
       })
-      // Import Contacts — individual rows are added via createContact.fulfilled;
-      // these cases only manage the top-level loading/error flag.
-      .addCase(importContacts.pending, (state) => {
-        state.isLoading = true;
+      // Commit Delete Contact
+      .addCase(commitDeleteContact.fulfilled, (state, action) => {
+        // Remove from pending — contact is already gone from list.
+        state.pendingDeletion = state.pendingDeletion.filter(
+          (c) => c.id !== action.payload,
+        );
         state.error = null;
       })
-      .addCase(importContacts.fulfilled, (state) => {
-        state.isLoading = false;
+      .addCase(commitDeleteContact.rejected, (state, action) => {
+        // Restore the contact back into the list so the user doesn't lose data.
+        const idx = state.pendingDeletion.findIndex(
+          (c) => c.id === (action.meta.arg as string),
+        );
+        if (idx !== -1) {
+          const [contact] = state.pendingDeletion.splice(idx, 1);
+          state.list.push(contact);
+        }
+        state.error = action.payload as string;
+      })
+      // Toggle Favorite
+      .addCase(toggleFavorite.fulfilled, (state, action) => {
+        // Overwrite with server-confirmed value if the server returned a full contact.
+        const idx = state.list.findIndex((c) => c.id === action.payload.id);
+        if (idx !== -1) {
+          state.list[idx] = { ...state.list[idx], ...action.payload };
+        }
         state.error = null;
       })
-      .addCase(importContacts.rejected, (state, action) => {
-        state.isLoading = false;
+      .addCase(toggleFavorite.rejected, (state, action) => {
+        // Revert the optimistic flip.
+        const id = action.meta.arg as string;
+        const contact = state.list.find((c) => c.id === id);
+        if (contact) {
+          contact.isFavorite = !contact.isFavorite;
+        }
         state.error = action.payload as string;
       });
   },
 });
 
-export const { clearError, setSelectedContact, clearSelectedContact, searchContacts } = contactsSlice.actions;
+export const {
+  clearError,
+  setSelectedContact,
+  clearSelectedContact,
+  searchContacts,
+  softDeleteContact,
+  restoreContact,
+  clearPendingDeletion,
+  optimisticToggleFavorite,
+} = contactsSlice.actions;
 export default contactsSlice.reducer;

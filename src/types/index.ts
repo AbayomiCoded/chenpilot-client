@@ -346,6 +346,20 @@ export interface ChatMessage {
     clientTimestamp?: number | string;
     optimisticId?: string;
     tempId?: string;
+    /** Failure category of an agent reply (#274, #262), e.g. `timeout` vs `network`. */
+    errorKind?: "timeout" | "network" | "server" | "invalid_query" | "unauthenticated" | "unknown";
+    /** Client request id / idempotency key of the query this reply belongs to (#274, #262). */
+    requestId?: string;
+    /** Whether a retry action is offered for this failed reply (#262). */
+    retryable?: boolean;
+    /** Original prompt, preserved so a retry resends exactly what the user typed (#262). */
+    retryPrompt?: string;
+    /** Optimistic id of the original user message, reused on retry so no duplicate bubble appears. */
+    retryTempId?: string;
+    /** The prompt looked like a state-changing action (transfer, swap, ...); retries check status first. */
+    stateChanging?: boolean;
+    /** Outcome of the latest status check after a timeout (#274). */
+    actionStatus?: "pending" | "completed" | "failed" | "unknown";
   };
 }
 
@@ -358,6 +372,25 @@ export interface ThreadState {
   /** Whether the thread panel is typing an agent response */
   isTyping: boolean;
 }
+
+/** One page of server-side chat history (#265, #264). */
+export interface ChatHistoryPage {
+  /** Messages in this page; any order, deduped and sorted client-side. */
+  messages: ChatMessage[];
+  /** Opaque cursor for the next older page; `null` when there is none. */
+  nextCursor: string | null;
+  /** Whether older messages exist beyond this page. */
+  hasMore: boolean;
+}
+
+/** Query for one history page (#264). Omit `before` for the newest page. */
+export interface ChatHistoryQuery {
+  before?: string;
+  limit?: number;
+}
+
+/** Load state for the chat history screen (#265). */
+export type ChatHistoryStatus = "idle" | "loading" | "succeeded" | "failed";
 
 export interface Conversation {
   id: string;
