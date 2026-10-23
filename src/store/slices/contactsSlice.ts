@@ -2,6 +2,7 @@ import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { Contact, CreateContactRequest, UpdateContactRequest } from '@/types';
 import apiService from '@/services/api';
 import { PAGINATION } from '@/constants';
+import { normalizeContactAddress } from '@/utils/validation';
 
 export const paginateContacts = (
   contacts: Contact[],

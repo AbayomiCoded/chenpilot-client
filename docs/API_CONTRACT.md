@@ -368,6 +368,38 @@ The backend should return an explicit `confirmed` result only after it has autho
 
 The contacts screen searches the complete loaded contact list and renders 24 matches per page. This is client-side pagination; the current contacts contract does not define page/limit parameters, so no paginated backend response is assumed.
 
+### Contact Import (Client-Side Only)
+
+The contacts screen supports importing contacts from a JSON file. Parsing, validation, and duplicate detection are performed entirely in the browser before any network calls are made. No new backend endpoint is required.
+
+**Export format (version `"1"`):**
+
+```json
+{
+  "version": "1",
+  "exportedAt": "2026-01-01T00:00:00Z",
+  "contacts": [
+    { "name": "Alice", "address": "G...", "tokenType": "XLM", "note": "optional" }
+  ]
+}
+```
+
+The `version` field must be the string `"1"`. Files with any other value are rejected before preview.
+
+**Import workflow:**
+1. User selects a `.json` file. The client parses and classifies every row as `valid`, `invalid`, or `duplicate` (address already in the contact list).
+2. A preview modal shows the classification of every row along with any validation errors for invalid rows.
+3. Only `valid` rows are submitted. The user must confirm before any contact is persisted.
+4. Each valid row is saved via `POST /contacts` individually. Any row-level failures are surfaced after the batch completes; successfully created contacts are kept.
+
+**Row validation rules (client-side):**
+- `name`: required, 2–50 characters.
+- `address`: required, must pass the Stellar address regex (`/^G[A-Z0-9]{55}$/`). Address is normalised (trimmed and upper-cased) before storage.
+- `tokenType`: required, must be one of `XLM | STRK | USDC | USDT | BTC | ETH | AQUA`.
+- `note`: optional, max 280 characters.
+
+A row is classified as `duplicate` when its normalised address matches an address already present in the loaded contact list. Duplicates are shown in the preview but are not imported.
+
 The payment screen may use `data.nativeBalance` as the total native balance and `data.required` as the minimum required reserve. It displays spendable XLM as `max(0, nativeBalance - required)` only when both values are finite numbers; this is a display estimate, not a payment authorization guarantee. Reserve-related payment failures are translated when the backend message mentions a reserve or minimum/insufficient native balance. No stable backend error code is currently declared.
 
 ## Liquidity Endpoint
