@@ -17,6 +17,24 @@ import {
   AgentActionStatus
 } from '@/types/agent';
 import agentConfig from '@/config/agent';
+import {
+  SseParser,
+  StreamTextAccumulator,
+  StreamingUnsupportedError,
+  toStreamEvent,
+} from './agentStream';
+
+export interface AgentStreamOptions {
+  /** Called with the full text streamed so far (not just the new chunk). */
+  onDelta?: (text: string) => void;
+  /** Aborting cancels the request and stops further `onDelta` calls. */
+  signal?: AbortSignal;
+}
+
+const isAbortError = (error: unknown): boolean =>
+  (error as { name?: string } | null)?.name === 'AbortError' ||
+  (error as { name?: string } | null)?.name === 'CanceledError';
+
 import { parseAgentEnvelope, protocolErrorResult } from './agentEnvelope';
 
 interface TimedResult {
@@ -223,6 +241,8 @@ class AgentService {
   private baseURL: string;
   private isConnected: boolean = false;
   private lastHealthCheck: Date | null = null;
+  // null = not yet known; false after the backend reports it has no streaming endpoint (#261)
+  private streamingSupported: boolean | null = null;
 
   constructor() {
     this.baseURL = agentConfig.baseURL;
@@ -521,6 +541,104 @@ class AgentService {
         }
       };
     }
+  }
+
+  /**
+   * Query the agent, streaming partial text through `onDelta` when the backend supports
+   * `POST /query/stream` (#261). Falls back to `queryAgent` when streaming is disabled or
+   * unsupported; the fallback happens only before any output, so a query never runs twice.
+   * Rejects with an AbortError when `signal` is aborted.
+   */
+  async queryAgentStreaming(
+    request: AgentQueryRequest,
+    options: AgentStreamOptions = {}
+  ): Promise<AgentQueryResponse> {
+    if (!agentConfig.enableStreaming || this.streamingSupported === false || typeof fetch !== 'function') {
+      return this.queryAgent(request, { signal: options.signal });
+    }
+    try {
+      const response = await this.streamQuery(request, options);
+      this.streamingSupported = true;
+      return response;
+    } catch (error) {
+      if (error instanceof StreamingUnsupportedError) {
+        this.streamingSupported = false;
+        logger.debug('[AgentService] Streaming unsupported, falling back to /query');
+        return this.queryAgent(request, { signal: options.signal });
+      }
+      if (isAbortError(error) || options.signal?.aborted) {
+        throw error;
+      }
+      logger.error('[AgentService] Stream failed:', describeAgentError(error));
+      return {
+        result: {
+          success: false,
+          data: 'The response was interrupted. Please try again.',
+          error: (error as Error)?.message || 'stream_failed',
+        },
+      };
+    }
+  }
+
+  /**
+   * Low-level SSE request for `POST /query/stream`. Resolves with the `final` event's result.
+   *
+   * @throws {StreamingUnsupportedError} When the endpoint is missing (404/405/501) or does not answer with SSE.
+   */
+  async streamQuery(request: AgentQueryRequest, options: AgentStreamOptions = {}): Promise<AgentQueryResponse> {
+    const { onDelta, signal } = options;
+    const response = await fetch(`${this.baseURL.replace(/\/$/, '')}/query/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify(request),
+      signal,
+    });
+
+    const contentType = response.headers.get('content-type') || '';
+    if ([404, 405, 501].includes(response.status) || (response.ok && !contentType.includes('text/event-stream'))) {
+      throw new StreamingUnsupportedError();
+    }
+    if (!response.ok || !response.body) {
+      throw new Error(`Stream request failed with status ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    const parser = new SseParser();
+    const text = new StreamTextAccumulator();
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (signal?.aborted) {
+          throw new DOMException('The operation was aborted.', 'AbortError');
+        }
+        const chunk = done ? decoder.decode() : decoder.decode(value, { stream: true });
+        for (const message of parser.push(done ? `${chunk}\n\n` : chunk)) {
+          const event = toStreamEvent(message);
+          if (!event) continue;
+          if (event.type === 'delta') {
+            if (text.apply(event)) onDelta?.(text.value);
+          } else if (event.type === 'final') {
+            return { result: event.result };
+          } else {
+            return { result: { success: false, data: 'Agent service is currently unavailable. Please try again later.', error: event.message } };
+          }
+        }
+        if (done) break;
+      }
+    } finally {
+      reader.cancel().catch(() => undefined);
+    }
+
+    // The stream ended without a final event: the partial text is not authoritative
+    return {
+      result: {
+        success: false,
+        data: 'The response was interrupted. Please try again.',
+        error: 'stream_incomplete',
+      },
+    };
   }
 
   /**

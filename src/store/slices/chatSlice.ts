@@ -1,6 +1,6 @@
 import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
 import { logger } from "../../utils/logger";
-import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
+import { ChatMessage, AgentQueryRequest, Conversation, ChatHistoryStatus } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
 import {
@@ -38,6 +38,16 @@ interface ChatState {
   messageQueue: Array<{ id: string; query: string; timestamp: string }>;
   pendingMessages: Set<string>;
   optimisticUpdates: Map<string, ChatMessage>;
+  /** Server history load state, kept separate from `messages` so a failure is not shown as empty (#265). */
+  historyStatus: ChatHistoryStatus;
+  historyError: string | null;
+  /** Partial agent reply while a streamed response is in flight (#261); cleared when it settles. */
+  streamingResponse: { requestId: string; text: string } | null;
+  /** Cursor for the next older history page (#264); null when unknown or exhausted. */
+  historyCursor: string | null;
+  historyHasMore: boolean;
+  isLoadingOlderHistory: boolean;
+  olderHistoryError: string | null;
 }
 
 const initialState: ChatState = {
@@ -59,6 +69,13 @@ const initialState: ChatState = {
   messageQueue: [],
   pendingMessages: new Set(),
   optimisticUpdates: new Map(),
+  historyStatus: "idle",
+  historyError: null,
+  streamingResponse: null,
+  historyCursor: null,
+  historyHasMore: false,
+  isLoadingOlderHistory: false,
+  olderHistoryError: null,
 };
 
 // Async thunks
@@ -159,6 +176,68 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
 };
 
 /**
+ * Merge server messages into the local list by message id; the server copy wins (#265).
+ */
+export const mergeMessagesById = (existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] => {
+  const byId = new Map<string, ChatMessage>();
+  for (const message of existing) byId.set(message.id, message);
+  for (const message of incoming) {
+    if (message?.id) byId.set(message.id, message);
+  }
+  return sortMessagesChronologically(Array.from(byId.values()));
+};
+
+/** Messages requested per history page (#264). */
+export const HISTORY_PAGE_SIZE = 50;
+
+/**
+ * Load the newest page of chat history from the server (#265, #264). Locally cached messages
+ * stay in place if this fails. A 404/501 means the backend has no history endpoint; that
+ * resolves with no messages rather than an error, so the page falls back to the local cache.
+ */
+export const fetchChatHistory = createAsyncThunk(
+  "chat/fetchChatHistory",
+  async (_: void, { rejectWithValue }) => {
+    try {
+      return await apiService.getChatHistory({ limit: HISTORY_PAGE_SIZE });
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 404 || status === 501) {
+        return { messages: [] as ChatMessage[], nextCursor: null, hasMore: false };
+      }
+      return rejectWithValue(
+        error?.response?.data?.message || error?.message || "Failed to load chat history",
+      );
+    }
+  },
+);
+
+/**
+ * Load the next older page of history using the stable cursor from the previous page (#264).
+ * Skipped while another page is loading or when there is nothing older.
+ */
+export const loadOlderHistory = createAsyncThunk(
+  "chat/loadOlderHistory",
+  async (_: void, { getState, rejectWithValue }) => {
+    const cursor = (getState() as { chat: ChatState }).chat.historyCursor as string;
+    try {
+      const page = await apiService.getChatHistory({ before: cursor, limit: HISTORY_PAGE_SIZE });
+      return { page, cursor };
+    } catch (error: any) {
+      return rejectWithValue(
+        error?.response?.data?.message || error?.message || "Failed to load older messages",
+      );
+    }
+  },
+  {
+    condition: (_: void, { getState }) => {
+      const chat = (getState() as { chat: ChatState }).chat;
+      return Boolean(chat.historyHasMore && chat.historyCursor && !chat.isLoadingOlderHistory);
+    },
+  },
+);
+
+/**
  * Delete a conversation safely (#269): abort its in-flight agent requests, mark it deleted so
  * late responses are ignored, then remove it from state and storage. Confirmation happens in the UI.
  */
@@ -233,7 +312,7 @@ function isAbortError(error: unknown): boolean {
 
 export const sendMessage = createAsyncThunk(
   'chat/sendMessage',
-  async (arg: SendMessageArg, { getState, rejectWithValue, requestId, signal }) => {
+  async (arg: SendMessageArg, { getState, rejectWithValue, requestId, signal, dispatch }) => {
     const query = typeof arg === 'string' ? arg : arg.query;
     const tempId = typeof arg === 'object' && arg.tempId ? arg.tempId : `msg_optimistic_${requestId}`;
     const clientTimestamp = typeof arg === 'object' && arg.clientTimestamp ? arg.clientTimestamp : Date.now();
@@ -270,7 +349,14 @@ export const sendMessage = createAsyncThunk(
       signal.addEventListener("abort", onAbort);
       let response: AgentQueryResponse;
       try {
-        response = await apiService.queryAgent({ userId, query }, { signal: tracked.signal });
+        response = await apiService.queryAgent(
+          { userId, query },
+          {
+            signal: tracked.signal,
+            // Partial text is streamed into `streamingResponse` when the backend supports it (#261)
+            onDelta: (text) => dispatch(streamingDelta({ requestId, text })),
+          },
+        );
       } catch (error) {
         // Aborted because the conversation was deleted, not because the user pressed Stop (#269)
         if (isConversationDeleted(conversation.id)) {
@@ -857,6 +943,15 @@ state.messages[index] = {
     removeOptimisticUpdate: (state, action: PayloadAction<string>) => {
       state.optimisticUpdates.delete(action.payload);
     },
+    /**
+     * Replace the in-flight streamed text (#261). `text` is the full text so far, so repeated
+     * deltas are idempotent. Deltas for a request that already settled or was cancelled are ignored.
+     */
+    streamingDelta: (state, action: PayloadAction<{ requestId: string; text: string }>) => {
+      if (state.streamingResponse?.requestId === action.payload.requestId) {
+        state.streamingResponse.text = action.payload.text;
+      }
+    },
     /** Merge server-delivered messages (live or resynced) with dedupe against local/optimistic copies (#277). */
     mergeSyncedMessages: (state, action: PayloadAction<ChatMessage[]>) => {
       state.messages = mergeIncomingMessages(state.messages, action.payload);
@@ -884,6 +979,46 @@ state.messages[index] = {
   },
   extraReducers: (builder) => {
     builder
+      .addCase(fetchChatHistory.pending, (state) => {
+        state.historyStatus = "loading";
+        state.historyError = null;
+      })
+      .addCase(fetchChatHistory.fulfilled, (state, action) => {
+        state.historyStatus = "succeeded";
+        state.messages = mergeMessagesById(state.messages, action.payload.messages);
+        state.historyCursor = action.payload.nextCursor;
+        state.historyHasMore = action.payload.hasMore;
+        state.olderHistoryError = null;
+      })
+      .addCase(loadOlderHistory.pending, (state) => {
+        state.isLoadingOlderHistory = true;
+        state.olderHistoryError = null;
+      })
+      .addCase(loadOlderHistory.fulfilled, (state, action) => {
+        const { page, cursor } = action.payload;
+        state.isLoadingOlderHistory = false;
+        // Merge by id: duplicate or overlapping pages never create duplicate rows,
+        // and sorting puts out-of-order pages back in chronological order.
+        state.messages = mergeMessagesById(state.messages, page.messages);
+
+        // Only advance from the cursor this page was requested with. A late response for an
+        // older cursor (e.g. after a refresh) must not move the cursor backwards.
+        if (state.historyCursor === cursor) {
+          // A server returning the same cursor would loop forever; treat it as the end
+          const stuck = page.nextCursor === cursor;
+          state.historyCursor = stuck ? null : page.nextCursor;
+          state.historyHasMore = !stuck && page.hasMore;
+        }
+      })
+      .addCase(loadOlderHistory.rejected, (state, action) => {
+        state.isLoadingOlderHistory = false;
+        state.olderHistoryError = (action.payload as string) ?? action.error.message ?? "Failed to load older messages";
+      })
+      .addCase(fetchChatHistory.rejected, (state, action) => {
+        // Keep cached messages; only record the failure
+        state.historyStatus = "failed";
+        state.historyError = (action.payload as string) ?? action.error.message ?? "Failed to load chat history";
+      })
       // Removed server conversation extraReducers - now handled client-side
 
       // Get or Create Active Conversation
@@ -907,6 +1042,7 @@ state.messages[index] = {
         state.isLoading = true;
         state.isTyping = true;
         state.error = null;
+        state.streamingResponse = { requestId: action.meta.requestId, text: "" };
 
         const query = typeof action.meta.arg === 'string' ? action.meta.arg : action.meta.arg.query;
         const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
@@ -941,6 +1077,11 @@ state.messages[index] = {
         state.isLoading = false;
         state.isTyping = false;
         state.currentConversation = action.payload.conversation;
+        // The final agent message replaces the streamed preview in the same update, so the
+        // reply is never shown twice (#261)
+        if (state.streamingResponse?.requestId === action.meta.requestId) {
+          state.streamingResponse = null;
+        }
 
         // Debug logging to see what the server is returning
         logger.debug("[ChatSlice] Full response:", action.payload.response);
@@ -1022,6 +1163,11 @@ state.messages[index] = {
       .addCase(sendMessage.rejected, (state, action) => {
         state.isLoading = false;
         state.isTyping = false;
+        // Drop the streamed preview for this request, whatever the outcome (#261)
+        if (state.streamingResponse?.requestId === action.meta.requestId) {
+          state.streamingResponse = null;
+        }
+
         // The conversation was deleted mid-request: nothing to show or mark as failed (#269)
         if (action.payload === CONVERSATION_DELETED) {
           return;
@@ -1190,6 +1336,7 @@ export const {
   storeOptimisticUpdate,
   removeOptimisticUpdate,
   resolveOptimisticUpdate,
+  streamingDelta,
   mergeSyncedMessages,
 } = chatSlice.actions;
 export default chatSlice.reducer;

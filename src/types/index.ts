@@ -367,6 +367,25 @@ export interface ThreadState {
   isTyping: boolean;
 }
 
+/** One page of server-side chat history (#265, #264). */
+export interface ChatHistoryPage {
+  /** Messages in this page; any order, deduped and sorted client-side. */
+  messages: ChatMessage[];
+  /** Opaque cursor for the next older page; `null` when there is none. */
+  nextCursor: string | null;
+  /** Whether older messages exist beyond this page. */
+  hasMore: boolean;
+}
+
+/** Query for one history page (#264). Omit `before` for the newest page. */
+export interface ChatHistoryQuery {
+  before?: string;
+  limit?: number;
+}
+
+/** Load state for the chat history screen (#265). */
+export type ChatHistoryStatus = "idle" | "loading" | "succeeded" | "failed";
+
 export interface Conversation {
   id: string;
   title: string;

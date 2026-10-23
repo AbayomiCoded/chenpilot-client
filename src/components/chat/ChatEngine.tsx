@@ -14,6 +14,7 @@ import {
   addPendingMessage,
 } from "@/store/slices/chatSlice";
 import AgentMessage from "@/components/chat/AgentMessage";
+import { AgentMarkdown } from "@/components/chat/AgentMarkdown";
 import { AgentTimeoutNotice } from "@/components/chat/AgentTimeoutNotice";
 import agentConfig from "@/config/agent";
 import UserMessage from "@/components/chat/UserMessage";
@@ -106,6 +107,7 @@ export const ChatEngine: React.FC = () => {
     currentConversation,
     isOnline,
     pendingMessages,
+    streamingResponse,
   } = useAppSelector((state) => state.chat);
   const { processQueue } = useOfflineQueue();
   // Merge live chat events and catch up on ones missed during socket downtime (#277)
@@ -166,6 +168,15 @@ export const ChatEngine: React.FC = () => {
   });
 
   // ── Effects ───────────────────────────────────────────────────────────────
+  // Cancel a streaming/in-flight agent request when the route changes (#261). Uses the same
+  // in-flight ref as the Stop button, so there is one source of truth for the active request.
+  useEffect(() => {
+    return () => {
+      inflightRef.current?.abort();
+      inflightRef.current = null;
+    };
+  }, [pathname]);
+
   useEffect(() => {
     if (!isTyping) {
       setPendingSeconds(0);
@@ -710,7 +721,15 @@ return (
             </div>
           ))}
 
-          {isTyping && (
+          {isTyping && streamingResponse?.text ? (
+            <div className="flex justify-start" data-testid="streaming-response">
+              <div className="max-w-2xl w-full" aria-live="polite" aria-busy="true">
+                <div className="text-white text-left prose prose-invert prose-lg max-w-none leading-relaxed pr-8">
+                  <AgentMarkdown>{streamingResponse.text}</AgentMarkdown>
+                </div>
+              </div>
+            </div>
+          ) : isTyping && (
             <div className="flex justify-start">
               <div className="bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-2xl px-6 py-4 shadow-lg">
                 <div className="flex items-center space-x-3">

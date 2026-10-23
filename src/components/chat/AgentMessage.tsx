@@ -2,11 +2,9 @@
 
 import React, { useState } from "react";
 import { logger } from "../../utils/logger";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import { ChatMessage } from "@/types";
 import { Copy, Check, RefreshCw } from "lucide-react";
-import { CodeBlock } from "./CodeBlock";
+import { AgentMarkdown } from "./AgentMarkdown";
 import ExecutionTrace from "./ExecutionTrace";
 
 interface AgentMessageProps {
@@ -263,75 +261,7 @@ export default function AgentMessage({
   return (
     <div className="text-white text-left group relative">
       <div className="prose prose-invert prose-lg max-w-none leading-relaxed pr-8">
-        <ReactMarkdown
-          remarkPlugins={[remarkGfm]}
-          components={{
-            p: ({ children, ...props }: any) => (
-              <p className="mb-3 last:mb-0" {...props}>
-                {children}
-              </p>
-            ),
-            strong: ({ children, ...props }: any) => (
-              <strong className="font-semibold text-white" {...props}>
-                {children}
-              </strong>
-            ),
-            em: ({ children, ...props }: any) => (
-              <em className="italic text-gray-300" {...props}>
-                {children}
-              </em>
-            ),
-            code: ({ inline, className, children, ...props }: any) => (
-              <CodeBlock className={className} inline={inline}>
-                {String(children).replace(/\n$/, "")}
-              </CodeBlock>
-            ),
-            pre: ({ children, ...props }: any) => <>{children}</>,
-            ul: ({ children, ...props }: any) => (
-              <ul className="list-disc list-inside mb-3 space-y-1" {...props}>
-                {children}
-              </ul>
-            ),
-            ol: ({ children, ...props }: any) => (
-              <ol
-                className="list-decimal list-inside mb-3 space-y-1"
-                {...props}
-              >
-                {children}
-              </ol>
-            ),
-            li: ({ children, ...props }: any) => (
-              <li className="text-gray-200" {...props}>
-                {children}
-              </li>
-            ),
-            h1: ({ children, ...props }: any) => (
-              <h1 className="text-2xl font-bold text-white mb-4" {...props}>
-                {children}
-              </h1>
-            ),
-            h2: ({ children, ...props }: any) => (
-              <h2 className="text-xl font-bold text-white mb-3" {...props}>
-                {children}
-              </h2>
-            ),
-            h3: ({ children, ...props }: any) => (
-              <h3 className="text-lg font-semibold text-white mb-2" {...props}>
-                {children}
-              </h3>
-            ),
-            blockquote: ({ children, ...props }: any) => (
-              <blockquote
-                className="border-l-4 border-purple-500 pl-4 italic text-gray-300 my-4"
-                {...props}
-              >
-                {children}
-              </blockquote>
-            ),
-          }}
-        >
-          {renderContent()}
-        </ReactMarkdown>
+        <AgentMarkdown>{renderContent()}</AgentMarkdown>
       </div>
 
       {/* Execution Trace */}

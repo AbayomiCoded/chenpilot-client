@@ -148,6 +148,54 @@ Until (2) ships, status checks resolve as `unknown` and users are pointed to the
 
 The live socket event `chat:message` must carry the same `{ cursor, message }` payload. See `src/docs/MESSAGE_ORDERING.md` §6 for cursor and dedupe rules.
 
+### Agent Response Streaming (#261)
+
+**Proposed; backend support not yet confirmed.** Streaming is off unless `NEXT_PUBLIC_ENABLE_AGENT_STREAMING=true`. When it is enabled and the agent service is connected, `apiService.queryAgent` calls `agentService.queryAgentStreaming`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `POST /query/stream` | `{"userId":"user-1","query":"Swap 10 XLM for USDC"}` with `Accept: text/event-stream` | `200`, `Content-Type: text/event-stream`, and a stream of the events below | Chat shows partial text as it arrives, then replaces it with the final message. |
+
+**Transport.** Server-Sent Events over a `fetch` POST; `EventSource` can't send a body. Blank-line-terminated messages, `event:` and `data:` fields, and `:` comment lines as keep-alives are supported.
+
+**Event schema.** Each `data` is JSON:
+
+| `event` | `data` | Client behavior |
+| --- | --- | --- |
+| `delta` | `{"requestId":"...","seq":0,"text":"Checking "}` | Appends `text` in `seq` order; `seq` starts at 0 and increases by 1. A repeated or older `seq` is ignored. |
+| `final` | `{"requestId":"...","result":{"success":true,"data":"Your balance is 100 XLM","error":null}}` | Same `result` shape as `POST /query`. **Authoritative:** it replaces the streamed text, so content is never shown twice. Ends the request. |
+| `error` | `{"requestId":"...","message":"tool crashed"}` | Ends the request with a failed `result` (`error` = `message`). |
+
+Unknown events and malformed JSON are ignored.
+
+**Rules:**
+- **Fallback:** a `404`, `405` or `501` response, or a success response that is not `text/event-stream`, means streaming is unsupported. The client sends the same request to `POST /query` and stops trying streaming for the session. The fallback happens only before any event has been received, so a query is never executed twice.
+- **Interrupted stream:** a stream that ends without `final` is reported as `{"success":false,"error":"stream_incomplete"}`. Partial text is never treated as the answer.
+- **Cancellation:** `ChatEngine` aborts the in-flight `sendMessage` thunk when the route changes or the chat unmounts. The `AbortSignal` cancels the fetch and stops the body reader. The partial preview is cleared without an error bubble, the user message is marked `failed`/`cancelled`, and late deltas are dropped because they no longer match the in-flight request id. The backend should stop work when the client disconnects.
+- **Rendering:** partial text is rendered with `AgentMarkdown`, under the same safety policy as final messages (`docs/MARKDOWN_SAFETY.md`).
+
+## Chat History Endpoint
+
+**Proposed; backend support not yet confirmed.** This route uses the API base URL through `apiService.getChatHistory`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /chat/history` | Newest page: `GET /chat/history?limit=50`. Older page: `GET /chat/history?before=<nextCursor>&limit=50`. Bearer token when available. `limit` is clamped to 1–100. | `{"messages":[{"id":"msg_1","type":"user","content":"What is my XLM balance?","timestamp":"2026-01-01T00:00:00Z"}],"nextCursor":"c_0041","hasMore":true}` | Chat history page: `fetchChatHistory` loads the newest page, and `loadOlderHistory` loads the next older page. Server messages are merged into locally cached messages by `id`. |
+
+Load states on `/chat/history` (#265):
+- **Loading, nothing cached:** a loading indicator, not the empty state.
+- **Loaded and empty:** "No chat history yet" with a "Start new chat" action.
+- **Failed, nothing cached:** a dedicated error state (`EmptyState tone="error"`, `role="alert"`) with "Try again" and "Start new chat".
+- **Failed with cached messages:** the cached conversations stay visible under an inline alert with "Try again". A failed request never clears cached messages.
+- **404 or 501:** treated as "this backend has no server history". The page shows the local cache, or the empty state, without an error.
+
+Pagination (#264):
+- **Cursor:** `nextCursor` is opaque and must stay valid for the same position even when new messages arrive. For example, encode the oldest returned message's `(timestamp, id)` rather than an offset. `hasMore: false` or `nextCursor: null` ends paging.
+- **Order:** messages in a page may come in any order. The client merges them by `id`, so overlapping or repeated pages never create duplicate rows, and re-sorts chronologically.
+- **Stale or stuck cursors:** the client only advances the cursor if the response belongs to the cursor it currently holds, so a late response cannot move it backwards. A page that returns the same cursor it was requested with is treated as the end.
+- **One request at a time:** a page request is skipped while another is in flight or when there is nothing older. A failed page keeps the cursor and shows "Retry loading older messages".
+- **Scroll position:** the history view records `scrollTop`/`scrollHeight` before requesting an older page and shifts `scrollTop` by the added height after it is prepended (`usePrependScrollAnchor`), so the view does not jump.
+
 ## Authentication Endpoints
 
 `User` response fields are `id`, `email`, `name`, `address`, `publicKey`, `isDeployed`, `isFunded`, `tokenType`, `authProvider`, `isEmailVerified`, `createdAt`, and `updatedAt`. `RegisterResponse` additionally declares `stellarAccount`, the backward-compatible `starknetAccount` alias, and `setupStatus` with funding/deployment results.

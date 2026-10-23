@@ -14,6 +14,8 @@ import {
   AgentQueryRequest,
   AgentQueryResponse,
   ApiResponse,
+  ChatHistoryPage,
+  ChatHistoryQuery,
   PromptVersionRecord,
   LiquidityStats,
   LiquidityRequest,
@@ -1064,7 +1066,7 @@ class ApiService {
 
   async queryAgent(
     data: AgentQueryRequest,
-    options?: { signal?: AbortSignal },
+    options?: { onDelta?: (text: string) => void; signal?: AbortSignal },
   ): Promise<AgentQueryResponse> {
     const isAbort = (error: unknown): boolean => {
       const value = error as { code?: string; name?: string };
@@ -1076,16 +1078,18 @@ class ApiService {
       );
     };
 
+    // First try the experimental agent service (streams partial text when supported, #261)
     try {
       if (agentService.isAgentConnected()) {
         logger.debug(
           "[ApiService] Using experimental agent service",
         );
 
-        return await agentService.queryAgent(data, options);
+        return await agentService.queryAgentStreaming(data, options ?? {});
       }
     } catch (error: unknown) {
-      if (isAbort(error)) {
+      // A cancelled request (Stop button / route change) must not fall through and re-send the query
+      if (isAbort(error) || options?.signal?.aborted) {
         throw error;
       }
 
@@ -1253,6 +1257,29 @@ class ApiService {
       console.error("Failed to clear agent memory:", error);
       throw error;
     }
+  }
+
+  /**
+   * Fetch one page of the user's chat history, newest first, from the server (#265, #264).
+   * Proposed contract: `GET /chat/history?before=<cursor>&limit=<n>` →
+   * `{ messages: ChatMessage[], nextCursor: string | null, hasMore: boolean }`.
+   *
+   * @param query - `before` cursor from the previous page (omit for the newest page) and page size (defaults to 50, max 100).
+   * @returns Promise resolving to one page of history.
+   * @throws {AxiosError} Throws if the request fails.
+   */
+  async getChatHistory(query: ChatHistoryQuery = {}): Promise<ChatHistoryPage> {
+    const limit = Math.min(Math.max(1, query.limit ?? 50), 100);
+    const params: Record<string, string | number> = { limit };
+    if (query.before) params.before = query.before;
+
+    const response = await this.api.get<ChatHistoryPage>('/chat/history', { params });
+    const data = response.data;
+    return {
+      messages: Array.isArray(data?.messages) ? data.messages : [],
+      nextCursor: typeof data?.nextCursor === 'string' && data.nextCursor ? data.nextCursor : null,
+      hasMore: Boolean(data?.hasMore && data?.nextCursor),
+    };
   }
 
   // Conversation endpoints
