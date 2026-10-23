@@ -1,12 +1,20 @@
 import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
-import { logger } from "../utils/logger";
+import {
+  logger,
+  generateCorrelationId,
+  hashValue,
+  summarizeContent,
+  isContentLoggingEnabled,
+} from "../utils/logger";
 import {
   AgentQueryRequest,
   AgentQueryResponse,
   AgentStatus,
   AgentCapabilities,
   AgentHealthCheck,
-  AgentTool
+  AgentTool,
+  AgentErrorKind,
+  AgentActionStatus
 } from '@/types/agent';
 import agentConfig from '@/config/agent';
 import { parseAgentEnvelope, protocolErrorResult } from './agentEnvelope';
@@ -96,6 +104,118 @@ export function parseStatusMetrics(body: unknown): Omit<AgentStatus, 'isOnline' 
 }
 
 /**
+ * Correlation metadata for an agent query. Never contains the prompt text itself (#273).
+ */
+export function summarizeAgentQuery(request: AgentQueryRequest, correlationId: string) {
+  const { length, hash } = summarizeContent(request.query ?? '');
+  return {
+    correlationId,
+    userHash: hashValue(request.userId ?? ''),
+    queryLength: length,
+    queryHash: hash,
+  };
+}
+
+/**
+ * Correlation metadata for an agent response. Never contains the response payload itself (#273).
+ */
+export function summarizeAgentResponse(
+  correlationId: string,
+  status: number | undefined,
+  data: unknown,
+  startedAt: number
+) {
+  const { length, hash } = summarizeContent(data);
+  const result = (data as { result?: { success?: boolean } } | undefined)?.result;
+  return {
+    correlationId,
+    status,
+    success: result?.success,
+    durationMs: Date.now() - startedAt,
+    responseLength: length,
+    responseHash: hash,
+  };
+}
+
+/**
+ * Mask user identifiers embedded in agent URL paths (e.g. `/memory/:userId`).
+ */
+export function redactAgentUrl(url: string | undefined): string | undefined {
+  return url?.replace(/(\/memory\/)[^/?#]+/, (_m, prefix: string) => `${prefix}[user]`);
+}
+
+/**
+ * Reduce an error to safe fields. Axios errors carry `config.data` (the request body,
+ * including the prompt) and `response.data`, so they must not be logged whole.
+ */
+export function describeAgentError(error: unknown) {
+  const e = error as {
+    message?: string;
+    code?: string;
+    config?: { method?: string; url?: string };
+    response?: { status?: number };
+  } | undefined;
+  return {
+    message: e?.message,
+    code: e?.code,
+    status: e?.response?.status,
+    method: e?.config?.method?.toUpperCase(),
+    url: redactAgentUrl(e?.config?.url),
+  };
+}
+
+// Queries that can move funds or change on-chain state. A timeout on these must not be
+// blindly retried, because the first attempt may still complete (#274).
+const STATE_CHANGING_PATTERN =
+  /\b(send|transfer|swap|trade|buy|sell|lend|borrow|withdraw|repay|deposit|stake|unstake|liquidate|claim|harvest|deploy|pay)\b|\b(add|remove)\s+(liquidity|collateral)\b/i;
+
+/**
+ * Whether a query looks like a state-changing action rather than a read (balance, APY, ...).
+ */
+export function isStateChangingQuery(query: string): boolean {
+  return STATE_CHANGING_PATTERN.test(query ?? '');
+}
+
+/**
+ * Categorize an agent request failure so a timeout is never reported as a connectivity error.
+ * Axios sets `code: 'ECONNABORTED'` (or `ETIMEDOUT`) and a "timeout of Nms exceeded" message on timeouts.
+ */
+export function classifyAgentError(error: unknown): AgentErrorKind {
+  const e = error as {
+    code?: string;
+    message?: string;
+    response?: { status?: number; data?: { message?: string } };
+  } | undefined;
+  const message = (e?.response?.data?.message || e?.message || '').toLowerCase();
+
+  if (message.includes('invalid query')) return 'invalid_query';
+  if (e?.code === 'ECONNABORTED' || e?.code === 'ETIMEDOUT' || message.includes('timeout')) return 'timeout';
+  if (e?.response?.status === 504 || e?.response?.status === 408) return 'timeout';
+  if (e?.response?.status) return 'server';
+  if (e?.code === 'ERR_NETWORK' || message.includes('network')) return 'network';
+  return 'unknown';
+}
+
+/**
+ * User-facing copy per failure kind. Timeouts on state-changing actions tell the user the
+ * action may still be running and to check status instead of resending.
+ */
+export function agentErrorMessage(kind: AgentErrorKind, stateChanging: boolean): string {
+  switch (kind) {
+    case 'timeout':
+      return stateChanging
+        ? "This action is taking longer than expected and may still be running. Check its status before trying again so it isn't submitted twice."
+        : 'The request is taking longer than expected. Please try again.';
+    case 'invalid_query':
+      return "I didn't understand that. Could you please rephrase your question?";
+    case 'network':
+      return "I'm having trouble connecting. Please check your internet connection and try again.";
+    default:
+      return 'Agent service is currently unavailable. Please try again later.';
+  }
+}
+
+/**
  * Direct client service for communicating with the AI Agent backend.
  */
 class AgentService {
@@ -119,11 +239,11 @@ class AgentService {
     if (agentConfig.enableLogging) {
       this.api.interceptors.request.use(
         (config) => {
-          logger.debug(`[AgentService] Making request to: ${config.method?.toUpperCase()} ${config.url}`);
+          logger.debug(`[AgentService] Making request to: ${config.method?.toUpperCase()} ${redactAgentUrl(config.url)}`);
           return config;
         },
         (error) => {
-          console.error('[AgentService] Request error:', error);
+          logger.error('[AgentService] Request error:', describeAgentError(error));
           return Promise.reject(error);
         }
       );
@@ -131,11 +251,11 @@ class AgentService {
       // Response interceptor for error handling
       this.api.interceptors.response.use(
         (response) => {
-          logger.debug(`[AgentService] Response received: ${response.status} ${response.config.url}`);
+          logger.debug(`[AgentService] Response received: ${response.status} ${redactAgentUrl(response.config.url)}`);
           return response;
         },
         (error) => {
-          console.error('[AgentService] Response error:', error);
+          logger.error('[AgentService] Response error:', describeAgentError(error));
           this.isConnected = false;
           return Promise.reject(error);
         }
@@ -211,7 +331,7 @@ class AgentService {
       });
     }
 
-    console.error('[AgentService] Health check failed:', health.errorMessage ?? health.httpStatus);
+    logger.error('[AgentService] Health check failed:', { status: health.httpStatus, code: health.errorCode, message: health.errorMessage });
     return finish(outage(timestamp(), 'health_endpoint', true, health));
   }
 
@@ -329,46 +449,110 @@ class AgentService {
    * }
    * ```
    */
-  async queryAgent(request: AgentQueryRequest, options: { signal?: AbortSignal } = {}): Promise<AgentQueryResponse> {
+  async queryAgent(request: AgentQueryRequest, options?: { signal?: AbortSignal }): Promise<AgentQueryResponse> {
+    // The correlation id doubles as the client request id the backend can report status for (#274).
+    const correlationId = request.clientRequestId ?? generateCorrelationId('agent_query');
+    const stateChanging = isStateChangingQuery(request.query);
+    const startedAt = Date.now();
     try {
-      logger.debug('[AgentService] Sending query:', request.query);
-      
-      const response = await this.api.post('/query', request, { signal: options.signal });
-      
-      logger.debug('[AgentService] Query response:', response.data);
-      
+      // Prompt/response content is never logged by default; only correlation metadata (#273).
+      logger.debug('[AgentService] Sending query:', summarizeAgentQuery(request, correlationId));
+      if (isContentLoggingEnabled()) {
+        logger.debug('[AgentService] Query content:', { correlationId, query: request.query });
+      }
+
+      const response = await this.api.post(
+        '/query',
+        { ...request, clientRequestId: correlationId },
+        { signal: options?.signal }
+      );
+
+      logger.debug(
+        '[AgentService] Query response:',
+        summarizeAgentResponse(correlationId, response.status, response.data, startedAt)
+      );
+      if (isContentLoggingEnabled()) {
+        logger.debug('[AgentService] Response content:', { correlationId, data: response.data });
+      }
+
       // Only documented envelopes are accepted; anything else is a protocol error rather than
       // a misleading success (#275)
       const parsed = parseAgentEnvelope(response.data);
       if (!parsed.ok) {
-        console.error('[AgentService] Malformed /query response:', parsed.reason);
-        return { result: protocolErrorResult(parsed.reason) };
+        logger.error('[AgentService] Malformed /query response:', { correlationId, reason: parsed.reason });
+        return { result: { ...protocolErrorResult(parsed.reason), requestId: correlationId, stateChanging } };
       }
-      return { result: parsed.result };
+      return { result: { ...parsed.result, requestId: correlationId, stateChanging } };
     } catch (error: unknown) {
-      console.error('[AgentService] Query failed:', error);
-
-      // Convert technical errors to user-friendly messages
-      let friendlyMessage = 'Agent service is currently unavailable. Please try again later.';
-      const axiosError = error as { response?: { data?: { message?: string } }; message?: string };
-      const errorMsg = axiosError.response?.data?.message || axiosError.message || 'Unknown error';
-      
-      if (errorMsg.includes('invalid query')) {
-        friendlyMessage = "I didn't understand that. Could you please rephrase your question?";
-      } else if (errorMsg.includes('timeout')) {
-        friendlyMessage = "The request is taking longer than expected. Please try again.";
-      } else if (errorMsg.includes('network')) {
-        friendlyMessage = "I'm having trouble connecting. Please check your internet connection and try again.";
+      const axiosError = error as {
+        code?: string;
+        name?: string;
+        message?: string;
+        response?: { data?: { message?: string } };
+      };
+      // A user-cancelled request (Stop button / navigation) propagates as an abort, not a failure
+      if (
+        axiosError.code === 'ERR_CANCELED' ||
+        axiosError.name === 'CanceledError' ||
+        axiosError.name === 'AbortError'
+      ) {
+        throw error;
       }
-      
+
+      logger.error('[AgentService] Query failed:', {
+        correlationId,
+        durationMs: Date.now() - startedAt,
+        ...describeAgentError(error),
+      });
+
+      // Convert technical errors to user-friendly messages, keeping timeouts distinct (#274)
+      const errorMsg = axiosError.response?.data?.message || axiosError.message || 'Unknown error';
+      const errorKind = classifyAgentError(error);
+
       // Return a structured error response
       return {
         result: {
           success: false,
-          data: friendlyMessage,
-          error: errorMsg
+          data: agentErrorMessage(errorKind, stateChanging),
+          error: errorMsg,
+          errorKind,
+          requestId: correlationId,
+          stateChanging
         }
       };
+    }
+  }
+
+  /**
+   * Check whether a query that timed out on the client is still running or has finished (#274).
+   * Calls `GET /query/:requestId/status`. Never throws: if the backend does not support the
+   * endpoint (404/501) or cannot be reached, resolves with `status: 'unknown'`.
+   *
+   * Expected backend response: `{ status: 'pending' | 'completed' | 'failed', result?: AgentQueryResponse['result'] }`.
+   *
+   * @param requestId - `result.requestId` from the timed-out `queryAgent` response.
+   */
+  async getActionStatus(requestId: string): Promise<AgentActionStatus> {
+    const checkedAt = () => new Date().toISOString();
+    try {
+      const response = await this.api.get(`/query/${encodeURIComponent(requestId)}/status`, {
+        timeout: 10000
+      });
+      const body = response.data as { status?: string; result?: AgentQueryResponse['result'] } | undefined;
+      const status = body?.status;
+
+      if (status === 'pending' || status === 'completed' || status === 'failed') {
+        return {
+          requestId,
+          status,
+          result: body?.result ? { ...body.result, requestId } : undefined,
+          checkedAt: checkedAt()
+        };
+      }
+      return { requestId, status: 'unknown', checkedAt: checkedAt() };
+    } catch (error) {
+      logger.error('[AgentService] Status check failed:', { correlationId: requestId, ...describeAgentError(error) });
+      return { requestId, status: 'unknown', checkedAt: checkedAt() };
     }
   }
 
@@ -384,7 +568,7 @@ class AgentService {
       const response = await this.api.get<string[]>(`/memory/${userId}`);
       return response.data;
     } catch (error) {
-      console.error('[AgentService] Failed to get memory:', error);
+      logger.error('[AgentService] Failed to get memory:', describeAgentError(error));
       return [];
     }
   }
@@ -400,7 +584,7 @@ class AgentService {
     try {
       await this.api.delete(`/memory/${userId}`);
     } catch (error) {
-      console.error('[AgentService] Failed to clear memory:', error);
+      logger.error('[AgentService] Failed to clear memory:', describeAgentError(error));
       throw new Error('Failed to clear agent memory');
     }
   }
@@ -416,7 +600,7 @@ class AgentService {
       const response = await this.api.get<AgentTool[]>('/tools');
       return response.data;
     } catch (error) {
-      console.error('[AgentService] Failed to get tools:', error);
+      logger.error('[AgentService] Failed to get tools:', describeAgentError(error));
       return [];
     }
   }
@@ -434,7 +618,7 @@ class AgentService {
       const response = await this.api.post(`/tools/${toolName}/execute`, params);
       return response.data;
     } catch (error) {
-      console.error(`[AgentService] Failed to execute tool ${toolName}:`, error);
+      logger.error(`[AgentService] Failed to execute tool ${toolName}:`, describeAgentError(error));
       throw new Error(`Failed to execute tool: ${toolName}`);
     }
   }

@@ -171,7 +171,65 @@ export const deleteConversation = createAsyncThunk(
   },
 );
 
+/**
+ * Keys that identify the same logical message across local, optimistic and server copies (#277).
+ * `requestId` is shared by the user and agent message of one query, so it only matches within a type.
+ */
+const messageIdentityKeys = (message: ChatMessage): string[] => {
+  const keys = [`id:${message.id}`];
+  const meta = message.metadata;
+  if (meta?.optimisticId) keys.push(`id:${meta.optimisticId}`);
+  if (meta?.tempId) keys.push(`id:${meta.tempId}`);
+  if (meta?.requestId) keys.push(`req:${message.type}:${meta.requestId}`);
+  return keys;
+};
+
+/**
+ * Merge messages received from the server (live socket events or a post-reconnect resync)
+ * into the local list without duplicates (#277). An incoming message replaces the local
+ * message it matches (same id, or its optimistic/temp id or request id), so the server
+ * copy wins over the optimistic one. Unmatched messages are appended. Result is sorted.
+ */
+export const mergeIncomingMessages = (existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] => {
+  const merged = [...existing];
+  const index = new Map<string, number>();
+  merged.forEach((message, i) => {
+    for (const key of messageIdentityKeys(message)) index.set(key, i);
+  });
+
+  for (const message of incoming) {
+    const keys = messageIdentityKeys(message);
+    const matchIdx = keys.map((key) => index.get(key)).find((i) => i !== undefined);
+
+    if (matchIdx !== undefined) {
+      const local = merged[matchIdx];
+      merged[matchIdx] = {
+        ...message,
+        metadata: { ...local.metadata, ...message.metadata, status: message.metadata?.status ?? 'success' },
+      };
+      for (const key of messageIdentityKeys(merged[matchIdx])) index.set(key, matchIdx);
+    } else {
+      merged.push(message);
+      for (const key of keys) index.set(key, merged.length - 1);
+    }
+  }
+
+  return sortMessagesChronologically(merged);
+};
+
+export const ABORT_ERROR = "ABORT_ERR";
+
 export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
+
+function isAbortError(error: unknown): boolean {
+  const err = error as { code?: string; name?: string; message?: string };
+  return (
+    err?.code === "ERR_CANCELED" ||
+    err?.name === "CanceledError" ||
+    err?.name === "AbortError" ||
+    err?.message === ABORT_ERROR
+  );
+}
 
 export const sendMessage = createAsyncThunk(
   'chat/sendMessage',
@@ -205,20 +263,27 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Track the request against its conversation so deleting the conversation aborts it (#269)
+      // Track the request against its conversation so deleting the conversation aborts it (#269).
+      // The Stop button aborts the thunk signal, which is forwarded to the tracked request.
       const tracked = trackConversationRequest(conversation.id);
       const onAbort = () => tracked.abort();
       signal.addEventListener("abort", onAbort);
       let response: AgentQueryResponse;
       try {
         response = await apiService.queryAgent({ userId, query }, { signal: tracked.signal });
+      } catch (error) {
+        // Aborted because the conversation was deleted, not because the user pressed Stop (#269)
+        if (isConversationDeleted(conversation.id)) {
+          return rejectWithValue(CONVERSATION_DELETED);
+        }
+        throw error;
       } finally {
         tracked.release();
         signal.removeEventListener("abort", onAbort);
       }
 
       // The conversation was deleted while waiting: drop the late response (#269)
-      if (isConversationDeleted(conversation.id) || tracked.signal.aborted) {
+      if (isConversationDeleted(conversation.id) || (tracked.signal.aborted && !signal.aborted)) {
         return rejectWithValue(CONVERSATION_DELETED);
       }
 
@@ -285,6 +350,9 @@ export const sendMessage = createAsyncThunk(
           status: 'success',
           success: response.result.success,
           error: response.result.error,
+          errorKind: response.result.errorKind,
+          requestId: response.result.requestId,
+          stateChanging: response.result.stateChanging,
           executionTrace: response.result.executionTrace,
 serverTimestamp: serverTimestamp,
           // Store raw structured data in metadata if it was JSON
@@ -294,11 +362,61 @@ serverTimestamp: serverTimestamp,
 
       return { response, conversation, userMessage, agentMessage, tempId };
     } catch (error: any) {
+      if (signal.aborted || isAbortError(error)) {
+        return rejectWithValue(ABORT_ERROR);
+      }
       const errorMsg =
         error.response?.data?.message ||
         error.message ||
         "Failed to send message";
       return rejectWithValue(errorMsg);
+    }
+  },
+);
+
+export const regenerateLastResponse = createAsyncThunk(
+  "chat/regenerateLastResponse",
+  async (_, { getState, rejectWithValue, signal }) => {
+    const state = getState() as any;
+    if (state.chat.isTyping || state.chat.isLoading) {
+      return rejectWithValue("busy");
+    }
+    if (state.chat.currentConversation && state.chat.currentConversation.isActive === false) {
+      return rejectWithValue("inactive");
+    }
+    const messages: ChatMessage[] = state.chat.messages;
+    const lastAgent = [...messages].reverse().find((message) => message.type === "agent");
+    if (!lastAgent) {
+      return rejectWithValue("no agent message");
+    }
+    const agentIndex = messages.findIndex((message) => message.id === lastAgent.id);
+    const precedingUser = [...messages.slice(0, agentIndex)]
+      .reverse()
+      .find((message) => message.type === "user");
+    if (!precedingUser) {
+      return rejectWithValue("no user message");
+    }
+    const userId = state.auth.user?.id;
+    if (!userId) {
+      return rejectWithValue("User not authenticated");
+    }
+    try {
+      const response = await apiService.queryAgent(
+        { userId, query: String(precedingUser.content) },
+        { signal },
+      );
+      return {
+        agentId: lastAgent.id,
+        content: response.result.data,
+        response,
+      };
+    } catch (error: unknown) {
+      if (signal.aborted || isAbortError(error)) {
+        return rejectWithValue(ABORT_ERROR);
+      }
+      return rejectWithValue(
+        error instanceof Error ? error.message : "Failed to regenerate message",
+      );
     }
   },
 );
@@ -739,6 +857,17 @@ state.messages[index] = {
     removeOptimisticUpdate: (state, action: PayloadAction<string>) => {
       state.optimisticUpdates.delete(action.payload);
     },
+    /** Merge server-delivered messages (live or resynced) with dedupe against local/optimistic copies (#277). */
+    mergeSyncedMessages: (state, action: PayloadAction<ChatMessage[]>) => {
+      state.messages = mergeIncomingMessages(state.messages, action.payload);
+      for (const message of action.payload) {
+        const optimisticId = message.metadata?.optimisticId ?? message.metadata?.tempId;
+        if (optimisticId) {
+          state.optimisticUpdates.delete(optimisticId);
+          state.pendingMessages.delete(optimisticId);
+        }
+      }
+    },
     resolveOptimisticUpdate: (
       state,
       action: PayloadAction<{ clientId: string; serverMessage: ChatMessage }>,
@@ -897,7 +1026,6 @@ state.messages[index] = {
         if (action.payload === CONVERSATION_DELETED) {
           return;
         }
-        state.error = action.payload as string;
 
 const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
           ? action.meta.arg.tempId
@@ -907,6 +1035,19 @@ const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
         const optimisticIdx = state.messages.findIndex(
           m => m.id === tempId || m.metadata?.optimisticId === tempId || m.metadata?.tempId === tempId
         );
+
+        if (action.payload === ABORT_ERROR || action.meta.aborted) {
+          state.error = null;
+          if (optimisticIdx !== -1) {
+            state.messages[optimisticIdx].metadata = {
+              ...state.messages[optimisticIdx].metadata,
+              status: "cancelled",
+            };
+          }
+          return;
+        }
+
+        state.error = action.payload as string;
 
         if (optimisticIdx !== -1) {
           state.messages[optimisticIdx].metadata = {
@@ -949,6 +1090,38 @@ type: "error",
         };
         state.messages.push(errorMessage);
         state.messages = sortMessagesChronologically(state.messages);
+      })
+      .addCase(regenerateLastResponse.pending, (state) => {
+        state.isLoading = true;
+        state.isTyping = true;
+        state.error = null;
+      })
+      .addCase(regenerateLastResponse.fulfilled, (state, action) => {
+        state.isLoading = false;
+        state.isTyping = false;
+        const index = state.messages.findIndex((message) => message.id === action.payload.agentId);
+        if (index !== -1) {
+          state.messages[index] = {
+            ...state.messages[index],
+            content: action.payload.content,
+            metadata: {
+              ...state.messages[index].metadata,
+              status: "success",
+              success: action.payload.response.result.success,
+              error: action.payload.response.result.error,
+              executionTrace: action.payload.response.result.executionTrace,
+            },
+          };
+        }
+      })
+      .addCase(regenerateLastResponse.rejected, (state, action) => {
+        state.isLoading = false;
+        state.isTyping = false;
+        if (action.payload === ABORT_ERROR || action.payload === "busy" || action.payload === "inactive") {
+          state.error = null;
+          return;
+        }
+        state.error = action.payload as string;
       })
 
       // ── sendVoiceMessage ───────────────────────────────────────────────────
@@ -1017,5 +1190,6 @@ export const {
   storeOptimisticUpdate,
   removeOptimisticUpdate,
   resolveOptimisticUpdate,
+  mergeSyncedMessages,
 } = chatSlice.actions;
 export default chatSlice.reducer;

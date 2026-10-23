@@ -87,6 +87,44 @@ function ChatComponent() {
 }
 ```
 
+### 6. Resync After Socket Reconnect (#277)
+
+A successful reconnect does not mean the client saw everything emitted while it was offline. Chat events therefore carry a server **cursor**, and the client catches up from the last one it received.
+
+**Cursor tracking.** `SocketConfig.resync.events` lists the events to track (`chat:message` in `Providers.tsx`). Every tracked event, live or replayed, goes through `SocketManager.deliverTracked`:
+1. If its cursor was already delivered, it is dropped. The last 500 cursors are remembered.
+2. Otherwise it is passed to the handlers registered with `socketManager.on(event, ...)` / `useSocketEvent`.
+3. Its cursor becomes the acknowledged position (`getLastCursor()`).
+
+Cursors are opaque strings. The client never compares them; the backend must return events after a cursor in emission order. `setLastCursor()` can seed the position, for example from the newest message in loaded history.
+
+**Fetching missed events.** On every `connect` after the first, `resyncMissedEvents()`:
+- calls `fetchMissed(lastCursor)` (`apiService.getMissedChatEvents`)
+- delivers the returned events oldest first
+- follows `hasMore` / `nextCursor` for up to 10 pages
+
+Concurrent triggers share one run. A failed fetch leaves the cursor unchanged and sets `resyncState.error`, so the next reconnect or a manual `resync()` retries from the same point. Nothing resyncs before the first cursor is received.
+
+Live events that arrive while a resync request is in flight are delivered immediately. Their replayed copies are then dropped by the cursor check.
+
+**Dedupe against local/optimistic messages.** `useChatResync()` (mounted in `ChatEngine`) sends every `chat:message` through `mergeSyncedMessages`, which calls `mergeIncomingMessages(existing, incoming)`:
+
+| Incoming server message matches a local one by | Result |
+|---|---|
+| `id` | Replaced by the server copy (one message) |
+| `metadata.optimisticId` / `metadata.tempId` equal to a local `id`, `optimisticId` or `tempId` | Optimistic copy replaced; its `optimisticUpdates`/`pendingMessages` entry cleared |
+| `metadata.requestId` **and** same `type` | Replaced (e.g. a timed-out agent reply from #274 receives its late result) |
+| nothing | Appended |
+
+The merged list is re-sorted with `sortMessagesChronologically`, so replayed messages land in timestamp order. Local metadata is kept unless the server sends the same field.
+
+**UI hooks.** `useSocketResync()` returns `{ isResyncing, lastCursor, lastResyncCount, lastResyncAt, error, resync, setLastCursor }`. `useChatResync()` returns the same and also wires the chat store.
+
+**Backend contract (proposed, not yet confirmed):**
+- Live event: `chat:message` with payload `{ "cursor": "<opaque>", "message": ChatMessage }`. To let the client drop its optimistic copy, the server message should echo `metadata.optimisticId`/`tempId` (or `metadata.requestId`, which matches the `clientRequestId` sent with `POST /query`).
+- Catch-up: `GET /chat/events?after=<cursor>&limit=100` returns `{ "events": [{ "event": "chat:message", "cursor": "...", "data": { "cursor": "...", "message": { ... } } }], "hasMore": false, "nextCursor": "..." }`, oldest first, scoped to the authenticated user.
+- Until the endpoint exists, resync fails with an error in `resyncState.error` and the app keeps working with live events only.
+
 ## Test Coverage
 
 Race condition tests in `src/store/slices/__tests__/chatSlice.ordering.test.ts`:
@@ -96,6 +134,11 @@ Race condition tests in `src/store/slices/__tests__/chatSlice.ordering.test.ts`:
 3. ✅ Re-sorting when timestamp updates
 4. ✅ Optimistic update resolution
 5. ✅ Out-of-order network responses resolved correctly
+
+Resync tests (#277):
+- `src/services/__tests__/socketManager.test.ts` ("resync after reconnect"): cursor tracking, live dedupe, fetch after the last cursor on reconnect, live/replay overlap, paging and its cap, shared in-flight run, error handling
+- `src/store/slices/__tests__/chatSlice.resync.test.ts`: dedupe by id, optimistic id, request id and type; reducer clears optimistic entries
+- `src/hooks/useSocket.test.ts` (`useSocketResync`)
 
 ## Usage Guidelines
 
