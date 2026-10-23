@@ -1,6 +1,11 @@
 import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
 import { User, LoginRequest, RegisterRequest } from "@/types";
 import apiService from "@/services/api";
+import { normalizeAuthError } from "@/services/auth.service";
+import { clearUserScopedStorage, fromPersistedUser, toPersistedUser } from "@/services/storageInventory";
+
+export const LOGIN_FIELDS = ["email", "password"] as const;
+export const REGISTER_FIELDS = ["name", "email", "password"] as const;
 
 interface AuthState {
   user: User | null;
@@ -25,47 +30,57 @@ const initialState: AuthState = {
 // Async thunks
 export const login = createAsyncThunk(
   "auth/login",
-  async (credentials: LoginRequest) => {
-    // Mock login - always succeed
-    const mockUser: User = {
-      id: "mock-user-id",
-      email: credentials.email,
-      name: "Mock User",
-      address: "0x1234567890abcdef",
-      publicKey: "0xabcdef1234567890",
-      isDeployed: true,
-      isFunded: true,
-      tokenType: "STRK",
-      authProvider: "email",
-      isEmailVerified: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const mockToken = "mock-jwt-token";
-    return { user: mockUser, token: mockToken };
+  async (credentials: LoginRequest, { rejectWithValue }) => {
+    try {
+      // Mock login - always succeed
+      const mockUser: User = {
+        id: "mock-user-id",
+        email: credentials.email,
+        name: "Mock User",
+        address: "0x1234567890abcdef",
+        publicKey: "0xabcdef1234567890",
+        isDeployed: true,
+        isFunded: true,
+        tokenType: "STRK",
+        authProvider: "email",
+        isEmailVerified: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const mockToken = "mock-jwt-token";
+      return { user: mockUser, token: mockToken };
+    } catch (error) {
+      // Reject with field-level errors; the password is masked out of every message (#258)
+      return rejectWithValue(normalizeAuthError(error, LOGIN_FIELDS, [credentials.password]));
+    }
   },
 );
 
 export const register = createAsyncThunk(
   "auth/register",
-  async (userData: RegisterRequest) => {
-    // Mock register - always succeed
-    const mockUser: User = {
-      id: "mock-user-id",
-      email: userData.email,
-      name: userData.name || "Mock User",
-      address: "0x1234567890abcdef",
-      publicKey: "0xabcdef1234567890",
-      isDeployed: true,
-      isFunded: true,
-      tokenType: "STRK",
-      authProvider: "email",
-      isEmailVerified: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-    const mockToken = "mock-jwt-token";
-    return { user: mockUser, token: mockToken };
+  async (userData: RegisterRequest, { rejectWithValue }) => {
+    try {
+      // Mock register - always succeed
+      const mockUser: User = {
+        id: "mock-user-id",
+        email: userData.email,
+        name: userData.name || "Mock User",
+        address: "0x1234567890abcdef",
+        publicKey: "0xabcdef1234567890",
+        isDeployed: true,
+        isFunded: true,
+        tokenType: "STRK",
+        authProvider: "email",
+        isEmailVerified: true,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      const mockToken = "mock-jwt-token";
+      return { user: mockUser, token: mockToken };
+    } catch (error) {
+      // Reject with field-level errors; the password is masked out of every message (#258)
+      return rejectWithValue(normalizeAuthError(error, REGISTER_FIELDS, [userData.password]));
+    }
   },
 );
 
@@ -221,7 +236,7 @@ const authSlice = createSlice({
         // Real credentials from a previous session.
         try {
           state.token           = storedToken;
-          state.user            = JSON.parse(storedUser) as User;
+          state.user            = fromPersistedUser(JSON.parse(storedUser));
           state.isAuthenticated = true;
         } catch {
           // Corrupt data — fall through to the unauthenticated default.
@@ -267,15 +282,20 @@ const authSlice = createSlice({
         // Save to localStorage for persistence
         if (typeof window !== "undefined") {
           localStorage.setItem("auth_token", action.payload.token);
+          // Persist a minimized profile only; no wallet address or public key (#256)
           localStorage.setItem(
             "user_data",
-            JSON.stringify(action.payload.user),
+            JSON.stringify(toPersistedUser(action.payload.user)),
           );
         }
       })
       .addCase(login.rejected, (state, action) => {
         state.isLoading = false;
-        state.error = action.payload as string;
+        // Payload is a NormalizedAuthError (#258); keep only the safe general message in state
+        state.error =
+          (action.payload as { message?: string } | undefined)?.message ??
+          action.error.message ??
+          "Authentication failed";
         state.isAuthenticated = false;
       })
       // Register
@@ -292,15 +312,20 @@ const authSlice = createSlice({
         // Save to localStorage for persistence
         if (typeof window !== "undefined") {
           localStorage.setItem("auth_token", action.payload.token);
+          // Persist a minimized profile only; no wallet address or public key (#256)
           localStorage.setItem(
             "user_data",
-            JSON.stringify(action.payload.user),
+            JSON.stringify(toPersistedUser(action.payload.user)),
           );
         }
       })
       .addCase(register.rejected, (state, action) => {
         state.isLoading = false;
-        state.error = action.payload as string;
+        // Payload is a NormalizedAuthError (#258); keep only the safe general message in state
+        state.error =
+          (action.payload as { message?: string } | undefined)?.message ??
+          action.error.message ??
+          "Authentication failed";
         state.isAuthenticated = false;
       })
       // Logout
@@ -311,12 +336,8 @@ const authSlice = createSlice({
         state.error = null;
         state.sessionExpirationTime = null;
         state.isSessionWarningActive = false;
-        // Clear localStorage on logout
-        if (typeof window !== "undefined") {
-          localStorage.removeItem("auth_token");
-          localStorage.removeItem("user_data");
-          localStorage.removeItem("session_expiration");
-        }
+        // Clear every user-scoped key on logout (#256)
+        clearUserScopedStorage();
       })
       // Load User
       .addCase(loadUser.pending, (state) => {
@@ -418,15 +439,4 @@ export const {
   setSessionExpirationTime,
   setSessionWarningActive,
 } = authSlice.actions;
-export {
-  login,
-  register,
-  logout,
-  loadUser,
-  updateProfile,
-  changePassword,
-  googleAuth,
-  refreshToken,
-  fetchProfile,
-};
 export default authSlice.reducer;

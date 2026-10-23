@@ -110,12 +110,37 @@ export interface LoginResponse {
   };
 }
 
+// Multi-Factor Authentication (MFA) Types
+export interface MfaStatusData {
+  enabled: boolean;
+  enrolledAt?: string;
+  method?: "totp" | null;
+}
+
+export interface MfaEnrollmentData {
+  secret: string;
+  qrCodeUrl?: string;
+  otpAuthUri?: string;
+  recoveryCodes?: string[];
+}
+
+export interface MfaVerifyRequest {
+  code: string;
+}
+
+export interface MfaVerifyData {
+  enabled: boolean;
+  message?: string;
+  recoveryCodes?: string[];
+}
+
 // Contact Management Types
 export interface Contact {
   id: string;
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
   createdAt: string;
   updatedAt: string;
   avatar?: string;
@@ -126,13 +151,15 @@ export interface Contact {
 export interface CreateContactRequest {
   name: string;
   address: string;
-  tokenType: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
 }
 
 export interface UpdateContactRequest {
   name?: string;
   address?: string;
-  tokenType?: "XLM" | "USDC" | "USDT" | "BTC" | "ETH";
+  tokenType?: "XLM" | "STRK" | "USDC" | "USDT" | "BTC" | "ETH" | "AQUA";
+  note?: string;
 }
 
 // Balance and Wallet Types
@@ -153,15 +180,51 @@ export interface WalletBalance {
   nativeBalance: string;
 }
 
+// Stellar Trustline Types
+export interface Trustline {
+  assetCode: string;
+  assetIssuer: string;
+  balance: string;
+  limit: string;
+  buyingLiabilities?: string;
+  sellingLiabilities?: string;
+  assetType?: string;
+}
+
+export interface AddTrustlineRequest {
+  assetCode: string;
+  assetIssuer: string;
+  limit?: string;
+}
+
+export interface RemoveTrustlineRequest {
+  assetCode: string;
+  assetIssuer: string;
+}
+
 // Stellar Transaction Types
+export type TransactionDirection = 'incoming' | 'outgoing' | 'self' | 'unknown';
+
+export interface AssetIdentifier {
+  code: string;
+  issuer?: string;
+  isNative: boolean;
+  canonical: string;
+  hasIncompleteMetadata?: boolean;
+}
+
 export interface StellarOperation {
   id: string;
   type: string; // e.g., 'payment', 'create_account', 'trust', etc.
   amount?: string;
   asset?: string;
+  asset_code?: string;
+  asset_issuer?: string;
+  asset_type?: string;
   from?: string;
   to?: string;
   source_account: string;
+  direction?: TransactionDirection;
 }
 
 export interface StellarTransaction {
@@ -174,12 +237,58 @@ export interface StellarTransaction {
   operation_count: number;
   successful: boolean;
   operations: StellarOperation[];
+  direction?: TransactionDirection;
+}
+
+/**
+ * Lifecycle of a wallet action.
+ *
+ * `pending` means the action was submitted but no authoritative data has
+ * confirmed its outcome yet. Only authoritative ledger data may move an entry
+ * to `confirmed`, and only an authoritative failure (or a definitive submission
+ * rejection) may move it to `failed`.
+ */
+export type TransactionLifecycleStatus = "pending" | "confirmed" | "failed";
+
+export interface PendingTransactionConfirmation {
+  /** Normalized transaction hash — the stable reconciliation key. */
+  hash: string;
+  /** Human-readable description of the wallet action. */
+  label: string;
+  status: TransactionLifecycleStatus;
+  /** ISO timestamp of the last status change for this entry. */
+  updatedAt: string;
 }
 
 export interface TransactionHistory {
   transactions: StellarTransaction[];
   isLoading: boolean;
   error: string | null;
+  /** True while a newest-page refresh is in flight (background refresh). */
+  isRefreshing: boolean;
+  /** Error from the most recent refresh attempt; existing history is preserved. */
+  refreshError: string | null;
+  /** ISO timestamp of the last successful authoritative sync of the newest page. */
+  lastUpdatedAt: string | null;
+  /** Cursor for the next (older) page, or null when there is no next page. */
+  nextCursor: string | null;
+  /** True while an older page is being loaded. */
+  isLoadingMore: boolean;
+  /** Error from the most recent older-page load; existing history is preserved. */
+  loadMoreError: string | null;
+  /** Submitted transactions awaiting authoritative confirmation, keyed by hash. */
+  pending: PendingTransactionConfirmation[];
+}
+
+/**
+ * Client-side search state for the transaction history page.
+ * Filtering is performed in-memory; no additional API calls are required.
+ */
+export interface TransactionSearchState {
+  /** Raw value from the search input */
+  query: string;
+  /** Transactions that survive the current query and any active filters */
+  filtered: StellarTransaction[];
 }
 
 // Agent Query Types
@@ -252,7 +361,7 @@ export interface ChatMessage {
     transactionHash?: string;
     amount?: string;
     tokenType?: string;
-    status?: "pending" | "success" | "failed";
+    status?: "pending" | "success" | "failed" | "cancelled";
     success?: boolean;
     error?: string;
     type?: string;
@@ -265,6 +374,20 @@ export interface ChatMessage {
     clientTimestamp?: number | string;
     optimisticId?: string;
     tempId?: string;
+    /** Failure category of an agent reply (#274, #262), e.g. `timeout` vs `network`. */
+    errorKind?: "timeout" | "network" | "server" | "invalid_query" | "unauthenticated" | "unknown";
+    /** Client request id / idempotency key of the query this reply belongs to (#274, #262). */
+    requestId?: string;
+    /** Whether a retry action is offered for this failed reply (#262). */
+    retryable?: boolean;
+    /** Original prompt, preserved so a retry resends exactly what the user typed (#262). */
+    retryPrompt?: string;
+    /** Optimistic id of the original user message, reused on retry so no duplicate bubble appears. */
+    retryTempId?: string;
+    /** The prompt looked like a state-changing action (transfer, swap, ...); retries check status first. */
+    stateChanging?: boolean;
+    /** Outcome of the latest status check after a timeout (#274). */
+    actionStatus?: "pending" | "completed" | "failed" | "unknown";
   };
 }
 
@@ -277,6 +400,25 @@ export interface ThreadState {
   /** Whether the thread panel is typing an agent response */
   isTyping: boolean;
 }
+
+/** One page of server-side chat history (#265, #264). */
+export interface ChatHistoryPage {
+  /** Messages in this page; any order, deduped and sorted client-side. */
+  messages: ChatMessage[];
+  /** Opaque cursor for the next older page; `null` when there is none. */
+  nextCursor: string | null;
+  /** Whether older messages exist beyond this page. */
+  hasMore: boolean;
+}
+
+/** Query for one history page (#264). Omit `before` for the newest page. */
+export interface ChatHistoryQuery {
+  before?: string;
+  limit?: number;
+}
+
+/** Load state for the chat history screen (#265). */
+export type ChatHistoryStatus = "idle" | "loading" | "succeeded" | "failed";
 
 export interface Conversation {
   id: string;
@@ -383,10 +525,19 @@ export interface AuthState {
   error: string | null;
 }
 
+export interface TransactionFilters {
+  type: string;
+  asset: string;
+  direction: string;
+  startDate: string;
+  endDate: string;
+}
+
 export interface AccountState {
   status: AccountStatus | null;
   balance: WalletBalance | null;
   transactions: TransactionHistory;
+  filters?: TransactionFilters;
   isLoading: boolean;
   error: string | null;
   network: {
@@ -400,6 +551,9 @@ export interface AccountState {
     isLoading: boolean;
     error: string | null;
   };
+  trustlines: Trustline[];
+  isLoadingTrustlines: boolean;
+  trustlinesError: string | null;
 }
 
 export interface ContactsState {
@@ -425,12 +579,19 @@ export interface UIState {
   };
 }
 
+export interface PresenceState {
+  users: { [userId: string]: { userId: string; userName: string; status: 'online' | 'away' | 'offline'; lastSeen: string; conversationId?: string } };
+  onlineCount: number;
+  awayCount: number;
+}
+
 export interface RootState {
   auth: AuthState;
   account: AccountState;
   contacts: ContactsState;
   chat: ChatState;
   ui: UIState;
+  presence: PresenceState;
 }
 
 // Component Props Types
@@ -611,10 +772,22 @@ export interface AuditLogStats {
 export interface SendPaymentRequest {
   recipientAddress: string;
   amount: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
   memo?: string;
   memoType?: 'none' | 'text' | 'id' | 'hash';
   recipientContactId?: string; // Optional reference to selected contact
+  idempotencyKey?: string;
+}
+
+export interface PaymentSubmissionResult {
+  status: 'pending' | 'submitted' | 'confirmed' | 'failed';
+  transactionHash?: string;
+  transactionId?: string;
+  message?: string;
+}
+
+export interface PaymentStatusResult extends Omit<PaymentSubmissionResult, 'status'> {
+  status: PaymentSubmissionResult['status'] | 'not_found';
 }
 
 export interface SendPaymentValidationResult {
@@ -628,7 +801,8 @@ export interface ContactSelection {
   id: string;
   name: string;
   address: string;
-  tokenType: 'XLM' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  tokenType: 'XLM' | 'STRK' | 'USDC' | 'USDT' | 'BTC' | 'ETH' | 'AQUA';
+  note?: string;
   avatar?: string;
   isFavorite?: boolean;
   lastUsed?: string;

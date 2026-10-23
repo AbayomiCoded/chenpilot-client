@@ -13,6 +13,8 @@ export const agentConfig = {
   enableVoiceCommands: process.env.NEXT_PUBLIC_ENABLE_VOICE_COMMANDS === 'true',
   enableAgentTools: process.env.NEXT_PUBLIC_ENABLE_AGENT_TOOLS === 'true',
   enableRealTimeUpdates: process.env.NEXT_PUBLIC_ENABLE_REAL_TIME_UPDATES === 'true',
+  // Stream agent responses over POST /query/stream (SSE) when the backend supports it (#261)
+  enableStreaming: process.env.NEXT_PUBLIC_ENABLE_AGENT_STREAMING === 'true',
   
   // Logging
   logLevel: process.env.NEXT_PUBLIC_LOG_LEVEL || 'info',

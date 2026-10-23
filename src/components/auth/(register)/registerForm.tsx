@@ -3,7 +3,8 @@ import React, { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useAppDispatch } from "@/store";
-import { register as registerUser } from "@/store/slices/authSlice";
+import { register as registerUser, REGISTER_FIELDS } from "@/store/slices/authSlice";
+import { applyAuthErrors } from "@/components/auth/applyAuthErrors";
 import { registerSchema } from "@/utils/validation";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -14,7 +15,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
 import { isTerminalAuthError, useClearPasswordOnLeave } from "@/components/auth/passwordHygiene";
-import { toAuthPayload } from "@/services/auth.service";
+import { authService, toAuthPayload } from "@/services/auth.service";
 
 interface RegisterFormData {
   email: string;
@@ -31,6 +32,7 @@ export function RegisterForm() {
     register,
     handleSubmit,
     watch,
+    setError,
     setValue,
     setFocus,
     formState: { errors, isSubmitting },
@@ -54,13 +56,13 @@ export function RegisterForm() {
       await dispatch(registerUser(cleanData)).unwrap();
       toast.success("Account created successfully! Welcome to ChenPilot!");
       router.push("/chat");
-    } catch (error: any) {
-      const backendMessage =
-        error?.message ||
-        error?.response?.data?.message ||
-        "Registration failed";
-      toast.error(String(backendMessage));
-      // Terminal failures clear the password but keep name and email (#253)
+    } catch (error: unknown) {
+      // Privacy-safe: the toast is always the generic message. Server field errors are attached
+      // to inputs only when they can't reveal whether an account exists (e.g. password rules) (#258).
+      // Name and email are kept; terminal failures clear and refocus the password, transient ones
+      // keep it for an easy resubmit (#253).
+      toast.error(authService.normalizeRegisterError(error));
+      applyAuthErrors(error, REGISTER_FIELDS, setError, [data.password], { hideAccountExistence: true });
       if (isTerminalAuthError(error)) {
         setValue("password", "");
         setFocus("password");

@@ -10,6 +10,8 @@ import { ThemeProvider } from "./ThemeProvider";
 import { LanguageProvider } from "./LanguageProvider";
 import apiService from "@/services/api";
 import { SocketProvider } from "./SocketProvider";
+import apiService from "@/services/api";
+import { CHAT_MESSAGE_EVENT } from "@/hooks/useChatResync";
 import { TransactionToastListener } from "@/components/TransactionToastListener";
 import { ToastOverflowManager } from "@/components/providers/ToastOverflowManager";
 
@@ -59,6 +61,11 @@ export function Providers({ children }: ProvidersProps) {
                     reconnectionDelay: 1000,
                     reconnectionAttempts: 5,
                     timeout: 20000,
+                  },
+                  // Catch up on chat events missed while disconnected (#277)
+                  resync: {
+                    events: [CHAT_MESSAGE_EVENT],
+                    fetchMissed: (cursor) => apiService.getMissedChatEvents(cursor),
                   },
                 }}
                 autoConnect={true}

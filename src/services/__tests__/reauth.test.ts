@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 
-vi.mock('../api', () => ({ default: { reauthenticate: vi.fn() } }));
+vi.mock('../api', () => ({ default: { stepUpReauthenticate: vi.fn() } }));
 
 import {
   getReauthChallenge,

@@ -17,7 +17,7 @@ A session can stay authenticated while the user is away from the device. The cli
 | Action id | Endpoint | Why |
 | :--- | :--- | :--- |
 | `change_password` | `POST /auth/change-password` | Account takeover persistence |
-| `delete_account` | `DELETE /auth/account` | Irreversible |
+| `delete_account` | `DELETE /account` | Irreversible |
 | `export_data` | `GET /data-export` (and fallbacks) | Bulk personal data |
 
 Ordinary reads, chat and settings toggles are **not** gated. State-changing agent actions (transfers and swaps via `POST /query`) are candidates for a later revision. This ADR does not gate them, because `/query` has no structured error envelope yet.
@@ -57,7 +57,14 @@ Ordinary reads, chat and settings toggles are **not** gated. State-changing agen
 ## Implementation Details & Code Links
 
 - [`src/services/auth.service.ts`](../../src/services/auth.service.ts): `withRecentAuth`, `getReauthChallenge`, error types
-- [`src/services/api.ts`](../../src/services/api.ts): `reauthenticate`, and the 401-interceptor bypass for `REAUTH_REQUIRED`
+- [`src/services/api.ts`](../../src/services/api.ts): `stepUpReauthenticate`, the 401-interceptor bypass for `REAUTH_REQUIRED`, and `deleteAccount` rethrowing the challenge before any local cleanup
 - [`src/components/auth/ReauthDialog.tsx`](../../src/components/auth/ReauthDialog.tsx): password prompt and `useReauthPrompt`
-- [`src/components/settings/SecuritySettings.tsx`](../../src/components/settings/SecuritySettings.tsx): change password and delete account
-- Tests: `src/services/__tests__/reauth.test.ts`, `src/components/settings/SecuritySettings.test.tsx`
+- [`src/app/settings/page.tsx`](../../src/app/settings/page.tsx): the Security card wraps change password and delete account in `withRecentAuth`
+- Tests: `src/services/__tests__/reauth.test.ts`
+
+## Relationship to the settings page's verification grant
+
+The settings page also has a client-side check: before changing the password, the user re-enters it (`authService.reauthenticate(email, password)` via `POST /auth/login`), which opens a 5-minute in-memory grant. That check is UX only. This ADR's server challenge is the actual control, and both apply. When the server answers `REAUTH_REQUIRED`, `ReauthDialog` asks for the password, calls `apiService.stepUpReauthenticate` (`POST /auth/reauthenticate`) and retries the request once.
+
+`apiService.deleteAccount()` normally reports API failures in its result and then clears local data. A `REAUTH_REQUIRED` challenge is the exception: it is rethrown **before** any local data or the token is cleared, so the user isn't signed out locally while the account still exists.
+

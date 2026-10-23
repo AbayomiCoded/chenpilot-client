@@ -2,12 +2,21 @@
 
 import React, { createContext, useContext, useEffect, useCallback, useRef, useState, ReactNode } from 'react';
 import { Socket } from 'socket.io-client';
-import { SocketManager, SocketConfig, initializeSocketManager } from '@/services/socketManager';
+import {
+  SocketManager,
+  SocketConfig,
+  SocketConnectionState,
+  initializeSocketManager,
+} from '@/services/socketManager';
 
 interface SocketContextType {
   socket: Socket | null;
   socketManager: SocketManager | null;
   isConnected: boolean;
+  connectionState: SocketConnectionState;
+  reconnectAttempt: number;
+  maxReconnectAttempts: number;
+  retry: () => void;
   connect: () => void;
   disconnect: () => void;
   emit: (event: string, data?: unknown) => boolean;
@@ -29,6 +38,8 @@ export function SocketProvider({ children, config, configKey, autoConnect = true
   const [socketManager, setSocketManager] = useState<SocketManager | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<SocketConnectionState>('idle');
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
 
   // Stable handler refs so the same function identity is used for on() and off().
   // Using refs avoids declaring the handlers as useCallback dependencies and
@@ -50,6 +61,10 @@ export function SocketProvider({ children, config, configKey, autoConnect = true
   useEffect(() => {
     const manager = initializeSocketManager(config);
     setSocketManager(manager);
+    const unsubscribeState = manager.onStateChange((state, attempt) => {
+      setConnectionState(state);
+      setReconnectAttempt(attempt);
+    });
 
     if (autoConnect) {
       const socketInstance = manager.connect();
@@ -59,6 +74,7 @@ export function SocketProvider({ children, config, configKey, autoConnect = true
     }
 
     return () => {
+      unsubscribeState();
       manager.disconnect();
     };
   }, [config, configKey, autoConnect, registerStateHandlers]);
@@ -71,6 +87,14 @@ export function SocketProvider({ children, config, configKey, autoConnect = true
       registerStateHandlers(socketManager);
     }
   }, [socketManager, registerStateHandlers]);
+
+  const retry = () => {
+    if (socketManager) {
+      socketManager.retry();
+      setSocket(socketManager.getSocket());
+      registerStateHandlers(socketManager);
+    }
+  };
 
   const disconnect = () => {
     if (socketManager) {
@@ -100,6 +124,10 @@ export function SocketProvider({ children, config, configKey, autoConnect = true
     socket,
     socketManager,
     isConnected,
+    connectionState,
+    reconnectAttempt,
+    maxReconnectAttempts: socketManager?.getMaxReconnectAttempts() ?? 0,
+    retry,
     connect,
     disconnect,
     emit,

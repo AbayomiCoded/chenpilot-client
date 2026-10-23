@@ -13,7 +13,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
 import { isTerminalAuthError, useClearPasswordOnLeave } from "@/components/auth/passwordHygiene";
-import { toAuthPayload } from "@/services/auth.service";
+import { authService, toAuthPayload } from "@/services/auth.service";
 
 interface LoginFormData {
   email: string;
@@ -45,10 +45,13 @@ export default function LoginForm() {
       await dispatch(login(toAuthPayload(data))).unwrap();
       toast.success("Successfully logged in!");
       router.push("/chat");
-    } catch (error: any) {
-      toast.error(error?.message || "Login failed");
-      // Terminal failures (wrong credentials, validation) clear the password and keep the
-      // email; transient ones (network, 5xx) keep it so the user can just resubmit (#253)
+    } catch (error: unknown) {
+      // Privacy-safe (account-enumeration resistance): every login failure shows the same
+      // generic message and no server field errors, so the response can't reveal whether an
+      // account exists (#258). The email is kept. Terminal failures (wrong credentials,
+      // validation) clear and refocus the password; transient ones (network, 5xx) keep it so
+      // the user can just resubmit (#253).
+      toast.error(authService.normalizeLoginError(error));
       if (isTerminalAuthError(error)) {
         setValue("password", "");
         setFocus("password");
