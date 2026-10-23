@@ -82,7 +82,7 @@ describe('sendMessage streaming (#261)', () => {
     expect(chat.streamingResponse).toBeNull();
     expect(chat.isTyping).toBe(false);
     expect(agentMessages(store)).toHaveLength(0);
-    expect(chat.messages.find((m) => m.type === 'user')?.metadata).toMatchObject({ status: 'failed', error: 'cancelled' });
+    expect(chat.messages.find((m) => m.type === 'user')?.metadata).toMatchObject({ status: 'cancelled' });
   });
 
   it('passes an abort signal to the API call', async () => {

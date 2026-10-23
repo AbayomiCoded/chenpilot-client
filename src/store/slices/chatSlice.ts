@@ -3,6 +3,12 @@ import { logger } from "../../utils/logger";
 import { ChatMessage, AgentQueryRequest, Conversation, ChatHistoryStatus } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
+import {
+  CONVERSATION_DELETED,
+  cancelConversationRequests,
+  isConversationDeleted,
+  trackConversationRequest,
+} from "@/store/conversationRequests";
 
 // ─── Voice message payload ────────────────────────────────────────────────────
 export interface SendVoiceMessagePayload {
@@ -231,7 +237,78 @@ export const loadOlderHistory = createAsyncThunk(
   },
 );
 
+/**
+ * Delete a conversation safely (#269): abort its in-flight agent requests, mark it deleted so
+ * late responses are ignored, then remove it from state and storage. Confirmation happens in the UI.
+ */
+export const deleteConversation = createAsyncThunk(
+  "chat/deleteConversation",
+  async (conversationId: string, { dispatch }) => {
+    const cancelled = cancelConversationRequests(conversationId);
+    dispatch(chatSlice.actions.deleteConversationLocally(conversationId));
+    return { conversationId, cancelled };
+  },
+);
+
+/**
+ * Keys that identify the same logical message across local, optimistic and server copies (#277).
+ * `requestId` is shared by the user and agent message of one query, so it only matches within a type.
+ */
+const messageIdentityKeys = (message: ChatMessage): string[] => {
+  const keys = [`id:${message.id}`];
+  const meta = message.metadata;
+  if (meta?.optimisticId) keys.push(`id:${meta.optimisticId}`);
+  if (meta?.tempId) keys.push(`id:${meta.tempId}`);
+  if (meta?.requestId) keys.push(`req:${message.type}:${meta.requestId}`);
+  return keys;
+};
+
+/**
+ * Merge messages received from the server (live socket events or a post-reconnect resync)
+ * into the local list without duplicates (#277). An incoming message replaces the local
+ * message it matches (same id, or its optimistic/temp id or request id), so the server
+ * copy wins over the optimistic one. Unmatched messages are appended. Result is sorted.
+ */
+export const mergeIncomingMessages = (existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] => {
+  const merged = [...existing];
+  const index = new Map<string, number>();
+  merged.forEach((message, i) => {
+    for (const key of messageIdentityKeys(message)) index.set(key, i);
+  });
+
+  for (const message of incoming) {
+    const keys = messageIdentityKeys(message);
+    const matchIdx = keys.map((key) => index.get(key)).find((i) => i !== undefined);
+
+    if (matchIdx !== undefined) {
+      const local = merged[matchIdx];
+      merged[matchIdx] = {
+        ...message,
+        metadata: { ...local.metadata, ...message.metadata, status: message.metadata?.status ?? 'success' },
+      };
+      for (const key of messageIdentityKeys(merged[matchIdx])) index.set(key, matchIdx);
+    } else {
+      merged.push(message);
+      for (const key of keys) index.set(key, merged.length - 1);
+    }
+  }
+
+  return sortMessagesChronologically(merged);
+};
+
+export const ABORT_ERROR = "ABORT_ERR";
+
 export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
+
+function isAbortError(error: unknown): boolean {
+  const err = error as { code?: string; name?: string; message?: string };
+  return (
+    err?.code === "ERR_CANCELED" ||
+    err?.name === "CanceledError" ||
+    err?.name === "AbortError" ||
+    err?.message === ABORT_ERROR
+  );
+}
 
 export const sendMessage = createAsyncThunk(
   'chat/sendMessage',
@@ -265,15 +342,36 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Call the API service to get actual response. Partial text is streamed into
-      // `streamingResponse` when the backend supports it (#261); `signal` is aborted on route change.
-      const response = await apiService.queryAgent(
-        { userId, query },
-        {
-          signal,
-          onDelta: (text) => dispatch(streamingDelta({ requestId, text })),
-        },
-      );
+      // Track the request against its conversation so deleting the conversation aborts it (#269).
+      // The Stop button aborts the thunk signal, which is forwarded to the tracked request.
+      const tracked = trackConversationRequest(conversation.id);
+      const onAbort = () => tracked.abort();
+      signal.addEventListener("abort", onAbort);
+      let response: AgentQueryResponse;
+      try {
+        response = await apiService.queryAgent(
+          { userId, query },
+          {
+            signal: tracked.signal,
+            // Partial text is streamed into `streamingResponse` when the backend supports it (#261)
+            onDelta: (text) => dispatch(streamingDelta({ requestId, text })),
+          },
+        );
+      } catch (error) {
+        // Aborted because the conversation was deleted, not because the user pressed Stop (#269)
+        if (isConversationDeleted(conversation.id)) {
+          return rejectWithValue(CONVERSATION_DELETED);
+        }
+        throw error;
+      } finally {
+        tracked.release();
+        signal.removeEventListener("abort", onAbort);
+      }
+
+      // The conversation was deleted while waiting: drop the late response (#269)
+      if (isConversationDeleted(conversation.id) || (tracked.signal.aborted && !signal.aborted)) {
+        return rejectWithValue(CONVERSATION_DELETED);
+      }
 
       // Handle parsing of the agent response
       let content = response.result.data;
@@ -338,6 +436,9 @@ export const sendMessage = createAsyncThunk(
           status: 'success',
           success: response.result.success,
           error: response.result.error,
+          errorKind: response.result.errorKind,
+          requestId: response.result.requestId,
+          stateChanging: response.result.stateChanging,
           executionTrace: response.result.executionTrace,
 serverTimestamp: serverTimestamp,
           // Store raw structured data in metadata if it was JSON
@@ -347,15 +448,61 @@ serverTimestamp: serverTimestamp,
 
       return { response, conversation, userMessage, agentMessage, tempId };
     } catch (error: any) {
-      if (signal.aborted) {
-        // Cancelled (e.g. route change); the rejected action carries meta.aborted
-        throw error;
+      if (signal.aborted || isAbortError(error)) {
+        return rejectWithValue(ABORT_ERROR);
       }
       const errorMsg =
         error.response?.data?.message ||
         error.message ||
         "Failed to send message";
       return rejectWithValue(errorMsg);
+    }
+  },
+);
+
+export const regenerateLastResponse = createAsyncThunk(
+  "chat/regenerateLastResponse",
+  async (_, { getState, rejectWithValue, signal }) => {
+    const state = getState() as any;
+    if (state.chat.isTyping || state.chat.isLoading) {
+      return rejectWithValue("busy");
+    }
+    if (state.chat.currentConversation && state.chat.currentConversation.isActive === false) {
+      return rejectWithValue("inactive");
+    }
+    const messages: ChatMessage[] = state.chat.messages;
+    const lastAgent = [...messages].reverse().find((message) => message.type === "agent");
+    if (!lastAgent) {
+      return rejectWithValue("no agent message");
+    }
+    const agentIndex = messages.findIndex((message) => message.id === lastAgent.id);
+    const precedingUser = [...messages.slice(0, agentIndex)]
+      .reverse()
+      .find((message) => message.type === "user");
+    if (!precedingUser) {
+      return rejectWithValue("no user message");
+    }
+    const userId = state.auth.user?.id;
+    if (!userId) {
+      return rejectWithValue("User not authenticated");
+    }
+    try {
+      const response = await apiService.queryAgent(
+        { userId, query: String(precedingUser.content) },
+        { signal },
+      );
+      return {
+        agentId: lastAgent.id,
+        content: response.result.data,
+        response,
+      };
+    } catch (error: unknown) {
+      if (signal.aborted || isAbortError(error)) {
+        return rejectWithValue(ABORT_ERROR);
+      }
+      return rejectWithValue(
+        error instanceof Error ? error.message : "Failed to regenerate message",
+      );
     }
   },
 );
@@ -637,6 +784,15 @@ state.messages[index] = {
     },
     deleteConversationLocally: (state, action: PayloadAction<string>) => {
       const conversationId = action.payload;
+      // Deleting the open conversation also clears its view and any pending request state (#269)
+      if (state.currentConversation?.id === conversationId) {
+        state.currentConversation = null;
+        state.messages = [];
+        state.isLoading = false;
+        state.isTyping = false;
+        state.pendingMessages = new Set();
+        state.optimisticUpdates = new Map();
+      }
       state.conversations = state.conversations.filter(
         (conv) => conv.id !== conversationId,
       );
@@ -794,6 +950,17 @@ state.messages[index] = {
     streamingDelta: (state, action: PayloadAction<{ requestId: string; text: string }>) => {
       if (state.streamingResponse?.requestId === action.payload.requestId) {
         state.streamingResponse.text = action.payload.text;
+      }
+    },
+    /** Merge server-delivered messages (live or resynced) with dedupe against local/optimistic copies (#277). */
+    mergeSyncedMessages: (state, action: PayloadAction<ChatMessage[]>) => {
+      state.messages = mergeIncomingMessages(state.messages, action.payload);
+      for (const message of action.payload) {
+        const optimisticId = message.metadata?.optimisticId ?? message.metadata?.tempId;
+        if (optimisticId) {
+          state.optimisticUpdates.delete(optimisticId);
+          state.pendingMessages.delete(optimisticId);
+        }
       }
     },
     resolveOptimisticUpdate: (
@@ -996,29 +1163,15 @@ state.messages[index] = {
       .addCase(sendMessage.rejected, (state, action) => {
         state.isLoading = false;
         state.isTyping = false;
+        // Drop the streamed preview for this request, whatever the outcome (#261)
         if (state.streamingResponse?.requestId === action.meta.requestId) {
           state.streamingResponse = null;
         }
 
-        if (action.meta.aborted) {
-          // Cancelled by the client (route change): drop the partial reply quietly, no error bubble
-          const cancelledId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
-            ? action.meta.arg.tempId
-            : `msg_optimistic_${action.meta.requestId}`;
-          const idx = state.messages.findIndex(
-            m => m.id === cancelledId || m.metadata?.optimisticId === cancelledId || m.metadata?.tempId === cancelledId
-          );
-          if (idx !== -1) {
-            state.messages[idx].metadata = {
-              ...state.messages[idx].metadata,
-              status: 'failed',
-              error: 'cancelled',
-            };
-          }
+        // The conversation was deleted mid-request: nothing to show or mark as failed (#269)
+        if (action.payload === CONVERSATION_DELETED) {
           return;
         }
-
-        state.error = action.payload as string;
 
 const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
           ? action.meta.arg.tempId
@@ -1028,6 +1181,19 @@ const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
         const optimisticIdx = state.messages.findIndex(
           m => m.id === tempId || m.metadata?.optimisticId === tempId || m.metadata?.tempId === tempId
         );
+
+        if (action.payload === ABORT_ERROR || action.meta.aborted) {
+          state.error = null;
+          if (optimisticIdx !== -1) {
+            state.messages[optimisticIdx].metadata = {
+              ...state.messages[optimisticIdx].metadata,
+              status: "cancelled",
+            };
+          }
+          return;
+        }
+
+        state.error = action.payload as string;
 
         if (optimisticIdx !== -1) {
           state.messages[optimisticIdx].metadata = {
@@ -1070,6 +1236,38 @@ type: "error",
         };
         state.messages.push(errorMessage);
         state.messages = sortMessagesChronologically(state.messages);
+      })
+      .addCase(regenerateLastResponse.pending, (state) => {
+        state.isLoading = true;
+        state.isTyping = true;
+        state.error = null;
+      })
+      .addCase(regenerateLastResponse.fulfilled, (state, action) => {
+        state.isLoading = false;
+        state.isTyping = false;
+        const index = state.messages.findIndex((message) => message.id === action.payload.agentId);
+        if (index !== -1) {
+          state.messages[index] = {
+            ...state.messages[index],
+            content: action.payload.content,
+            metadata: {
+              ...state.messages[index].metadata,
+              status: "success",
+              success: action.payload.response.result.success,
+              error: action.payload.response.result.error,
+              executionTrace: action.payload.response.result.executionTrace,
+            },
+          };
+        }
+      })
+      .addCase(regenerateLastResponse.rejected, (state, action) => {
+        state.isLoading = false;
+        state.isTyping = false;
+        if (action.payload === ABORT_ERROR || action.payload === "busy" || action.payload === "inactive") {
+          state.error = null;
+          return;
+        }
+        state.error = action.payload as string;
       })
 
       // ── sendVoiceMessage ───────────────────────────────────────────────────
@@ -1139,5 +1337,6 @@ export const {
   removeOptimisticUpdate,
   resolveOptimisticUpdate,
   streamingDelta,
+  mergeSyncedMessages,
 } = chatSlice.actions;
 export default chatSlice.reducer;
