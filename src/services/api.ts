@@ -29,8 +29,9 @@ import {
   PaymentSubmissionResult,
   PaymentStatusResult,
 } from "@/types";
-import agentService from "./agentService";
+import agentService, { classifyAgentError, isStateChangingQuery, agentErrorMessage } from "./agentService";
 import { tokenRefreshService } from "./tokenRefreshService";
+import type { MissedEventsPage } from "./socketManager";
 import {
   isRetryableError,
   computeBackoffMs,
@@ -769,6 +770,27 @@ class ApiService {
     return response.data;
   }
 
+  /**
+   * Fetch chat events emitted after `afterCursor`, oldest first, for post-reconnect resync (#277).
+   * Proposed contract: `GET /chat/events?after=<cursor>&limit=<n>` →
+   * `{ events: [{ event, cursor, data }], hasMore, nextCursor? }`.
+   *
+   * @param afterCursor - Last cursor the client acknowledged.
+   * @param limit - Page size (defaults to 100).
+   * @returns Promise resolving to one page of missed events.
+   * @throws {AxiosError} Throws if the request fails; the socket manager reports it as a resync error.
+   */
+  async getMissedChatEvents(afterCursor: string, limit = 100): Promise<MissedEventsPage> {
+    const response = await this.api.get<MissedEventsPage>('/chat/events', {
+      params: { after: afterCursor, limit },
+    });
+    return {
+      events: Array.isArray(response.data?.events) ? response.data.events : [],
+      hasMore: Boolean(response.data?.hasMore),
+      nextCursor: response.data?.nextCursor,
+    };
+  }
+
   // Account transaction endpoints
 
   async getAccountTransactions(
@@ -1107,6 +1129,7 @@ class ApiService {
         },
       };
     } catch (error: unknown) {
+      // A user-cancelled request (Stop button / navigation) is not a failure to report
       if (isAbort(error)) {
         throw error;
       }
@@ -1123,24 +1146,20 @@ class ApiService {
         errorValue.message ||
         "Unknown error";
 
-      let friendlyMessage = "Query failed. Please try again.";
-
-      if (errorMsg.toLowerCase().includes("invalid query")) {
-        friendlyMessage =
-          "I didn't understand that. Could you please rephrase your question?";
-      } else if (errorMsg.toLowerCase().includes("timeout")) {
-        friendlyMessage =
-          "The request is taking longer than expected. Please try again.";
-      } else if (errorMsg.toLowerCase().includes("network")) {
-        friendlyMessage =
-          "I'm having trouble connecting. Please check your internet connection and try again.";
-      }
+      // Keep timeouts distinct from connectivity failures (#274)
+      const errorKind = classifyAgentError(error);
+      const stateChanging = isStateChangingQuery(data.query);
+      const friendlyMessage = errorKind === "server" || errorKind === "unknown"
+        ? "Query failed. Please try again."
+        : agentErrorMessage(errorKind, stateChanging);
 
       return {
         result: {
           success: false,
           data: friendlyMessage,
           error: errorMsg,
+          errorKind,
+          stateChanging,
         },
       };
     }

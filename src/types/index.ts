@@ -346,6 +346,14 @@ export interface ChatMessage {
     clientTimestamp?: number | string;
     optimisticId?: string;
     tempId?: string;
+    /** Failure category from the agent service (#274), e.g. `timeout` vs `network`. */
+    errorKind?: "timeout" | "network" | "invalid_query" | "server" | "unknown";
+    /** Client request id used to check status of a timed-out action. */
+    requestId?: string;
+    /** Whether the query looked like a state-changing action (transfer, swap, ...). */
+    stateChanging?: boolean;
+    /** Outcome of the latest status check after a timeout. */
+    actionStatus?: "pending" | "completed" | "failed" | "unknown";
   };
 }
 

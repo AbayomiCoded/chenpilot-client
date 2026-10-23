@@ -14,10 +14,13 @@ import {
   addPendingMessage,
 } from "@/store/slices/chatSlice";
 import AgentMessage from "@/components/chat/AgentMessage";
+import { AgentTimeoutNotice } from "@/components/chat/AgentTimeoutNotice";
+import agentConfig from "@/config/agent";
 import UserMessage from "@/components/chat/UserMessage";
 import { TagWidget } from "@/components/chat/TagWidget";
 import { OfflineIndicator } from "@/components/chat/OfflineIndicator";
 import { useOfflineQueue } from "@/hooks/useOfflineQueue";
+import { useChatResync } from "@/hooks/useChatResync";
 import {
   Send,
   Mic,
@@ -85,6 +88,9 @@ function formatSeconds(secs: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
+// After this long, the typing indicator explains the request is still running (#274)
+const LONG_RUNNING_NOTICE_SECONDS = 10;
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export const ChatEngine: React.FC = () => {
@@ -102,7 +108,11 @@ export const ChatEngine: React.FC = () => {
     pendingMessages,
   } = useAppSelector((state) => state.chat);
   const { processQueue } = useOfflineQueue();
+  // Merge live chat events and catch up on ones missed during socket downtime (#277)
+  useChatResync();
   const [inputValue, setInputValue] = useState("");
+  // Seconds the current agent request has been running; drives the "still working" state (#274)
+  const [pendingSeconds, setPendingSeconds] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
@@ -156,6 +166,18 @@ export const ChatEngine: React.FC = () => {
   });
 
   // ── Effects ───────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!isTyping) {
+      setPendingSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = setInterval(() => {
+      setPendingSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isTyping]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: prefersReducedMotion ? "auto" : "smooth" });
   }, [messages, isTyping, voiceStatus, prefersReducedMotion]);
@@ -329,6 +351,25 @@ export const ChatEngine: React.FC = () => {
         return;
       }
       toast.error(error || "Failed to send message");
+    }
+  };
+
+  const handleResolveTimeout = (messageId: string, updates: Partial<ChatMessage>) => {
+    dispatch(updateMessage({ id: messageId, updates }));
+    if (updates.metadata?.actionStatus === "completed") {
+      toast.success("The action completed");
+    }
+  };
+
+  // Resend the user query that preceded a timed-out agent reply (read-only queries only)
+  const handleRetryTimedOut = (messageId: string) => {
+    const idx = messages.findIndex((m) => m.id === messageId);
+    const original = messages
+      .slice(0, idx)
+      .reverse()
+      .find((m) => m.type === "user");
+    if (original && !isChatLoading && !isTyping) {
+      dispatch(sendMessage(original.content));
     }
   };
 
@@ -659,6 +700,11 @@ return (
                       currentConversation?.isActive !== false
                     }
                   />
+                  <AgentTimeoutNotice
+                    message={message}
+                    onResolve={(updates) => handleResolveTimeout(message.id, updates)}
+                    onRetry={() => handleRetryTimedOut(message.id)}
+                  />
                 </div>
               )}
             </div>
@@ -679,8 +725,10 @@ return (
                       style={{ animationDelay: "0.2s" }}
                     />
                   </div>
-                  <span className="text-sm text-gray-400">
-                    ChenPilot is thinking...
+                  <span className="text-sm text-gray-400" role="status" aria-live="polite">
+                    {pendingSeconds >= LONG_RUNNING_NOTICE_SECONDS
+                      ? `Still working on it (${pendingSeconds}s). Long actions can take up to ${Math.round(agentConfig.timeout / 1000)}s.`
+                      : "ChenPilot is thinking..."}
                   </span>
                 </div>
               </div>

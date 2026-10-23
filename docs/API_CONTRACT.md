@@ -25,7 +25,7 @@ This document records the HTTP requests made by [`src/services/api.ts`](../src/s
 - A 401 on an `ApiService` request triggers one queued refresh attempt and then retries the original request once. If refresh fails, local auth is cleared and the browser is sent to `/auth/login`. The auth UI may show the rejected thunk/error message.
 - The retry interceptor retries eligible network failures and the configured 408, 429, and 5xx statuses, subject to method safety; 503 is retried for any method. It exposes retry state to the UI. This is transport retry behavior, not an application error envelope.
 - Contact wrappers specially handle 404: `GET /contacts` becomes `{ success: true, data: [], message: ... }`; contact create/update/delete become `{ success: false, status: 404, message: ... }`. Other failures reject.
-- Agent query wrappers catch failures and return `result.success: false`. Messages containing `invalid query`, `timeout`, or `network` map to friendly text; other failures use a generic unavailable/query-failed message. Chat displays the returned error/message to the user.
+- Agent query wrappers catch failures and return `result.success: false` with a `result.errorKind` of `timeout`, `network`, `invalid_query`, `server` or `unknown` (#274). Timeouts (Axios `ECONNABORTED`/`ETIMEDOUT`, a "timeout" message, or HTTP 408/504) are kept separate from connectivity failures (`ERR_NETWORK`, no response). Each kind maps to its own friendly text, and chat displays it to the user. See [Agent Timeouts And Status Checks](#agent-timeouts-and-status-checks).
 - The Google sign-in surface displays the caught error text. The liquidity widget displays generic inline errors (`Failed to fetch liquidity data` or `Error loading liquidity statistics`) rather than the backend message.
 - Login/register forms dispatch auth thunks; the backend response contract is documented in the Authentication Endpoints table below.
 
@@ -49,11 +49,40 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
 | `HEAD /` | No body; health probe. | `200`, no response body is consumed. The client synthesizes its `AgentHealthCheck`. | Agent connectivity initialization; status object is synthesized, not returned by the server. |
-| `POST /query` | `{"userId":"user-1","query":"What is my XLM balance?"}` | `{"result":{"success":true,"data":"Your balance is ...","error":null}}` (`executionTrace` is optional). | Chat query; failures become friendly `result` messages shown in chat. |
+| `POST /query` | `{"userId":"user-1","query":"What is my XLM balance?","clientRequestId":"agent_query_1767225600_k3j9xz"}` | `{"result":{"success":true,"data":"Your balance is ...","error":null}}` (`executionTrace` is optional). | Chat query; failures become friendly `result` messages shown in chat. The client adds `requestId`, `stateChanging` and, on failure, `errorKind` to the returned `result`. |
+| `GET /query/{clientRequestId}/status` | `GET /query/agent_query_1767225600_k3j9xz/status` | `{"status":"completed","result":{"success":true,"data":"Sent 50 XLM","transactionHash":"..."}}`; `status` is `pending`, `completed` or `failed`. | **Proposed; backend support not yet confirmed.** The "Check status" action shown after a state-changing query times out. A 404/501, network error or unrecognized body resolves as `unknown`. |
 | `GET /memory/{userId}` | `GET /memory/user-1` | `[]` (declared `string[]`). | Service method only; failures are logged and return an empty list. |
 | `DELETE /memory/{userId}` | `DELETE /memory/user-1` | `204 No Content`; the response body is ignored. | Service method only; failures reject as `Failed to clear agent memory`. |
 | `GET /tools` | No body. | `[]` (the service currently does not declare tool item fields). | Service method only; failure returns an empty list. |
 | `POST /tools/{toolName}/execute` | `POST /tools/swap/execute` with `{"from":"XLM","to":"USDC","amount":"10"}` | Example pass-through: `{"result":"..."}`. The service does not define or validate this response shape. | Service method only; errors are rethrown as a tool failure. |
+
+### Agent Timeouts And Status Checks
+
+`AgentService` gives up waiting after `NEXT_PUBLIC_AGENT_TIMEOUT` (default 30000 ms). A client timeout does not mean the backend stopped: a transfer or swap may still complete.
+
+- **While waiting:** after 10s the chat typing indicator changes to "Still working on it (Ns)" and names the timeout.
+- **Read-only queries** (balance, APY, ...): the timed-out reply shows a **Retry** button that resends the previous user message.
+- **State-changing queries** (send, transfer, swap, lend, borrow, withdraw, repay, deposit, stake, claim, harvest, liquidate, deploy, add/remove liquidity or collateral): no retry is offered, so the action can't be submitted twice. The reply says the action may still be running and shows **Check status**, which calls `agentService.getActionStatus(requestId)`:
+  - `completed` / `failed`: the message is replaced with the late result, including `transactionHash` when present.
+  - `pending`: "Still running. Check again in a moment."
+  - `unknown`: the user is asked to check their wallet's transaction history before trying again.
+
+**Backend requirements (unconfirmed):**
+1. Accept the extra `clientRequestId` field on `POST /query`. Backends that ignore unknown fields are unaffected.
+2. Implement `GET /query/{clientRequestId}/status` and keep status for at least as long as the slowest action plus a few minutes.
+3. Ideally, dedupe `POST /query` by `clientRequestId` so a resend cannot run an action twice.
+
+Until (2) ships, status checks resolve as `unknown` and users are pointed to their transaction history. The backend fallback in `apiService.queryAgent` sets `errorKind` but sends no `clientRequestId`, so its timeouts can't be status-checked.
+
+### Chat Event Resync (#277)
+
+**Proposed; backend support not yet confirmed.** The client sends these requests to the API base URL through `apiService.getMissedChatEvents`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /chat/events` | `GET /chat/events?after=c_1042&limit=100` | `{"events":[{"event":"chat:message","cursor":"c_1043","data":{"cursor":"c_1043","message":{"id":"srv_88","type":"agent","content":"...","timestamp":"2026-01-01T00:00:00Z","metadata":{"requestId":"agent_query_..."}}}}],"hasMore":false,"nextCursor":"c_1043"}` | Called after each socket reconnect to replay events missed during downtime, oldest first. Failures are recorded as a resync error; live events keep working. |
+
+The live socket event `chat:message` must carry the same `{ cursor, message }` payload. See `src/docs/MESSAGE_ORDERING.md` §6 for cursor and dedupe rules.
 
 `getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
 
