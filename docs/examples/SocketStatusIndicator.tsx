@@ -4,6 +4,7 @@ import React from 'react';
 import { useSocketConnection } from '@/hooks/useSocket';
 import { Wifi, WifiOff } from 'lucide-react';
 
+/** Historical demo. Production UI: `src/components/status/SocketStatusIndicator.tsx`. */
 export function SocketStatusIndicator() {
   const { isConnected } = useSocketConnection();
 

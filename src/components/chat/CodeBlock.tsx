@@ -4,6 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Copy, Check, AlertCircle } from 'lucide-react';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/atom-one-dark.css';
+import { escapeHtml, sanitizeLanguage } from '@/utils/markdownPolicy';
 
 type CopyState = 'idle' | 'copied' | 'failed';
 
@@ -47,12 +48,14 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ children, className, inlin
     if (resetTimer.current) clearTimeout(resetTimer.current);
   }, []);
 
-  // Extract language from className (e.g., "language-javascript" -> "javascript")
-  const language = className?.replace(/language-/, '') || '';
+  // Extract language from className (e.g., "language-javascript" -> "javascript").
+  // Restricted to a safe identifier because it is interpolated into class names (#263).
+  const language = sanitizeLanguage(className?.replace(/language-/, ''));
 
-  // Highlight code if not inline
+  // Highlight code if not inline. The result goes into innerHTML, so every path must be
+  // HTML-safe: highlight.js escapes its input, and the fallback is escaped explicitly (#263).
   const getHighlightedCode = () => {
-    if (inline) return children;
+    if (inline) return escapeHtml(children);
 
     try {
       if (language && hljs.getLanguage(language)) {
@@ -62,7 +65,7 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ children, className, inlin
       return hljs.highlightAuto(children).value;
     } catch (error) {
       console.error('Syntax highlighting error:', error);
-      return children;
+      return escapeHtml(children);
     }
   };
 

@@ -7,6 +7,8 @@ import {
   capitalize,
   toTitleCase,
   truncateText,
+  formatRelativeTime,
+  formatExactTime,
 } from "../format";
 
 // #141 — table-driven tests for format utils.
@@ -130,4 +132,69 @@ describe("truncateText", () => {
       expect(truncateText(input, max, suffix)).toBe(expected);
     });
   }
+});
+
+// Deterministic "now" anchor used across timestamp tests.
+const NOW = new Date('2024-06-15T12:00:00.000Z');
+
+describe("formatRelativeTime", () => {
+  const cases: Array<[string, string, string]> = [
+    // [input offset description, ISO offset from NOW, expected output]
+    ["30 seconds ago", "2024-06-15T11:59:30.000Z", "Just now"],
+    ["1 minute ago", "2024-06-15T11:59:00.000Z", "1 minute ago"],
+    ["5 minutes ago", "2024-06-15T11:55:00.000Z", "5 minutes ago"],
+    ["1 hour ago", "2024-06-15T11:00:00.000Z", "1 hour ago"],
+    ["3 hours ago", "2024-06-15T09:00:00.000Z", "3 hours ago"],
+    ["1 day ago", "2024-06-14T12:00:00.000Z", "1 day ago"],
+    ["6 days ago", "2024-06-09T12:00:00.000Z", "6 days ago"],
+    ["1 week ago", "2024-06-08T12:00:00.000Z", "1 week ago"],
+    ["3 weeks ago", "2024-05-25T12:00:00.000Z", "3 weeks ago"],
+  ];
+
+  for (const [name, isoInput, expected] of cases) {
+    it(name, () => {
+      expect(formatRelativeTime(isoInput, NOW)).toBe(expected);
+    });
+  }
+
+  it("falls back to formatted date for dates older than 4 weeks", () => {
+    const old = "2024-05-01T12:00:00.000Z";
+    const result = formatRelativeTime(old, NOW);
+    // Should be a readable date string, not a relative label
+    expect(result).toMatch(/May/);
+    expect(result).toMatch(/2024/);
+  });
+
+  it("accepts a Date object as input", () => {
+    const d = new Date("2024-06-15T11:58:00.000Z"); // 2 minutes before NOW
+    expect(formatRelativeTime(d, NOW)).toBe("2 minutes ago");
+  });
+});
+
+describe("formatExactTime", () => {
+  const INPUT = "2024-06-15T09:30:45.000Z";
+
+  it("returns the ISO string unchanged", () => {
+    const { iso } = formatExactTime(INPUT);
+    expect(iso).toBe(new Date(INPUT).toISOString());
+  });
+
+  it("label contains the year, month, day, and time components", () => {
+    const { label } = formatExactTime(INPUT, "en-US");
+    expect(label).toMatch(/2024/);
+    expect(label).toMatch(/Jun/);
+    expect(label).toMatch(/15/);
+  });
+
+  it("label includes a timezone name", () => {
+    const { label } = formatExactTime(INPUT, "en-US");
+    // timezone abbreviation like UTC, GMT, or an offset
+    expect(label).toMatch(/UTC|GMT|[+-]\d/);
+  });
+
+  it("accepts a Date object as input", () => {
+    const d = new Date(INPUT);
+    const { iso } = formatExactTime(d);
+    expect(iso).toBe(d.toISOString());
+  });
 });

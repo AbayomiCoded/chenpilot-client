@@ -3,7 +3,42 @@
 export interface AgentQueryRequest {
   userId: string;
   query: string;
+  /**
+   * Client-generated id for this query (#262, #274). Reused when the query is retried so the
+   * backend can deduplicate it (idempotency key) and answer `GET /query/:clientRequestId/status`.
+   */
+  clientRequestId?: string;
 }
+
+/**
+ * Why an agent query failed (#274, #262). `timeout` means the client stopped waiting; the
+ * action may still be running. `invalid_query` and `unauthenticated` are never retried.
+ */
+export type AgentErrorKind = 'timeout' | 'network' | 'invalid_query' | 'server' | 'unauthenticated' | 'unknown';
+
+/** Result of checking a query's status after a timeout (#274). */
+export interface AgentActionStatus {
+  requestId: string;
+  /** `unknown` when the backend cannot report status (endpoint missing or unreachable). */
+  status: 'pending' | 'completed' | 'failed' | 'unknown';
+  result?: AgentQueryResponse['result'];
+  checkedAt: string;
+}
+
+/** Backend-reported status of a previously sent query (#262). */
+export interface AgentOperationStatus {
+  requestId: string;
+  /** `unknown` when the backend cannot report status (endpoint missing or unreachable). */
+  status: 'pending' | 'completed' | 'failed' | 'not_found' | 'unknown';
+  result?: AgentQueryResponse['result'];
+}
+
+/** What to do when the user asks to retry a failed query (#262). */
+export type AgentRetryDecision =
+  | { action: 'retry' }
+  | { action: 'completed'; result?: AgentQueryResponse['result'] }
+  | { action: 'pending' }
+  | { action: 'confirm' };
 
 export interface AgentQueryResponse {
   result: {
@@ -17,6 +52,12 @@ export interface AgentQueryResponse {
     delivered?: boolean;
     /** Server id for the user's message, used to reconcile the optimistic row (#266). */
     userMessageId?: string;
+    /** Set on failures so the UI can tell a timeout apart from a connectivity error (#274). */
+    errorKind?: AgentErrorKind;
+    /** Echo of `clientRequestId`; use with `agentService.getActionStatus`. */
+    requestId?: string;
+    /** True when the query looked like a state-changing action (transfer, swap, ...). */
+    stateChanging?: boolean;
     transactionHash?: string;
     metadata?: {
       type?: 'defi' | 'wallet' | 'contact' | 'general';
@@ -28,25 +69,29 @@ export interface AgentQueryResponse {
   };
 }
 
+/**
+ * Agent status (#271). Every metric is `null` when no real source reported it; the client never
+ * fills in placeholder values. `isOnline` comes from the health probe (`AgentHealthCheck`).
+ */
 export interface AgentStatus {
   isOnline: boolean;
-  version: string;
-  uptime: number;
-  lastActivity: string;
-  activeConnections: number;
-  services: {
-    soroswap: ServiceStatus;
-    blend: ServiceStatus;
-    aquarius: ServiceStatus;
-    phoenix: ServiceStatus;
-    database: ServiceStatus;
-  };
+  /** Where the metrics came from: `GET /status`, or nothing (`unavailable`). */
+  source: 'backend' | 'unavailable';
+  version: string | null;
+  /** Seconds. */
+  uptime: number | null;
+  lastActivity: string | null;
+  activeConnections: number | null;
+  /** Per-protocol health as reported by the backend; empty when unknown. */
+  services: Record<string, ServiceStatus>;
+  /** The health probe that determined `isOnline`. */
+  health: AgentHealthCheck | null;
 }
 
 export interface ServiceStatus {
-  isActive: boolean;
-  isHealthy: boolean;
-  lastCheck: string;
+  isActive: boolean | null;
+  isHealthy: boolean | null;
+  lastCheck: string | null;
   error?: string;
 }
 
@@ -74,6 +119,17 @@ export interface AgentCapabilities {
 export interface AgentHealthCheck {
   status: 'healthy' | 'degraded' | 'unhealthy';
   timestamp: string;
+  /**
+   * Which probe produced this result (#272): `health_endpoint` = `GET /health`;
+   * `connectivity` = `HEAD /` fallback, which only proves the server is reachable.
+   */
+  probe: 'health_endpoint' | 'connectivity';
+  /** False when `GET /health` is missing (404/405/501). */
+  healthEndpointSupported: boolean;
+  /** Measured round trip of the answering probe in ms; null when nothing answered. */
+  responseTimeMs: number | null;
+  /** Why the agent is unhealthy: no answer (`network`/`timeout`) vs an error answer (`server_error`). */
+  reason?: 'network' | 'timeout' | 'server_error';
   services: {
     [key: string]: {
       status: 'up' | 'down' | 'degraded';
@@ -81,7 +137,8 @@ export interface AgentHealthCheck {
       error?: string;
     };
   };
-  system: {
+  /** Only present when the backend reports it; never synthesized. */
+  system?: {
     memory: {
       used: number;
       total: number;

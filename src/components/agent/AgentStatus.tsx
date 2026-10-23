@@ -14,11 +14,23 @@ import {
   CheckCircle,
   XCircle,
   AlertCircle,
+  HelpCircle,
   Loader2
 } from 'lucide-react';
 import apiService from '@/services/api';
-import { AgentStatus as AgentStatusType, AgentCapabilitiesResult } from '@/types/agent';
+import { AgentStatus as AgentStatusType, AgentCapabilitiesResult, ServiceStatus } from '@/types/agent';
 import { isCapabilitiesStale } from '@/services/agentService';
+
+const UNAVAILABLE = 'Unavailable';
+
+/** Format a metric that may be unknown (#271). */
+export function formatUptime(seconds: number | null): string {
+  if (seconds === null) return UNAVAILABLE;
+  const hours = Math.floor(seconds / 3600);
+  if (hours >= 1) return `${hours}h`;
+  return `${Math.floor(seconds / 60)}m`;
+}
+
 
 /** Explanation shown when capability data can't be trusted as live (#270). */
 export function capabilityNotice(result: AgentCapabilitiesResult | null, now = Date.now()): string | null {
@@ -63,10 +75,8 @@ export default function AgentStatus({ className = '', showDetails = false }: Age
       setStatus(status);
       setCapabilities(capabilities);
       
-      // An unavailable capability lookup is not evidence of connectivity (#270)
-      const isConnected =
-        statusData.status === 'fulfilled' ||
-        (capabilities !== null && capabilities.availability !== 'unavailable');
+      // Online only when a real health probe says so; capabilities are local and prove nothing (#271)
+      const isConnected = status?.isOnline === true;
       
       dispatch(updateAgentStatus({
         isConnected,
@@ -146,12 +156,14 @@ export default function AgentStatus({ className = '', showDetails = false }: Age
     }
   };
 
-  const getServiceStatus = (service: any) => {
-    if (service.isHealthy) {
-      return <CheckCircle className="h-3 w-3 text-green-400" />;
-    } else {
-      return <AlertCircle className="h-3 w-3 text-yellow-400" />;
+  const getServiceStatus = (service: ServiceStatus) => {
+    if (service.isHealthy === true) {
+      return <CheckCircle className="h-3 w-3 text-green-400" aria-label="Healthy" />;
     }
+    if (service.isHealthy === false) {
+      return <AlertCircle className="h-3 w-3 text-yellow-400" aria-label="Unhealthy" />;
+    }
+    return <HelpCircle className="h-3 w-3 text-gray-500" aria-label="Unknown" />;
   };
 
   if (!showDetails) {
@@ -187,23 +199,37 @@ export default function AgentStatus({ className = '', showDetails = false }: Age
 
       {status && (
         <div className="space-y-3">
-          <div className="text-xs text-gray-400">
-            Version: {status.version} | Uptime: {Math.floor(status.uptime / 3600)}h
+          <div className="text-xs text-gray-400" data-testid="agent-metrics">
+            Version: {status.version ?? UNAVAILABLE} | Uptime: {formatUptime(status.uptime)} | Connections:{' '}
+            {status.activeConnections ?? UNAVAILABLE}
           </div>
-          
+
+          {status.health && (
+            <div className="text-xs text-gray-400" data-testid="agent-health">
+              {status.health.responseTimeMs !== null ? `Response time: ${status.health.responseTimeMs} ms` : 'Response time: no response'}
+              {status.health.probe === 'connectivity' && ' (connectivity check only)'}
+            </div>
+          )}
+
           <div className="space-y-2">
             <div className="text-xs font-medium text-gray-300">Services</div>
-            <div className="grid grid-cols-2 gap-2">
-              {Object.entries(status.services).map(([name, service]) => (
-                <div key={name} className="flex items-center justify-between p-2 bg-gray-800/50 rounded">
-                  <div className="flex items-center space-x-2">
-                    {getServiceIcon(name)}
-                    <span className="text-xs text-gray-300 capitalize">{name}</span>
+            {Object.keys(status.services).length === 0 ? (
+              <p className="text-xs text-gray-500">
+                Protocol health is unavailable: the agent backend doesn&apos;t report it yet.
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                {Object.entries(status.services).map(([name, service]) => (
+                  <div key={name} className="flex items-center justify-between p-2 bg-gray-800/50 rounded">
+                    <div className="flex items-center space-x-2">
+                      {getServiceIcon(name)}
+                      <span className="text-xs text-gray-300 capitalize">{name}</span>
+                    </div>
+                    {getServiceStatus(service)}
                   </div>
-                  {getServiceStatus(service)}
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {capabilities && (
