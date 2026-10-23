@@ -2,6 +2,7 @@ import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { Contact, CreateContactRequest, UpdateContactRequest } from '@/types';
 import apiService from '@/services/api';
 import { PAGINATION } from '@/constants';
+import { normalizeContactAddress } from '@/utils/validation';
 
 export const paginateContacts = (
   contacts: Contact[],
@@ -139,6 +140,38 @@ export const deleteContact = createAsyncThunk(
   }
 );
 
+/**
+ * Bulk-import a pre-validated list of contacts.
+ * Each entry is created sequentially; if an individual creation fails the
+ * rest still continue so the import is never silently partial — every
+ * failure is collected and surfaced to the caller.
+ */
+export const importContacts = createAsyncThunk(
+  'contacts/importContacts',
+  async (rows: CreateContactRequest[], { dispatch, rejectWithValue }) => {
+    const succeeded: Contact[] = [];
+    const failures: { name: string; error: string }[] = [];
+
+    for (const row of rows) {
+      try {
+        const contact = await dispatch(createContact(row)).unwrap();
+        succeeded.push(contact);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err ?? 'Unknown error');
+        failures.push({ name: row.name, error: message });
+      }
+    }
+
+    if (failures.length > 0 && succeeded.length === 0) {
+      return rejectWithValue(
+        `All ${failures.length} import(s) failed. First error: ${failures[0].error}`,
+      );
+    }
+
+    return { succeeded, failures };
+  },
+);
+
 const contactsSlice = createSlice({
   name: 'contacts',
   initialState,
@@ -221,6 +254,20 @@ const contactsSlice = createSlice({
         state.error = null;
       })
       .addCase(deleteContact.rejected, (state, action) => {
+        state.isLoading = false;
+        state.error = action.payload as string;
+      })
+      // Import Contacts — individual rows are added via createContact.fulfilled;
+      // these cases only manage the top-level loading/error flag.
+      .addCase(importContacts.pending, (state) => {
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(importContacts.fulfilled, (state) => {
+        state.isLoading = false;
+        state.error = null;
+      })
+      .addCase(importContacts.rejected, (state, action) => {
         state.isLoading = false;
         state.error = action.payload as string;
       });
