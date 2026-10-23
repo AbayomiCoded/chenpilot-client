@@ -46,6 +46,9 @@ export default function ContactsPage() {
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [formData, setFormData] = useState<CreateContactRequest>(createEmptyContactForm());
 
+  /** Timer refs keyed by contact id so multiple undo windows can coexist. */
+  const undoTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
   useEffect(() => {
     if (!isAuthenticated) {
       router.push('/auth/login');
@@ -59,6 +62,10 @@ export default function ContactsPage() {
   const pageCount = Math.ceil(filteredContacts.length / PAGINATION.CONTACTS_PAGE_SIZE);
   const currentContactsPage = Math.min(contactsPage, Math.max(1, pageCount));
   const visibleContacts = paginateContacts(filteredContacts, currentContactsPage);
+
+  const favoriteCount = contacts.filter((c) => c.isFavorite).length;
+
+  // ─── Create / Edit ───────────────────────────────────────────────────────────
 
   const handleCreateContact = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -169,16 +176,30 @@ export default function ContactsPage() {
     toast.error(result.fallbackMessage || buildClipboardFallbackMessage(label));
   };
 
+  // ─── Loading gate ─────────────────────────────────────────────────────────────
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600 mx-auto"></div>
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600 mx-auto" />
           <p className="mt-4 text-gray-300">Loading...</p>
         </div>
       </div>
     );
   }
+
+  const emptyTitle = showFavoritesOnly
+    ? 'No favorites yet'
+    : searchTerm
+    ? 'No contacts found'
+    : 'No contacts yet';
+
+  const emptyDescription = showFavoritesOnly
+    ? 'Star a contact to add it here.'
+    : searchTerm
+    ? 'Try another name or address.'
+    : 'Save a contact to make future transfers easier.';
 
   return (
     <ChatLayout>
@@ -557,7 +578,7 @@ export default function ContactsPage() {
             <Button
               type="button"
               variant="secondary"
-              onClick={() => setIsCreateModalOpen(false)}
+              onClick={() => { setIsDeleteModalOpen(false); setContactToDelete(null); }}
             >
               Cancel
             </Button>
@@ -649,13 +670,11 @@ export default function ContactsPage() {
           <div className="flex justify-end space-x-3 pt-4">
             <Button
               type="button"
-              variant="secondary"
-              onClick={() => setIsEditModalOpen(false)}
+              variant="danger"
+              onClick={handleConfirmDelete}
+              data-testid="confirm-delete-btn"
             >
-              Cancel
-            </Button>
-            <Button type="submit">
-              Update Contact
+              Delete
             </Button>
           </div>
         </form>
