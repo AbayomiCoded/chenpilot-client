@@ -72,7 +72,8 @@ describe('client signing boundary (#260)', () => {
     const friendbotCalls = api.text.match(/FRIENDTEST_URL\}[^`]*`/g) ?? [];
     expect(friendbotCalls.length).toBeGreaterThan(0);
     for (const call of friendbotCalls) {
-      expect(call).toContain('addr=${publicKey}');
+      // Only the public key (optionally URL-encoded) may be sent
+      expect(call).toMatch(/addr=\$\{(encodeURIComponent\()?publicKey\)?\}/);
     }
   });
 });

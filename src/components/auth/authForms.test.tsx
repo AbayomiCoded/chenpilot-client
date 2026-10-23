@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedAuthError } from '@/services/auth.service';
 
-const { dispatch, push } = vi.hoisted(() => ({ dispatch: vi.fn(), push: vi.fn() }));
+const { dispatch, push, toastError } = vi.hoisted(() => ({ dispatch: vi.fn(), push: vi.fn(), toastError: vi.fn() }));
 
 vi.mock('@/store', () => ({
   useAppDispatch: () => dispatch,
@@ -11,10 +11,11 @@ vi.mock('@/store', () => ({
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push }) }));
 vi.mock('next/link', () => ({ default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a> }));
 vi.mock('@/components/auth/GoogleSignIn', () => ({ GoogleSignInButton: () => null }));
-vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: toastError } }));
 
 import LoginForm from './(login)/loginform';
 import { RegisterForm } from './(register)/registerForm';
+import { GENERIC_AUTH_ERROR, GENERIC_REGISTER_ERROR } from '@/services/auth.service';
 
 const PASSWORD = 'Correct-Horse-9!';
 
@@ -25,28 +26,30 @@ const rejectWith = (payload: NormalizedAuthError | unknown) => {
 
 const fill = (label: RegExp, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
 
-describe('LoginForm server validation errors (#258)', () => {
+describe('LoginForm server errors (#258, privacy-safe)', () => {
   beforeEach(() => {
     dispatch.mockReset();
     push.mockReset();
+    toastError.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  it('attaches server field errors to inputs and keeps the email', async () => {
+  it('never attaches server field errors that could reveal an account, and keeps the email', async () => {
     rejectWith({ message: 'Please correct the highlighted fields.', fieldErrors: { email: 'No account with this email' } });
-    render(<LoginForm />);
+    const { container } = render(<LoginForm />);
 
     fill(/Email Address/i, 'ada@example.test');
     fill(/^Password$/i, PASSWORD);
     fireEvent.click(screen.getByRole('button', { name: /Sign In/ }));
 
-    expect(await screen.findByText('No account with this email')).toBeInTheDocument();
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR));
+    expect(container.textContent).not.toContain('No account with this email');
     const email = screen.getByLabelText(/Email Address/i) as HTMLInputElement;
     expect(email.value).toBe('ada@example.test');
-    expect(email).toHaveAttribute('aria-invalid', 'true');
     expect(push).not.toHaveBeenCalled();
   });
 
-  it('clears the password and never shows it in error text', async () => {
+  it('clears the password and never shows it or the raw server message', async () => {
     rejectWith({
       message: 'Invalid credentials',
       response: { status: 401, data: { message: `Invalid password ${PASSWORD}` } },
@@ -59,43 +62,49 @@ describe('LoginForm server validation errors (#258)', () => {
 
     await waitFor(() => expect((screen.getByLabelText(/^Password$/i) as HTMLInputElement).value).toBe(''));
     expect(container.textContent).not.toContain(PASSWORD);
-    expect(screen.getByText(/Invalid password ••••••/)).toBeInTheDocument();
-  });
-
-  it('shows a form-level message when no field matches', async () => {
-    rejectWith({ message: 'Account locked. Try again later.', fieldErrors: {} });
-    render(<LoginForm />);
-
-    fill(/Email Address/i, 'ada@example.test');
-    fill(/^Password$/i, PASSWORD);
-    fireEvent.click(screen.getByRole('button', { name: /Sign In/ }));
-
-    expect(await screen.findByText('Account locked. Try again later.')).toBeInTheDocument();
+    expect(toastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR);
+    expect(JSON.stringify(toastError.mock.calls)).not.toContain('Invalid password');
   });
 });
 
-describe('RegisterForm server validation errors (#258)', () => {
+describe('RegisterForm server errors (#258, privacy-safe)', () => {
   beforeEach(() => {
     dispatch.mockReset();
     push.mockReset();
+    toastError.mockReset();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
   });
 
-  it('maps several field errors and retains name and email', async () => {
+  it('shows safe field errors, hides account-existence ones, and retains name and email', async () => {
     rejectWith({
       message: 'Please correct the highlighted fields.',
       fieldErrors: { email: 'Email is already registered', name: 'Name contains invalid characters' },
     });
-    render(<RegisterForm />);
+    const { container } = render(<RegisterForm />);
 
-    fill(/Full Name|Name/i, 'Ada Lovelace');
+    fill(/Full Name/i, 'Ada Lovelace');
     fill(/Email Address/i, 'ada@example.test');
     fill(/^Password$/i, PASSWORD);
-    fireEvent.click(screen.getByRole('button', { name: /Create Account|Sign Up|Get Started/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Create Account/i }));
 
-    expect(await screen.findByText('Email is already registered')).toBeInTheDocument();
-    expect(screen.getByText('Name contains invalid characters')).toBeInTheDocument();
+    expect(await screen.findByText('Name contains invalid characters')).toBeInTheDocument();
+    expect(container.textContent).not.toContain('Email is already registered');
+    expect(toastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR);
     expect((screen.getByLabelText(/Email Address/i) as HTMLInputElement).value).toBe('ada@example.test');
-    expect((screen.getByLabelText(/Full Name|Name/i) as HTMLInputElement).value).toBe('Ada Lovelace');
+    expect((screen.getByLabelText(/Full Name/i) as HTMLInputElement).value).toBe('Ada Lovelace');
     expect((screen.getByLabelText(/^Password$/i) as HTMLInputElement).value).toBe('');
+  });
+
+  it('hides account-existence wording even on non-email fields', async () => {
+    rejectWith({ message: 'x', fieldErrors: { name: 'Duplicate account for this name' } });
+    const { container } = render(<RegisterForm />);
+
+    fill(/Full Name/i, 'Ada Lovelace');
+    fill(/Email Address/i, 'ada@example.test');
+    fill(/^Password$/i, PASSWORD);
+    fireEvent.click(screen.getByRole('button', { name: /Create Account/i }));
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR));
+    expect(container.textContent).not.toContain('Duplicate account');
   });
 });

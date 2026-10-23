@@ -11,10 +11,11 @@ import {
   loadChatHistory,
   deleteChatHistory,
   loadConversationsLocally,
-  deleteConversationLocally,
+  deleteConversation,
   setCurrentConversation,
 } from "@/store/slices/chatSlice";
 import { ConversationManager } from "@/components/chat/ConversationManager";
+import { DeleteConversationDialog } from "@/components/chat/DeleteConversationDialog";
 import { ThemeToggle } from "@/components/ui/ThemeToggle";
 import { Button } from "@/components/ui/Button";
 import toast from "react-hot-toast";
@@ -35,6 +36,8 @@ export function ChatLayout({ children }: ChatLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Conversation awaiting delete confirmation (#269)
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; title: string } | null>(null);
 
   // Get chat history from Redux store
   const { chatHistory, currentConversation, conversations } = useAppSelector(
@@ -101,13 +104,19 @@ export function ChatLayout({ children }: ChatLayoutProps) {
     setSidebarOpen(false);
   };
 
-  const handleDeleteChat = (
-    conversationId: string,
-    event: React.MouseEvent,
-  ) => {
-    event.stopPropagation();
-    dispatch(deleteConversationLocally(conversationId));
+  const handleDeleteChat = (conversationId: string, event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    const conversation = conversations.find((item) => item.id === conversationId);
+    setPendingDelete({ id: conversationId, title: conversation?.title ?? "This conversation" });
+  };
+
+  // Confirmed: cancel in-flight requests, drop late responses, then remove (#269)
+  const confirmDeleteChat = async (conversationId: string) => {
+    const wasOpen = currentConversation?.id === conversationId;
+    setPendingDelete(null);
+    await dispatch(deleteConversation(conversationId));
     toast.success("Chat deleted");
+    if (wasOpen) router.push("/chat");
   };
 
   const handleNavigation = (href: string) => {
@@ -277,6 +286,7 @@ export function ChatLayout({ children }: ChatLayoutProps) {
           <div className="flex-1 overflow-y-auto px-4">
             {!sidebarCollapsed && (
               <ConversationManager
+                onDeleteConversation={(conv) => handleDeleteChat(conv.id)}
                 onSelectConversation={(conv) => {
                   dispatch(loadChatHistory(conv.id));
                   dispatch(setCurrentConversation(conv));
@@ -393,6 +403,11 @@ export function ChatLayout({ children }: ChatLayoutProps) {
           {children}
         </main>
       </div>
+      <DeleteConversationDialog
+        conversation={pendingDelete}
+        onConfirm={confirmDeleteChat}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   );
 }

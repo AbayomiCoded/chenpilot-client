@@ -77,7 +77,7 @@ describe('agent retry eligibility (#262)', () => {
 
     const result = await agentService.queryAgent({ userId: 'u1', query: 'swap 5 XLM', clientRequestId: 'req_1' });
 
-    expect(mockInstance.post).toHaveBeenCalledWith('/query', expect.objectContaining({ clientRequestId: 'req_1' }));
+    expect(mockInstance.post).toHaveBeenCalledWith('/query', expect.objectContaining({ clientRequestId: 'req_1' }), expect.anything());
     expect(result.result).toMatchObject({ success: false, errorKind: 'timeout', requestId: 'req_1' });
   });
 

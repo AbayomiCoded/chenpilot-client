@@ -54,6 +54,9 @@ These are all the keys the client reads or writes. The source of truth is `STORA
 | `chat_history` | localStorage | `store/slices/chatSlice.ts` | Until logout or chat deletion | ✅ | Personal | Messages per conversation; prompts can include wallet addresses and amounts |
 | `conversations` | localStorage | `store/slices/chatSlice.ts` | Until logout or conversation deletion | ✅ | Personal | Conversation titles and metadata |
 | `messageQueue` | localStorage | `store/slices/chatSlice.ts` | Until sent after reconnecting, or logout | ✅ | Personal | Prompts queued while offline |
+| `chat_drafts` | localStorage | `lib/accountDeletion.ts` | Until logout or account deletion | ✅ | Personal | Unsent chat drafts |
+| `mfa_secret` | localStorage + sessionStorage | `services/auth.service.ts` | Never written; removed defensively when MFA setup is cancelled | ✅ | Credential | Must never hold an MFA secret |
+| `mfa_recovery_codes` | localStorage + sessionStorage | `services/auth.service.ts` | Never written; removed defensively when MFA setup is cancelled | ✅ | Credential | Must never hold MFA recovery codes |
 | `theme` | localStorage | `store/slices/uiSlice.ts`, `ThemeProvider` | Persistent | ❌ | Preference | `light` / `dark` |
 | `language` | localStorage | `store/slices/uiSlice.ts`, `lib/i18n` | Persistent | ❌ | Preference | UI language code |
 | *(all keys)* | sessionStorage | none currently | Tab | ✅ (`sessionStorage.clear()`) | — | — |

@@ -4,8 +4,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { loginSchema } from "@/utils/validation";
 import { useAppDispatch, useAppSelector } from "@/store";
-import { login, LOGIN_FIELDS } from "@/store/slices/authSlice";
-import { applyAuthErrors } from "@/components/auth/applyAuthErrors";
+import { login } from "@/store/slices/authSlice";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
 import { GoogleSignInButton } from "@/components/auth/GoogleSignIn";
@@ -13,6 +12,7 @@ import { Eye, EyeOff, ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
+import { authService } from "@/services/auth.service";
 
 interface LoginFormData {
   email: string;
@@ -24,12 +24,10 @@ export default function LoginForm() {
   const dispatch = useAppDispatch();
   const { isLoading } = useAppSelector((state) => state.auth);
   const [showPassword, setShowPassword] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
 
   const {
     register,
     handleSubmit,
-    setError,
     setValue,
     formState: { errors },
   } = useForm<LoginFormData>({
@@ -37,17 +35,16 @@ export default function LoginForm() {
   });
 
   const onSubmit = async (data: LoginFormData) => {
-    setFormError(null);
     try {
       await dispatch(login(data)).unwrap();
       toast.success("Successfully logged in!");
       router.push("/chat");
     } catch (error: unknown) {
-      // Map server validation errors onto inputs (#258). The email is kept; the password is
-      // cleared and never appears in any message.
-      const { message } = applyAuthErrors(error, LOGIN_FIELDS, setError, [data.password]);
+      // Privacy-safe (account-enumeration resistance): every login failure shows the same
+      // generic message and no server field errors, so the response can't reveal whether an
+      // account exists. The email is kept; the password is cleared (#258).
+      toast.error(authService.normalizeLoginError(error));
       setValue("password", "");
-      setFormError(message);
     }
   };
 
@@ -150,12 +147,6 @@ export default function LoginForm() {
             Forgot password?
           </Link>
         </div>
-
-        {formError && (
-          <p id="login-form-error" role="alert" className="text-sm text-red-400 font-light">
-            {formError}
-          </p>
-        )}
 
         <Button
           type="submit"

@@ -14,6 +14,7 @@ import { Eye, EyeOff, ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
+import { authService } from "@/services/auth.service";
 
 interface RegisterFormData {
   email: string;
@@ -25,7 +26,6 @@ export function RegisterForm() {
   const router = useRouter();
   const dispatch = useAppDispatch();
   const [showPassword, setShowPassword] = useState(false);
-  const [formError, setFormError] = useState<string | null>(null);
 
   const {
     register,
@@ -41,7 +41,6 @@ export function RegisterForm() {
   const passwordValue = watch("password") ?? "";
 
   const onSubmit = async (data: RegisterFormData) => {
-    setFormError(null);
     try {
       const cleanData = {
         email: String(data.email),
@@ -52,11 +51,12 @@ export function RegisterForm() {
       toast.success("Account created successfully! Welcome to ChenPilot!");
       router.push("/chat");
     } catch (error: unknown) {
-      // Map server validation errors onto inputs (#258). Name and email are kept; the password
-      // is cleared and masked out of every message instead of echoing a raw server response.
-      const { message } = applyAuthErrors(error, REGISTER_FIELDS, setError, [data.password]);
+      // Privacy-safe: the toast is always the generic message. Server field errors are attached
+      // to inputs only when they can't reveal whether an account exists (e.g. password rules);
+      // name and email are kept and the password is cleared (#258).
+      toast.error(authService.normalizeRegisterError(error));
+      applyAuthErrors(error, REGISTER_FIELDS, setError, [data.password], { hideAccountExistence: true });
       setValue("password", "");
-      setFormError(message);
     }
   };
 
@@ -170,12 +170,6 @@ export function RegisterForm() {
 
           <PasswordStrengthMeter password={passwordValue} />
         </div>
-
-        {formError && (
-          <p id="register-form-error" role="alert" className="text-sm text-red-400 font-light">
-            {formError}
-          </p>
-        )}
 
         <div className="flex items-start gap-2 text-sm pt-2">
           <input
