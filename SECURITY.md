@@ -41,6 +41,7 @@ Because Chenpilot Client operates as a web-based client workspace and wallet app
 - **Storage Profile**: Sensitive authentication tokens and session states are stored in browser storage mechanisms (`localStorage` / encrypted cookies).
 - **Security Implications**: Stored tokens are susceptible to theft if the client environment is compromised via Cross-Site Scripting (XSS). Contributors must maintain rigorous Content Security Policies (CSP), sanitize all user inputs, and keep third-party dependencies updated.
 
+
 ### Browser Storage Inventory (#256)
 
 These are all the keys the client reads or writes. The source of truth is `STORAGE_INVENTORY` in `src/services/storageInventory.ts`. `storageInventory.test.ts` fails if code uses a key that isn't listed there, so add new keys to both the inventory and this table.
@@ -108,3 +109,13 @@ An attacker controls the browser and can call any API directly with a valid toke
 2. Treat the bearer token as the user's signing authority: anyone holding it can ask the backend to move funds. Never log it, put it in URLs, or send it to a host other than the configured API (see "Log Redaction" above and `src/utils/logger.ts`).
 3. Agent output is untrusted input. Never turn it into a signing request, navigation or script on the client.
 4. Any new endpoint that changes on-chain state must be documented in `docs/API_CONTRACT.md` with the backend's authorization rule.
+
+---
+
+## Password Handling in Auth Forms (#253)
+
+- After a **terminal** auth error (an HTTP 4xx other than 408/429, or an unclassified failure), the login and registration forms clear the password field and focus it. Email and name are kept so the user only re-enters the password.
+- After a **transient** error (network failure, timeout, 408, 429, 5xx), the password is kept so the user can resubmit.
+- The password field is also cleared when the form unmounts (client-side navigation), on `pagehide`, and when the page is restored from the back/forward cache (`pageshow` with `persisted`). A submitted password is therefore never restored into the form.
+- `autocomplete` is **not** disabled (`current-password` for login, `new-password` for registration), so password managers keep working.
+- Implementation: `src/components/auth/passwordHygiene.ts`; tests in `src/components/auth/passwordHygiene.test.tsx`.

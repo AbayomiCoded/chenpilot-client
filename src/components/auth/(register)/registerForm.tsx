@@ -14,7 +14,8 @@ import { Eye, EyeOff, ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
-import { authService } from "@/services/auth.service";
+import { isTerminalAuthError, useClearPasswordOnLeave } from "@/components/auth/passwordHygiene";
+import { authService, toAuthPayload } from "@/services/auth.service";
 
 interface RegisterFormData {
   email: string;
@@ -33,30 +34,39 @@ export function RegisterForm() {
     watch,
     setError,
     setValue,
+    setFocus,
     formState: { errors, isSubmitting },
   } = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
   });
 
+  // Never leave a submitted password behind after leaving the page or a bfcache restore (#253)
+  useClearPasswordOnLeave(() => setValue("password", ""));
+
   const passwordValue = watch("password") ?? "";
 
   const onSubmit = async (data: RegisterFormData) => {
     try {
-      const cleanData = {
+      // Same email normalization as login; the password is sent exactly as typed (#259)
+      const cleanData = toAuthPayload({
         email: String(data.email),
         password: String(data.password),
         name: data.name ? String(data.name) : undefined,
-      };
+      });
       await dispatch(registerUser(cleanData)).unwrap();
       toast.success("Account created successfully! Welcome to ChenPilot!");
       router.push("/chat");
     } catch (error: unknown) {
       // Privacy-safe: the toast is always the generic message. Server field errors are attached
-      // to inputs only when they can't reveal whether an account exists (e.g. password rules);
-      // name and email are kept and the password is cleared (#258).
+      // to inputs only when they can't reveal whether an account exists (e.g. password rules) (#258).
+      // Name and email are kept; terminal failures clear and refocus the password, transient ones
+      // keep it for an easy resubmit (#253).
       toast.error(authService.normalizeRegisterError(error));
       applyAuthErrors(error, REGISTER_FIELDS, setError, [data.password], { hideAccountExistence: true });
-      setValue("password", "");
+      if (isTerminalAuthError(error)) {
+        setValue("password", "");
+        setFocus("password");
+      }
     }
   };
 

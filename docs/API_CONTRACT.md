@@ -277,6 +277,60 @@ Field names map onto form inputs `email`, `password` and `name`. The aliases `us
 | `POST /auth/change-password` | `{"currentPassword":"Example123!","newPassword":"NewExample123!"}` | `{"success":true,"data":{"message":"Password changed"}}` | Service method only; no direct screen caller found. |
 | `DELETE /auth/account` | No body; bearer token when available. | `{"success":true,"data":{"message":"Account deleted"}}` | Service method only; clears the in-memory/local token after the request resolves. |
 
+### Re-authentication For Sensitive Actions (#255)
+
+**Proposed; backend support not yet confirmed.** See [ADR-0006](adr/0006-idle-session-reauthentication.md).
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `POST /auth/reauthenticate` | `{"password":"Example123!"}`; cookies included. | `{"authenticatedAt":"2026-01-01T00:00:00Z","expiresAt":"2026-01-01T00:05:00Z"}`; a wrong password returns `401`/`403`. | `ReauthDialog`, shown only after a step-up challenge. |
+
+**Step-up challenge.** When the user's last authentication is older than the server's limit, `POST /auth/change-password`, `DELETE /account` and the data-export routes respond with:
+
+```json
+HTTP 403
+{ "code": "REAUTH_REQUIRED", "maxAgeSeconds": 300 }
+```
+
+The client prompts for the password, calls `/auth/reauthenticate` (`apiService.stepUpReauthenticate`) and retries the original request once. This applies on top of the settings page's own pre-check (the `POST /auth/login` verification grant described under "Protected settings actions"). `apiService.deleteAccount()` rethrows the challenge before clearing any local data. A `401` with this `code` does not trigger the token-refresh/logout interceptor. The client has no idle timer for these actions; the server's limit is the only rule.
+
+### Sign-in Activity (#257)
+
+**Proposed; backend support not yet confirmed.** These routes are used by `SignInActivity` on the settings page, through `sessionService`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /auth/activity` | `GET /auth/activity?limit=20`; bearer token. | `{"events":[{"id":"evt_1","type":"sign_in","outcome":"success","occurredAt":"2026-10-20T09:15:00Z","device":{"browser":"Chrome","os":"macOS","type":"desktop"},"approxLocation":{"region":"Lagos","country":"NG"},"ipAddress":"203.0.113.42","method":"password","sessionId":"sess_1","current":true}],"capabilities":{"revokeSession":true,"reportEvent":true}}` | Settings → Recent sign-in activity. `404`/`501` shows "isn't available yet"; other failures show a retry. |
+| `DELETE /auth/sessions/{sessionId}` | `DELETE /auth/sessions/sess_2` | `204 No Content` | "Sign out session". Shown only when `capabilities.revokeSession` is true, and never for the `current` session or for failed events. |
+| `POST /auth/activity/{eventId}/report` | `POST /auth/activity/evt_3/report` with `{}` | `202 Accepted` | "This wasn't me". Shown only when `capabilities.reportEvent` is true; not shown for the current session. |
+
+**Event model:**
+- `type`: one of `sign_in`, `sign_out`, `password_change`, `reauthentication`, `token_refresh`.
+- `outcome`: `success` or `failure`.
+- `occurredAt`: ISO 8601. Events are shown newest first.
+
+Events with an unknown type, unknown outcome or invalid date are dropped. `device` should be derived on the server. If only `userAgent` is sent, the client reduces it to "Browser on OS" and drops version numbers.
+
+**Privacy defaults:**
+- Shown by default: date, coarse device/browser, outcome and approximate location (region, country).
+- `ipAddress` is never shown by default. "Show network details" reveals only a coarsened form (`203.0.113.x`; the first three groups of an IPv6 address).
+- The backend should not send precise location or full fingerprints.
+
+### Email Normalization (#259)
+
+**Proposed contract; the backend must confirm it applies the same rule.** `POST /auth/login`, `POST /auth/register`, `POST /auth/forgot-password` and `POST /auth/resend-verification` should treat email addresses as follows:
+
+1. Trim leading and trailing whitespace, including tabs, newlines, non-breaking spaces and zero-width spaces.
+2. Lowercase the entire address. Comparison and uniqueness are case-insensitive.
+3. Nothing else. No provider-specific rules: Gmail dots and `+tags` are kept, `googlemail.com` is not rewritten, and there is no punycode conversion. Whitespace inside the address is invalid and rejected by validation.
+
+The client applies exactly this rule with `normalizeEmail` (`src/services/auth.service.ts`), shared by the login and registration forms through `toAuthPayload`. The input field keeps what the user typed; only the request payload is normalized. **Passwords are never trimmed or changed.** `emailSchema` accepts surrounding whitespace so an accidental space doesn't block submission, and whitespace-only input reports "Email is required".
+
+| Typed | Sent |
+| --- | --- |
+| `  Ada.Lovelace@Example.COM ` | `ada.lovelace@example.com` |
+| `first.last+tag@gmail.com` | `first.last+tag@gmail.com` |
+
 Protected settings actions include password changes, MFA changes, and device management. Password and MFA changes require re-verifying the current email/password with `POST /auth/login`; the response token is discarded and the in-memory verification grant expires after five minutes or when leaving settings. Password changes still send `currentPassword` to `POST /auth/change-password` as required by its existing contract. The settings UI validates password and confirmation with the shared `changePasswordSchema` (at least eight characters, uppercase, lowercase, and a number) and shows the shared strength meter. Google-only accounts cannot use the password-change flow, and provider re-authentication for MFA is not available for Google-only accounts. MFA enrollment and verification are described below. Device-management routes are not defined in this client. The backend must enforce recent authentication itself for protected operations (a client-side gate is not an authorization boundary).
 
 ### Multi-Factor Authentication (MFA) Specification & Contract Notes

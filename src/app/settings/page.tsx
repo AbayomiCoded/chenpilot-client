@@ -3,6 +3,10 @@
 import React, { FormEvent, useEffect, useState } from "react";
 import { useAppDispatch, useAppSelector } from "@/store";
 import { fetchProfile, logout } from "@/store/slices/authSlice";
+import { SignInActivity } from "@/components/settings/SignInActivity";
+import { useReauthPrompt } from "@/components/auth/ReauthDialog";
+import { withRecentAuth } from "@/services/auth.service";
+import { describeSensitiveActionError } from "@/utils/sensitiveActionErrors";
 import { setLanguage } from "@/store/slices/uiSlice";
 import { ChatLayout } from "@/components/layout/ChatLayout";
 import { Button } from "@/components/ui/Button";
@@ -39,6 +43,8 @@ export default function SettingsPage() {
   const [isSecurityActionLoading, setIsSecurityActionLoading] = useState(false);
   const [deletionStatus, setDeletionStatus] = useState<string | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  // Password prompt for server step-up challenges (REAUTH_REQUIRED) on sensitive calls (#255)
+  const reauth = useReauthPrompt();
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -115,9 +121,10 @@ export default function SettingsPage() {
 
     setIsSecurityActionLoading(true);
     try {
-      const response = await apiService.changePassword(
-        currentPassword,
-        newPassword,
+      const response = await withRecentAuth(
+        "change_password",
+        () => apiService.changePassword(currentPassword, newPassword),
+        reauth.prompt,
       );
       if (!response.success) {
         throw new Error(response.message || "Password change failed");
@@ -125,10 +132,9 @@ export default function SettingsPage() {
       toast.success("Password changed successfully");
       closePasswordChange();
     } catch (error) {
-      setSecurityError(
-        error instanceof Error ? error.message : "Password change failed",
-      );
+      setSecurityError(describeSensitiveActionError(error) || "Password change failed");
     } finally {
+      reauth.close();
       setIsSecurityActionLoading(false);
     }
   };
@@ -140,7 +146,9 @@ export default function SettingsPage() {
     setDeletionStatus(null);
 
     try {
-      const result = await apiService.deleteAccount();
+      // A server step-up challenge prompts for the password and retries once; local data is
+      // only cleared after the server accepted (or definitively failed) the deletion (#255)
+      const result = await withRecentAuth("delete_account", () => apiService.deleteAccount(), reauth.prompt);
 
       const remaining = result.remaining.length
         ? ` Remaining: ${result.remaining.join(", ")}.`
@@ -166,10 +174,9 @@ export default function SettingsPage() {
         await dispatch(logout());
       }
     } catch (error: unknown) {
-      setDeletionStatus(
-        error instanceof Error ? error.message : "Account deletion failed."
-      );
+      setDeletionStatus(describeSensitiveActionError(error) || "Account deletion failed.");
     } finally {
+      reauth.close();
       setIsDeleting(false);
     }
   };
@@ -385,7 +392,7 @@ export default function SettingsPage() {
                 </div>
               </Card>
 
-              {/* Security */}
+              {/* Security. Sensitive calls also honour server step-up challenges (#255, ADR-0006) */}
               <Card>
                 <div className="p-6">
                   <h3 className="mb-4 text-lg font-medium text-white">
@@ -441,9 +448,18 @@ export default function SettingsPage() {
                   </div>
                 </div>
               </Card>
+
+              {/* Recent sign-in activity (#257) */}
+              <Card>
+                <div className="p-6">
+                  <h3 className="text-lg font-medium text-white mb-4">Recent sign-in activity</h3>
+                  <SignInActivity />
+                </div>
+              </Card>
             </div>
           </div>
         </div>
+        {reauth.dialog}
         {passwordChangeStage && (
           <div
             className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"

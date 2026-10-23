@@ -14,6 +14,7 @@ import {
   AgentQueryRequest,
   AgentQueryResponse,
   ApiResponse,
+  SignInActivityPage,
   ChatHistoryPage,
   ChatHistoryQuery,
   PromptVersionRecord,
@@ -288,6 +289,12 @@ class ApiService {
           | undefined;
 
         if (!originalRequest) {
+          return Promise.reject(error);
+        }
+
+        // A step-up challenge is not an expired session: let the caller prompt for
+        // re-authentication instead of refreshing or logging out (#255, ADR-0006).
+        if (error.response?.data?.code === "REAUTH_REQUIRED") {
           return Promise.reject(error);
         }
 
@@ -586,6 +593,45 @@ class ApiService {
     return response.data;
   }
 
+  /**
+   * Recent sign-in activity for the current user (#257).
+   * Proposed contract: `GET /auth/activity?limit=<n>` → `SignInActivityPage`.
+   *
+   * @throws {AxiosError} 404/501 when the backend does not support activity yet.
+   */
+  async getSignInActivity(limit = 20): Promise<SignInActivityPage> {
+    const response = await this.api.get<SignInActivityPage>('/auth/activity', { params: { limit } });
+    return response.data;
+  }
+
+  /** Sign out another session (#257). Proposed: `DELETE /auth/sessions/:sessionId` → 204. */
+  async revokeSession(sessionId: string): Promise<void> {
+    await this.api.delete(`/auth/sessions/${encodeURIComponent(sessionId)}`);
+  }
+
+  /** Report an activity event as "not me" (#257). Proposed: `POST /auth/activity/:id/report` → 202. */
+  async reportSignInEvent(eventId: string): Promise<void> {
+    await this.api.post(`/auth/activity/${encodeURIComponent(eventId)}/report`, {});
+  }
+
+  /**
+   * Server-driven step-up (#255, ADR-0006): confirm the password after a `REAUTH_REQUIRED`
+   * challenge. Distinct from `reauthenticate(email, password)`, which verifies credentials
+   * for the settings page's client-side grant.
+   * Proposed contract: `POST /auth/reauthenticate` `{ password }` → `{ authenticatedAt, expiresAt }`.
+   *
+   * @param password - The user's current password. Never stored or logged.
+   * @throws {AxiosError} 401/403 when the password is wrong.
+   */
+  async stepUpReauthenticate(password: string): Promise<{ authenticatedAt: string; expiresAt: string }> {
+    const response = await this.api.post<{ authenticatedAt: string; expiresAt: string }>(
+      '/auth/reauthenticate',
+      { password },
+      { withCredentials: true },
+    );
+    return response.data;
+  }
+
   async changePassword(
     currentPassword: string,
     newPassword: string,
@@ -623,7 +669,12 @@ class ApiService {
     try {
       await this.api.delete("/account");
       api = true;
-    } catch {
+    } catch (error) {
+      // Server asks for recent authentication (#255): stop before touching local data or the
+      // token, so the caller can prompt, re-authenticate and retry the deletion.
+      if ((error as { response?: { data?: { code?: string } } })?.response?.data?.code === "REAUTH_REQUIRED") {
+        throw error;
+      }
       api = false;
     }
 
