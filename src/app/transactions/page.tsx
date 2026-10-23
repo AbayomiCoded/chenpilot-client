@@ -56,6 +56,8 @@ export default function TransactionsPage() {
     [transactions.pending],
   );
 
+  const [searchQuery, setSearchQuery] = useState("");
+
   useEffect(() => {
     if (publicKey) {
       dispatch(getTransactionHistory(publicKey));
@@ -93,20 +95,20 @@ export default function TransactionsPage() {
     );
   }, [dispatch, publicKey, transactions.nextCursor]);
 
-  const getStatusColor = (successful: boolean) => {
-    return successful ? "text-green-600" : "text-red-600";
-  };
+  const filtered = useMemo(
+    () => filterTransactionsByHash(transactions.transactions, searchQuery) as StellarTransaction[],
+    [transactions.transactions, searchQuery],
+  );
+
+  const getStatusColor = (successful: boolean) =>
+    successful ? "text-green-600" : "text-red-600";
 
   const getOperationType = (type: string) => {
     switch (type) {
-      case "create_account":
-        return "Funding";
-      case "payment":
-        return "Payment";
-      case "trust":
-        return "Trust";
-      default:
-        return type.replace("_", " ").toUpperCase();
+      case "create_account": return "Funding";
+      case "payment":        return "Payment";
+      case "trust":          return "Trust";
+      default:               return type.replace("_", " ").toUpperCase();
     }
   };
 
@@ -241,12 +243,35 @@ export default function TransactionsPage() {
                 </div>
               </div>
 
-              <div className="space-y-2">
-                {tx.operations.map((op) => (
-                  <div
-                    key={op.id}
-                    className="flex justify-between items-center bg-gray-50 p-2 rounded"
-                  >
+          {/* No-match state */}
+          {filtered.length === 0 ? (
+            <Card className="text-center py-10">
+              <p className="text-gray-500 dark:text-gray-400 mb-3">
+                No transactions match{" "}
+                <span className="font-mono text-sm break-all">{searchQuery}</span>
+              </p>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => setSearchQuery("")}
+                className="inline-flex items-center gap-2"
+              >
+                <X aria-hidden="true" className="h-4 w-4" />
+                Clear search
+              </Button>
+            </Card>
+          ) : (
+            <>
+              {searchQuery && (
+                <p className="text-sm text-gray-500 dark:text-gray-400" aria-live="polite">
+                  {filtered.length} result{filtered.length !== 1 ? "s" : ""} for{" "}
+                  <span className="font-mono break-all">{searchQuery}</span>
+                </p>
+              )}
+
+              {filtered.map((tx) => (
+                <Card key={tx.id} className="p-4">
+                  <div className="flex justify-between items-start mb-2">
                     <div>
                       <span className="font-medium">
                         {getOperationType(op.type)}
@@ -257,13 +282,10 @@ export default function TransactionsPage() {
                         </span>
                       )}
                     </div>
-                    <div className="text-sm text-gray-600">
-                      {op.to && `To: ${op.to.slice(0, 8)}...`}
-                      {op.from && `From: ${op.from.slice(0, 8)}...`}
+                    <div className={`font-semibold ${getStatusColor(tx.successful)}`}>
+                      {tx.successful ? "Confirmed" : "Failed"}
                     </div>
                   </div>
-                ))}
-              </div>
 
               <div className="mt-2 text-xs text-gray-500">
                 Fee: {formatTransactionFee(tx.fee_charged, { language, asset: "XLM" })} | Ledger:{" "}

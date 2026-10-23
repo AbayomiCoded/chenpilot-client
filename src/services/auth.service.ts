@@ -3,6 +3,35 @@ import apiService, { singleFlight } from './api';
 const REAUTHENTICATION_WINDOW_MS = 5 * 60 * 1000;
 
 /**
+ * HTTP status codes and backend message fragments that indicate the submitted
+ * credentials are wrong, the account does not exist, or the email is already
+ * taken.  All of these are collapsed into a single public-facing string so
+ * that an attacker cannot determine whether a given email address is enrolled.
+ *
+ * Add patterns here as new backend error shapes are discovered.  Never surface
+ * these patterns to the user — keep them internal.
+ */
+const ACCOUNT_EXISTENCE_PATTERNS: RegExp[] = [
+  /user\s+not\s+found/i,
+  /account\s+not\s+found/i,
+  /no\s+account.*found/i,
+  /invalid\s+credentials?/i,
+  /incorrect\s+(email|password|credentials?)/i,
+  /email.*already\s+(exists?|registered|taken|in\s+use)/i,
+  /already\s+registered/i,
+  /duplicate\s+(email|account)/i,
+  /email\s+taken/i,
+];
+
+/** Single user-visible string shown for any credential or account-existence error. */
+const GENERIC_AUTH_ERROR =
+  'Invalid email or password. Please check your credentials and try again.';
+
+/** Single user-visible string shown when email registration cannot proceed. */
+const GENERIC_REGISTER_ERROR =
+  'Unable to create account. Please check your details and try again.';
+
+/**
  * Service for handling authentication-related tasks beyond basic API calls,
  * such as state persistence in local browser storage and session destruction.
  */
@@ -235,3 +264,6 @@ class AuthService {
 
 export const authService = new AuthService();
 export default authService;
+
+// Exported for unit tests only — not part of the public API surface.
+export { GENERIC_AUTH_ERROR, GENERIC_REGISTER_ERROR, ACCOUNT_EXISTENCE_PATTERNS };

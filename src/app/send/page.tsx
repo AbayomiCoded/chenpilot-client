@@ -22,6 +22,8 @@ interface NativeBalanceBreakdown {
 
 export default function SendPaymentPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const initialContactId = searchParams.get('contactId') ?? undefined;
   const dispatch = useAppDispatch();
   const { isAuthenticated } = useAppSelector((state) => state.auth);
   const { list: contacts, isLoading: contactsLoading } = useAppSelector((state) => state.contacts);

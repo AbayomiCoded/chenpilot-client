@@ -19,6 +19,7 @@ import { Modal } from '@/components/ui/Modal';
 import { ChatLayout } from '@/components/layout/ChatLayout';
 import { Users, Plus, Search, Edit, Trash2, Copy, QrCode, Sparkles } from 'lucide-react';
 import { formatAddress } from '@/utils/format';
+import { validateContactAddress, normalizeContactAddress } from '@/utils/validation';
 import { Contact, CreateContactRequest } from '@/types';
 import { PAGINATION } from '@/constants';
 import { buildClipboardFallbackMessage, copyTextToClipboard } from '@/utils/clipboard';
@@ -68,6 +69,12 @@ export default function ContactsPage() {
 
   const handleCreateContact = async (e: React.FormEvent) => {
     e.preventDefault();
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) {
+      setAddressError(addrErr);
+      return;
+    }
+    setAddressError(null);
     try {
       await dispatch(createContact({
         ...formData,
@@ -77,13 +84,25 @@ export default function ContactsPage() {
       setIsCreateModalOpen(false);
       setFormData(createEmptyContactForm());
     } catch (error: any) {
-      const errorMessage = error instanceof Error ? error.message : String(error || 'Failed to create contact');
-      toast.error(errorMessage);
+      const msg = error instanceof Error ? error.message : String(error || 'Failed to create contact');
+      // Duplicate-address errors are shown inline so the user can correct without losing their input
+      if (typeof msg === 'string' && msg.includes('already uses this address')) {
+        setAddressError(msg);
+      } else {
+        toast.error(msg);
+      }
     }
   };
 
   const persistContactUpdate = async () => {
     if (!editingContact) return;
+
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) {
+      setAddressError(addrErr);
+      return;
+    }
+    setAddressError(null);
     try {
       await dispatch(updateContact({
         id: editingContact.id,
@@ -136,6 +155,7 @@ export default function ContactsPage() {
 
   const openEditModal = (contact: Contact) => {
     setEditingContact(contact);
+    setAddressError(null);
     setFormData({
       name: contact.name,
       address: contact.address,
@@ -504,21 +524,57 @@ export default function ContactsPage() {
         )}
       </div>
 
-        {/* ── Delete Confirmation Modal ── */}
-        <Modal
-          isOpen={isDeleteModalOpen}
-          onClose={() => { setIsDeleteModalOpen(false); setContactToDelete(null); }}
-          title="Delete contact"
-          ariaLabel="Delete contact confirmation"
-        >
-          <p className="text-gray-700 dark:text-gray-300 mb-6">
-            Delete{' '}
-            <span className="font-semibold text-gray-900 dark:text-white">
-              {contactToDelete?.name}
-            </span>
-            ? You&apos;ll have a few seconds to undo this.
-          </p>
-          <div className="flex justify-end space-x-3">
+      {/* Create Contact Modal */}
+      <Modal
+        isOpen={isCreateModalOpen}
+        onClose={() => { setIsCreateModalOpen(false); setAddressError(null); }}
+        title="Add New Contact"
+      >
+        <form onSubmit={handleCreateContact} className="space-y-4">
+          <Input
+            label="Name"
+            placeholder="Enter contact name"
+            value={formData.name}
+            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            required
+          />
+          
+          <div>
+            <Input
+              label="Address"
+              placeholder="Enter Stellar address (G...)"
+              value={formData.address}
+              onChange={(e) => {
+                setFormData({ ...formData, address: e.target.value });
+                setAddressError(null);
+              }}
+              required
+              aria-describedby={addressError ? 'create-address-error' : undefined}
+              aria-invalid={!!addressError}
+            />
+            {addressError && (
+              <p id="create-address-error" role="alert" className="mt-1 text-sm text-red-500">
+                {addressError}
+              </p>
+            )}
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Token Type
+            </label>
+            <select
+              value={formData.tokenType}
+              onChange={(e) => setFormData({ ...formData, tokenType: e.target.value as any })}
+              className="block w-full px-3 py-2 border border-gray-300 rounded-lg shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500 dark:bg-gray-800 dark:border-gray-600 dark:text-white"
+            >
+              <option value="STRK">STRK</option>
+              <option value="ETH">ETH</option>
+              <option value="DAI">DAI</option>
+            </select>
+          </div>
+          
+          <div className="flex justify-end space-x-3 pt-4">
             <Button
               type="button"
               variant="secondary"
@@ -576,13 +632,25 @@ export default function ContactsPage() {
             required
           />
           
-          <Input
-            label="Address"
-            placeholder="Enter Stellar address"
-            value={formData.address}
-            onChange={(e) => setFormData({ ...formData, address: e.target.value })}
-            required
-          />
+          <div>
+            <Input
+              label="Address"
+              placeholder="Enter Stellar address (G...)"
+              value={formData.address}
+              onChange={(e) => {
+                setFormData({ ...formData, address: e.target.value });
+                setAddressError(null);
+              }}
+              required
+              aria-describedby={addressError ? 'edit-address-error' : undefined}
+              aria-invalid={!!addressError}
+            />
+            {addressError && (
+              <p id="edit-address-error" role="alert" className="mt-1 text-sm text-red-500">
+                {addressError}
+              </p>
+            )}
+          </div>
           
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">

@@ -152,14 +152,47 @@ export interface WalletBalance {
   nativeBalance: string;
 }
 
+// Stellar Trustline Types
+export interface Trustline {
+  assetCode: string;
+  assetIssuer: string;
+  balance: string;
+  limit: string;
+  buyingLiabilities?: string;
+  sellingLiabilities?: string;
+  assetType?: string;
+}
+
+export interface AddTrustlineRequest {
+  assetCode: string;
+  assetIssuer: string;
+  limit?: string;
+}
+
+export interface RemoveTrustlineRequest {
+  assetCode: string;
+  assetIssuer: string;
+}
+
 // Stellar Transaction Types
 export type TransactionDirection = 'incoming' | 'outgoing' | 'self' | 'unknown';
+
+export interface AssetIdentifier {
+  code: string;
+  issuer?: string;
+  isNative: boolean;
+  canonical: string;
+  hasIncompleteMetadata?: boolean;
+}
 
 export interface StellarOperation {
   id: string;
   type: string; // e.g., 'payment', 'create_account', 'trust', etc.
   amount?: string;
   asset?: string;
+  asset_code?: string;
+  asset_issuer?: string;
+  asset_type?: string;
   from?: string;
   to?: string;
   source_account: string;
@@ -217,6 +250,17 @@ export interface TransactionHistory {
   loadMoreError: string | null;
   /** Submitted transactions awaiting authoritative confirmation, keyed by hash. */
   pending: PendingTransactionConfirmation[];
+}
+
+/**
+ * Client-side search state for the transaction history page.
+ * Filtering is performed in-memory; no additional API calls are required.
+ */
+export interface TransactionSearchState {
+  /** Raw value from the search input */
+  query: string;
+  /** Transactions that survive the current query and any active filters */
+  filtered: StellarTransaction[];
 }
 
 // Agent Query Types
@@ -420,10 +464,19 @@ export interface AuthState {
   error: string | null;
 }
 
+export interface TransactionFilters {
+  type: string;
+  asset: string;
+  direction: string;
+  startDate: string;
+  endDate: string;
+}
+
 export interface AccountState {
   status: AccountStatus | null;
   balance: WalletBalance | null;
   transactions: TransactionHistory;
+  filters?: TransactionFilters;
   isLoading: boolean;
   error: string | null;
   network: {
@@ -437,6 +490,9 @@ export interface AccountState {
     isLoading: boolean;
     error: string | null;
   };
+  trustlines: Trustline[];
+  isLoadingTrustlines: boolean;
+  trustlinesError: string | null;
 }
 
 export interface ContactsState {
@@ -462,12 +518,19 @@ export interface UIState {
   };
 }
 
+export interface PresenceState {
+  users: { [userId: string]: { userId: string; userName: string; status: 'online' | 'away' | 'offline'; lastSeen: string; conversationId?: string } };
+  onlineCount: number;
+  awayCount: number;
+}
+
 export interface RootState {
   auth: AuthState;
   account: AccountState;
   contacts: ContactsState;
   chat: ChatState;
   ui: UIState;
+  presence: PresenceState;
 }
 
 // Component Props Types

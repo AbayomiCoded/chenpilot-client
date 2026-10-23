@@ -13,6 +13,7 @@ import { Eye, EyeOff, ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
+import { authService } from "@/services/auth.service";
 
 interface RegisterFormData {
   email: string;
@@ -46,12 +47,8 @@ export function RegisterForm() {
       await dispatch(registerUser(cleanData)).unwrap();
       toast.success("Account created successfully! Welcome to ChenPilot!");
       router.push("/chat");
-    } catch (error: any) {
-      const backendMessage =
-        error?.message ||
-        error?.response?.data?.message ||
-        "Registration failed";
-      toast.error(String(backendMessage));
+    } catch (error: unknown) {
+      toast.error(authService.normalizeRegisterError(error));
     }
   };
 

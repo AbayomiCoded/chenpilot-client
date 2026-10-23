@@ -30,6 +30,18 @@ You MUST submit a new ADR PR when proposing or implementing:
 2. **Code Style & Linting**: Run `pnpm lint` before committing code changes. Ensure TypeScript types are exact.
 3. **Testing**: Run `pnpm test` to verify unit and integration tests pass.
 
+---
+
+## Quality Checklist for User-Impacting Changes
+
+When submitting PRs that affect user-facing functionality, ensure the following:
+
+- **Transaction Safety**: Async operations handle errors gracefully; state updates are atomic to prevent data loss.
+- **Data Persistence**: Any changes to stored data are tested and backward-compatible.
+- **API Compatibility**: Document backend API contract requirements in `docs/API_CONTRACT.md`. Include secret handling notes if credentials are involved.
+- **Accessibility**: UI changes are tested with keyboard navigation and screen readers per WCAG guidelines.
+- **Tests**: Add or update tests for all behavior changes; documentation-only changes are exempt.
+
 # Contributing to Chenpilot Client
 
 Thank you for your interest in contributing to **Chenpilot Client (`gear5labs/chenpilot-client`)**! We appreciate bug reports, feature proposals, documentation improvements, and pull requests from the community.

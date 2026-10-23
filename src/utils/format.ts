@@ -366,11 +366,11 @@ export function formatDate(date: string | Date, options?: Intl.DateTimeFormatOpt
 /**
  * Format a relative time (e.g., "2 hours ago")
  * @param date - Date string or Date object
+ * @param now - Reference point for "now" (default: current time). Pass a fixed Date in tests for determinism.
  * @returns Relative time string
  */
-export function formatRelativeTime(date: string | Date): string {
+export function formatRelativeTime(date: string | Date, now: Date = new Date()): string {
   const dateObj = typeof date === 'string' ? new Date(date) : date;
-  const now = new Date();
   const diffInSeconds = Math.floor((now.getTime() - dateObj.getTime()) / 1000);
 
   if (diffInSeconds < 60) {
@@ -398,6 +398,30 @@ export function formatRelativeTime(date: string | Date): string {
   }
 
   return formatDate(dateObj, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+/**
+ * Format an exact, fully-localized timestamp suitable for accessible labels and audit trails.
+ * @param date - Date string or Date object
+ * @param locale - BCP 47 locale tag (default: 'en-US')
+ * @returns ISO-8601 datetime string for machine consumption and a human-readable label.
+ */
+export function formatExactTime(
+  date: string | Date,
+  locale: string = 'en-US',
+): { iso: string; label: string } {
+  const dateObj = typeof date === 'string' ? new Date(date) : date;
+  const iso = dateObj.toISOString();
+  const label = dateObj.toLocaleString(locale, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'short',
+  });
+  return { iso, label };
 }
 
 /**
@@ -440,6 +464,22 @@ export function formatFileSize(bytes: number, decimals: number = 2): string {
   const i = Math.floor(Math.log(bytes) / Math.log(k));
 
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+/**
+ * Filter transactions by full hash, case-insensitively.
+ * An empty query returns all transactions unchanged.
+ * @param transactions - List of Stellar transactions to filter
+ * @param query - Substring to match against each transaction hash
+ */
+export function filterTransactionsByHash(
+  transactions: { hash: string }[],
+  query: string,
+): { hash: string }[] {
+  const trimmed = query.trim();
+  if (!trimmed) return transactions;
+  const lower = trimmed.toLowerCase();
+  return transactions.filter((tx) => tx.hash.toLowerCase().includes(lower));
 }
 
 /**
