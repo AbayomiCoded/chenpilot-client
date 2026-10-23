@@ -30,6 +30,8 @@ import {
   PaymentStatusResult,
 } from "@/types";
 import agentService, { classifyAgentError, isStateChangingQuery, agentErrorMessage } from "./agentService";
+import type { AgentStatus } from "@/types/agent";
+import { parseAgentEnvelope, protocolErrorResult } from "./agentEnvelope";
 import { tokenRefreshService } from "./tokenRefreshService";
 import type { MissedEventsPage } from "./socketManager";
 import {
@@ -1106,28 +1108,13 @@ class ApiService {
         { signal: options?.signal },
       );
 
-      if (response.data?.result) {
-        return {
-          result: {
-            success: response.data.result.success ?? true,
-            data: response.data.result.data || "Success",
-            error: response.data.result.error,
-            executionTrace:
-              response.data.result.executionTrace,
-          },
-        };
+      // Same envelope rules as AgentService: no defaulted success, no raw-body fallback (#275)
+      const parsed = parseAgentEnvelope(response.data);
+      if (!parsed.ok) {
+        console.error("[ApiService] Malformed /query response:", parsed.reason);
+        return { result: protocolErrorResult(parsed.reason) };
       }
-
-      return {
-        result: {
-          success: true,
-          data:
-            typeof response.data === "string"
-              ? response.data
-              : JSON.stringify(response.data),
-          error: undefined,
-        },
-      };
+      return { result: parsed.result };
     } catch (error: unknown) {
       // A user-cancelled request (Stop button / navigation) is not a failure to report
       if (isAbort(error)) {
@@ -1171,44 +1158,19 @@ class ApiService {
     try {
       return await agentService.getStatus();
     } catch (error) {
-      console.error("Failed to get agent status:", error);
-
-      const now = new Date().toISOString();
-
-      return {
+      console.error('Failed to get agent status:', error);
+      // Unknown, not fabricated: no placeholder metrics or protocol states (#271)
+      const unavailable: AgentStatus = {
         isOnline: false,
-        version: "1.0.0",
-        uptime: 0,
-        lastActivity: now,
-        activeConnections: 0,
-        services: {
-          vesu: {
-            isActive: false,
-            isHealthy: false,
-            lastCheck: now,
-          },
-          atomiq: {
-            isActive: false,
-            isHealthy: false,
-            lastCheck: now,
-          },
-          xverse: {
-            isActive: false,
-            isHealthy: false,
-            lastCheck: now,
-          },
-          troves: {
-            isActive: false,
-            isHealthy: false,
-            lastCheck: now,
-          },
-          database: {
-            isActive: false,
-            isHealthy: false,
-            lastCheck: now,
-          },
-        },
+        source: 'unavailable',
+        version: null,
+        uptime: null,
+        lastActivity: null,
+        activeConnections: null,
+        services: {},
+        health: null,
       };
+      return unavailable;
     }
   }
 

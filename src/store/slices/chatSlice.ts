@@ -3,6 +3,12 @@ import { logger } from "../../utils/logger";
 import { ChatMessage, AgentQueryRequest, Conversation } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
+import {
+  CONVERSATION_DELETED,
+  cancelConversationRequests,
+  isConversationDeleted,
+  trackConversationRequest,
+} from "@/store/conversationRequests";
 
 // ─── Voice message payload ────────────────────────────────────────────────────
 export interface SendVoiceMessagePayload {
@@ -153,6 +159,19 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
 };
 
 /**
+ * Delete a conversation safely (#269): abort its in-flight agent requests, mark it deleted so
+ * late responses are ignored, then remove it from state and storage. Confirmation happens in the UI.
+ */
+export const deleteConversation = createAsyncThunk(
+  "chat/deleteConversation",
+  async (conversationId: string, { dispatch }) => {
+    const cancelled = cancelConversationRequests(conversationId);
+    dispatch(chatSlice.actions.deleteConversationLocally(conversationId));
+    return { conversationId, cancelled };
+  },
+);
+
+/**
  * Keys that identify the same logical message across local, optimistic and server copies (#277).
  * `requestId` is shared by the user and agent message of one query, so it only matches within a type.
  */
@@ -244,8 +263,29 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
-      // Call the API service to get actual response
-      const response = await apiService.queryAgent({ userId, query }, { signal });
+      // Track the request against its conversation so deleting the conversation aborts it (#269).
+      // The Stop button aborts the thunk signal, which is forwarded to the tracked request.
+      const tracked = trackConversationRequest(conversation.id);
+      const onAbort = () => tracked.abort();
+      signal.addEventListener("abort", onAbort);
+      let response: AgentQueryResponse;
+      try {
+        response = await apiService.queryAgent({ userId, query }, { signal: tracked.signal });
+      } catch (error) {
+        // Aborted because the conversation was deleted, not because the user pressed Stop (#269)
+        if (isConversationDeleted(conversation.id)) {
+          return rejectWithValue(CONVERSATION_DELETED);
+        }
+        throw error;
+      } finally {
+        tracked.release();
+        signal.removeEventListener("abort", onAbort);
+      }
+
+      // The conversation was deleted while waiting: drop the late response (#269)
+      if (isConversationDeleted(conversation.id) || (tracked.signal.aborted && !signal.aborted)) {
+        return rejectWithValue(CONVERSATION_DELETED);
+      }
 
       // Handle parsing of the agent response
       let content = response.result.data;
@@ -658,6 +698,15 @@ state.messages[index] = {
     },
     deleteConversationLocally: (state, action: PayloadAction<string>) => {
       const conversationId = action.payload;
+      // Deleting the open conversation also clears its view and any pending request state (#269)
+      if (state.currentConversation?.id === conversationId) {
+        state.currentConversation = null;
+        state.messages = [];
+        state.isLoading = false;
+        state.isTyping = false;
+        state.pendingMessages = new Set();
+        state.optimisticUpdates = new Map();
+      }
       state.conversations = state.conversations.filter(
         (conv) => conv.id !== conversationId,
       );
@@ -973,6 +1022,10 @@ state.messages[index] = {
       .addCase(sendMessage.rejected, (state, action) => {
         state.isLoading = false;
         state.isTyping = false;
+        // The conversation was deleted mid-request: nothing to show or mark as failed (#269)
+        if (action.payload === CONVERSATION_DELETED) {
+          return;
+        }
 
 const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
           ? action.meta.arg.tempId

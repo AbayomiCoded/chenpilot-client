@@ -47,25 +47,29 @@ export interface AgentQueryResponse {
   };
 }
 
+/**
+ * Agent status (#271). Every metric is `null` when no real source reported it; the client never
+ * fills in placeholder values. `isOnline` comes from the health probe (`AgentHealthCheck`).
+ */
 export interface AgentStatus {
   isOnline: boolean;
-  version: string;
-  uptime: number;
-  lastActivity: string;
-  activeConnections: number;
-  services: {
-    soroswap: ServiceStatus;
-    blend: ServiceStatus;
-    aquarius: ServiceStatus;
-    phoenix: ServiceStatus;
-    database: ServiceStatus;
-  };
+  /** Where the metrics came from: `GET /status`, or nothing (`unavailable`). */
+  source: 'backend' | 'unavailable';
+  version: string | null;
+  /** Seconds. */
+  uptime: number | null;
+  lastActivity: string | null;
+  activeConnections: number | null;
+  /** Per-protocol health as reported by the backend; empty when unknown. */
+  services: Record<string, ServiceStatus>;
+  /** The health probe that determined `isOnline`. */
+  health: AgentHealthCheck | null;
 }
 
 export interface ServiceStatus {
-  isActive: boolean;
-  isHealthy: boolean;
-  lastCheck: string;
+  isActive: boolean | null;
+  isHealthy: boolean | null;
+  lastCheck: string | null;
   error?: string;
 }
 
@@ -93,6 +97,17 @@ export interface AgentCapabilities {
 export interface AgentHealthCheck {
   status: 'healthy' | 'degraded' | 'unhealthy';
   timestamp: string;
+  /**
+   * Which probe produced this result (#272): `health_endpoint` = `GET /health`;
+   * `connectivity` = `HEAD /` fallback, which only proves the server is reachable.
+   */
+  probe: 'health_endpoint' | 'connectivity';
+  /** False when `GET /health` is missing (404/405/501). */
+  healthEndpointSupported: boolean;
+  /** Measured round trip of the answering probe in ms; null when nothing answered. */
+  responseTimeMs: number | null;
+  /** Why the agent is unhealthy: no answer (`network`/`timeout`) vs an error answer (`server_error`). */
+  reason?: 'network' | 'timeout' | 'server_error';
   services: {
     [key: string]: {
       status: 'up' | 'down' | 'degraded';
@@ -100,7 +115,8 @@ export interface AgentHealthCheck {
       error?: string;
     };
   };
-  system: {
+  /** Only present when the backend reports it; never synthesized. */
+  system?: {
     memory: {
       used: number;
       total: number;

@@ -177,3 +177,15 @@ if (hasIssues) {
   console.warn('Message ordering issue detected');
 }
 ```
+
+## Conversation Deletion With Requests In Flight (#269)
+
+Deleting a conversation while an agent reply is pending must not let that reply appear somewhere else later.
+
+- **Confirmation:** deleting from the sidebar (`ConversationManager` → `ChatLayout`) opens `DeleteConversationDialog`. If a response is still in progress (`hasActiveRequests`), the dialog warns that deleting will cancel it.
+- **Stop active work:** every `sendMessage` request is registered against its conversation in `src/store/conversationRequests.ts` and receives an `AbortSignal`. The `deleteConversation(id)` thunk calls `cancelConversationRequests(id)`, which aborts the HTTP request and marks the id as deleted (the last 100 ids are remembered), and then removes the conversation.
+- **Ignore late responses:** after the agent call returns, `sendMessage` checks `isConversationDeleted`. If the conversation is gone, it rejects with `CONVERSATION_DELETED`. The rejected reducer then only resets the loading flags: no messages, no error bubble, and nothing written back to `chat_history`.
+- **State cleanup:** deleting the open conversation clears `messages`, `currentConversation`, the typing/loading flags, pending and optimistic entries, and navigates to `/chat`. Deleting a different conversation leaves the current request untouched.
+- Code that later applies server or socket messages to a conversation should check `isConversationDeleted(conversationId)` first.
+
+Tests: `src/store/__tests__/conversationRequests.test.ts`, `src/store/slices/__tests__/chatSlice.deletion.test.ts` and `src/components/chat/DeleteConversationDialog.test.tsx`.

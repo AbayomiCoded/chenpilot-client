@@ -48,13 +48,77 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
-| `HEAD /` | No body; health probe. | `200`, no response body is consumed. The client synthesizes its `AgentHealthCheck`. | Agent connectivity initialization; status object is synthesized, not returned by the server. |
+| `GET /health` | No body; unauthenticated; 5s timeout. | `{"status":"ok"}`. `status` is `ok`/`healthy`/`up`, `degraded`, or `down`/`unhealthy`. A `503` may carry the same body. | **Proposed; backend support not yet confirmed.** The primary probe in `agentService.healthCheck()` (#272); the measured round trip is reported as `responseTimeMs`. |
+| `HEAD /` | No body; fallback probe. | Any HTTP status below 500; the body is ignored. | Used only when `GET /health` answers `404`/`405`/`501`. The result is connectivity-only: `probe: "connectivity"`, `healthEndpointSupported: false`. |
 | `POST /query` | `{"userId":"user-1","query":"What is my XLM balance?","clientRequestId":"agent_query_1767225600_k3j9xz"}` | `{"result":{"success":true,"data":"Your balance is ...","error":null}}` (`executionTrace` is optional). | Chat query; failures become friendly `result` messages shown in chat. The client adds `requestId`, `stateChanging` and, on failure, `errorKind` to the returned `result`. |
 | `GET /query/{clientRequestId}/status` | `GET /query/agent_query_1767225600_k3j9xz/status` | `{"status":"completed","result":{"success":true,"data":"Sent 50 XLM","transactionHash":"..."}}`; `status` is `pending`, `completed` or `failed`. | **Proposed; backend support not yet confirmed.** The "Check status" action shown after a state-changing query times out. A 404/501, network error or unrecognized body resolves as `unknown`. |
 | `GET /memory/{userId}` | `GET /memory/user-1` | `[]` (declared `string[]`). | Service method only; failures are logged and return an empty list. |
 | `DELETE /memory/{userId}` | `DELETE /memory/user-1` | `204 No Content`; the response body is ignored. | Service method only; failures reject as `Failed to clear agent memory`. |
 | `GET /tools` | No body. | `[]` (the service currently does not declare tool item fields). | Service method only; failure returns an empty list. |
 | `POST /tools/{toolName}/execute` | `POST /tools/swap/execute` with `{"from":"XLM","to":"USDC","amount":"10"}` | Example pass-through: `{"result":"..."}`. The service does not define or validate this response shape. | Service method only; errors are rethrown as a tool failure. |
+
+**Health result (#272).** `AgentHealthCheck` reports:
+- `probe`: `health_endpoint` or `connectivity`.
+- `healthEndpointSupported`: whether `GET /health` exists.
+- `responseTimeMs`: the measured round trip of the probe that answered, or `null` if nothing answered.
+- `reason` when unhealthy: `network` and `timeout` mean no answer; `server_error` means a 5xx answer.
+
+An unsupported `/health` is not an outage: the client falls back to `HEAD /` and reports connectivity only. `system` metrics are included only if the backend provides them; the client no longer sends zeroed placeholders.
+
+### Agent Response Envelope (#275)
+
+`POST /query` must answer with one of these bodies. Both `AgentService.queryAgent` and the `apiService.queryAgent` backend fallback validate them with `parseAgentEnvelope` (`src/services/agentEnvelope.ts`).
+
+**Success:**
+```json
+{ "result": { "success": true, "data": "Your balance is 100 XLM", "error": null } }
+{ "result": { "success": true, "data": { "vaults": [] } } }
+{ "result": { "success": true, "data": "Sent 10 XLM", "transactionHash": "abc123",
+              "executionTrace": { "steps": [] },
+              "metadata": { "type": "wallet", "action": "transfer_xlm", "amount": "10", "asset": "XLM" } } }
+```
+`data` is a non-empty string, an object or an array. `error` must be absent, `null` or `""`.
+
+**Failure** (HTTP 200 with a failed result):
+```json
+{ "result": { "success": false, "data": "Not enough XLM", "error": "insufficient_funds" } }
+{ "result": { "success": false, "error": "insufficient_funds" } }
+```
+At least one of `error` or a string `data` is required. When `data` is missing, `error` is shown as the message.
+
+Optional fields, when present, must be: `executionTrace` an object, `transactionHash` a string, `metadata` an object.
+
+**Protocol errors.** Any other body is reported as a failure, never as a success. This includes:
+- plain text
+- a bare object without `result`
+- `success` missing or not a boolean
+- a success with no or empty `data`, or with an `error`
+- a failure with neither `error` nor `data`
+- optional fields of the wrong type
+
+The client returns:
+```json
+{ "result": { "success": false, "data": "The agent sent a response this app could not understand. Please try again.",
+              "error": "protocol_error: <reason>" } }
+```
+Earlier versions defaulted `success` to `true` and wrapped unknown bodies as successful replies; that is no longer the case. HTTP errors (4xx/5xx, network) are unchanged and still become friendly failure results.
+
+### Agent Status (#271)
+
+**Proposed; backend support not yet confirmed.**
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /status` | No body; 5s timeout. | `{"version":"2.3.0","uptimeSeconds":5400,"activeConnections":12,"lastActivity":"2026-10-21T10:00:00Z","services":{"soroswap":{"isActive":true,"isHealthy":true,"lastCheck":"2026-10-21T09:59:00Z"},"blend":{"isActive":true,"isHealthy":false,"lastCheck":"2026-10-21T09:59:00Z","error":"RPC timeout"}}}` | `AgentStatus` dashboard. Each field is validated on its own; missing or invalid fields stay `null`. |
+
+`agentService.getStatus()` no longer invents values:
+- `isOnline` comes only from `healthCheck()`.
+- Metrics (`version`, `uptime`, `activeConnections`, `lastActivity`) come only from `GET /status`. If the endpoint is missing or fails, they are `null` and `source` is `"unavailable"`.
+- `services` holds only the protocols the backend reports. It is empty, not "all healthy", when nothing was reported.
+
+The dashboard shows "Unavailable" for `null` metrics and "Protocol health is unavailable" for empty `services`. A service whose health is `null` gets an "Unknown" marker. The probe's measured response time is shown, labelled "connectivity check only" when `/health` is unsupported.
+
+`getCapabilities()` still returns a local object and makes no HTTP request. Its success no longer counts as the agent being online.
 
 ### Agent Timeouts And Status Checks
 
@@ -83,8 +147,6 @@ Until (2) ships, status checks resolve as `unknown` and users are pointed to the
 | `GET /chat/events` | `GET /chat/events?after=c_1042&limit=100` | `{"events":[{"event":"chat:message","cursor":"c_1043","data":{"cursor":"c_1043","message":{"id":"srv_88","type":"agent","content":"...","timestamp":"2026-01-01T00:00:00Z","metadata":{"requestId":"agent_query_..."}}}}],"hasMore":false,"nextCursor":"c_1043"}` | Called after each socket reconnect to replay events missed during downtime, oldest first. Failures are recorded as a resync error; live events keep working. |
 
 The live socket event `chat:message` must carry the same `{ cursor, message }` payload. See `src/docs/MESSAGE_ORDERING.md` §6 for cursor and dedupe rules.
-
-`getStatus()` and `getCapabilities()` return local objects and do not make HTTP requests. Do not document `/status` or `/capabilities` as backend routes unless those calls are implemented.
 
 ## Authentication Endpoints
 
