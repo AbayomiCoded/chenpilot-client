@@ -12,6 +12,7 @@ import { Eye, EyeOff, ArrowRight } from "lucide-react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import toast from "react-hot-toast";
+import { authService } from "@/services/auth.service";
 
 interface LoginFormData {
   email: string;
@@ -37,8 +38,8 @@ export default function LoginForm() {
       await dispatch(login(data)).unwrap();
       toast.success("Successfully logged in!");
       router.push("/chat");
-    } catch (error: any) {
-      toast.error(error?.message || "Login failed");
+    } catch (error: unknown) {
+      toast.error(authService.normalizeLoginError(error));
     }
   };
 

@@ -29,6 +29,19 @@ This document records the HTTP requests made by [`src/services/api.ts`](../src/s
 - The Google sign-in surface displays the caught error text. The liquidity widget displays generic inline errors (`Failed to fetch liquidity data` or `Error loading liquidity statistics`) rather than the backend message.
 - Login/register forms dispatch auth thunks; the backend response contract is documented in the Authentication Endpoints table below.
 
+## Privacy-Safe Authentication Errors (Account-Enumeration Resistance)
+
+Login and registration errors are normalized on the client before reaching the user.  `AuthService.normalizeLoginError` and `AuthService.normalizeRegisterError` collapse **all** backend failure reasons — including wrong password, user-not-found, email-already-taken, 401, and 409 responses — into a single generic message.  The raw backend message is written only to `console.error` (a redacted log) and is never surfaced in a toast, inline error, or any other UI element.
+
+This means:
+
+- **Login**: any failure → "Invalid email or password. Please check your credentials and try again."
+- **Registration**: any failure → "Unable to create account. Please check your details and try again."
+
+Client-side Zod field validation (format, length, strength) is unaffected and continues to show targeted field-level messages because those checks fire before a network call is made — they reveal nothing about account state.
+
+The backend SHOULD return the same HTTP status (401 for login failures, 409 for duplicate email) and MAY include a descriptive `message` in the response body.  That body message is intentionally discarded by the client.  Do not add UI code that reads `error.response.data.message` for login or registration errors.
+
 ## Agent Endpoints
 
 These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `apiService.queryAgent`, which may use this agent service first and otherwise posts to the API base URL's `/query`.
