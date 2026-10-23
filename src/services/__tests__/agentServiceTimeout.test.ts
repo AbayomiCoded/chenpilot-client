@@ -62,7 +62,7 @@ describe('AgentService timeout handling (#274)', () => {
 
       const result = await agentService.queryAgent({ userId: 'u1', query: 'balance?', clientRequestId: 'req_1' });
 
-      expect(mockInstance.post).toHaveBeenCalledWith('/query', expect.objectContaining({ clientRequestId: 'req_1' }));
+      expect(mockInstance.post).toHaveBeenCalledWith('/query', expect.objectContaining({ clientRequestId: 'req_1' }), expect.anything());
       expect(result.result.requestId).toBe('req_1');
     });
 

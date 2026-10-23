@@ -12,6 +12,7 @@ export interface SocketConfig {
     randomizationFactor?: number;
     reconnectionAttempts?: number;
     timeout?: number;
+    auth?: { token: string };
   };
   queueEnabled?: boolean;
   maxQueueSize?: number;
@@ -133,6 +134,7 @@ function normalizeAttempts(attempts: number | undefined): number {
 }
 
 export class SocketManager {
+  private isRefreshingToken = false;
   private socket: Socket | null = null;
   private config: SocketConfig;
   private reconnectAttempts = 0;
@@ -426,6 +428,31 @@ export class SocketManager {
     this.connectionState = state;
     for (const listener of this.stateListeners) {
       listener(state, this.reconnectAttempts);
+    }
+  }
+
+  updateAuth(newToken: string): void {
+    if (this.config.options) {
+      this.config.options = {
+        ...this.config.options,
+        auth: { token: newToken },
+      };
+    } else {
+      this.config.options = { auth: { token: newToken } };
+    }
+
+    if (this.socket) {
+      if ((this.socket as any).auth) {
+        (this.socket as any).auth = { token: newToken };
+      }
+      if (!this.isRefreshingToken) {
+        this.isRefreshingToken = true;
+        this.removeRegisteredHandlers(this.socket);
+        this.socket.disconnect();
+        this.socket = null;
+        this.connect();
+        this.isRefreshingToken = false;
+      }
     }
   }
 

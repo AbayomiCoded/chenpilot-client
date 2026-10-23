@@ -313,7 +313,7 @@ class AgentService {
    * }
    * ```
    */
-  async queryAgent(request: AgentQueryRequest): Promise<AgentQueryResponse> {
+  async queryAgent(request: AgentQueryRequest, options?: { signal?: AbortSignal }): Promise<AgentQueryResponse> {
     // The correlation id doubles as the client request id the backend can report status for (#274).
     const correlationId = request.clientRequestId ?? generateCorrelationId('agent_query');
     const stateChanging = isStateChangingQuery(request.query);
@@ -325,7 +325,11 @@ class AgentService {
         logger.debug('[AgentService] Query content:', { correlationId, query: request.query });
       }
 
-      const response = await this.api.post('/query', { ...request, clientRequestId: correlationId });
+      const response = await this.api.post(
+        '/query',
+        { ...request, clientRequestId: correlationId },
+        { signal: options?.signal }
+      );
 
       logger.debug(
         '[AgentService] Query response:',
@@ -354,6 +358,21 @@ class AgentService {
         }
       };
     } catch (error: unknown) {
+      const axiosError = error as {
+        code?: string;
+        name?: string;
+        message?: string;
+        response?: { data?: { message?: string } };
+      };
+      // A user-cancelled request (Stop button / navigation) propagates as an abort, not a failure
+      if (
+        axiosError.code === 'ERR_CANCELED' ||
+        axiosError.name === 'CanceledError' ||
+        axiosError.name === 'AbortError'
+      ) {
+        throw error;
+      }
+
       logger.error('[AgentService] Query failed:', {
         correlationId,
         durationMs: Date.now() - startedAt,
@@ -361,7 +380,6 @@ class AgentService {
       });
 
       // Convert technical errors to user-friendly messages, keeping timeouts distinct (#274)
-      const axiosError = error as { response?: { data?: { message?: string } }; message?: string };
       const errorMsg = axiosError.response?.data?.message || axiosError.message || 'Unknown error';
       const errorKind = classifyAgentError(error);
 

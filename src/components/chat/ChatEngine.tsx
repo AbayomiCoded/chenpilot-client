@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef } from "react";
 import { useAppDispatch, useAppSelector } from "@/store";
 import {
   sendMessage,
+  regenerateLastResponse,
+  ABORT_ERROR,
   clearMessages,
   updateMessage,
   saveConversationLocally,
@@ -32,6 +34,7 @@ import { ChatMessage } from "@/types";
 import { usePathname, useRouter } from "next/navigation";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { AgentToolsMenu } from "@/components/chat/AgentToolsMenu";
+import { QueryStopButton } from "@/components/chat/QueryStopButton";
 
 // ─── Speech Recognition ambient types (used by the old transcription path) ────
 
@@ -117,6 +120,8 @@ export const ChatEngine: React.FC = () => {
   const [isListening, setIsListening] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const inflightRef = useRef<{ abort: () => void; unwrap: () => Promise<unknown> } | null>(null);
+  const lastDraftRef = useRef("");
 
   // ── Legacy speech-to-text (transcription → text input) ───────────────────
   // Kept for the Mic button when MediaRecorder is NOT supported
@@ -194,6 +199,7 @@ export const ChatEngine: React.FC = () => {
     return () => {
       if (legacyTimerRef.current) clearInterval(legacyTimerRef.current);
       try { recognitionRef.current?.stop(); } catch { /* ignore */ }
+      inflightRef.current?.abort();
     };
   }, []);
 
@@ -305,6 +311,7 @@ export const ChatEngine: React.FC = () => {
     e?.preventDefault();
     if (!inputValue.trim() || isChatLoading || isTyping) return;
     const message = inputValue.trim();
+    lastDraftRef.current = message;
     setInputValue("");
 
     try {
@@ -333,8 +340,16 @@ export const ChatEngine: React.FC = () => {
         return;
       }
 
-      await dispatch(sendMessage(queryWithTool)).unwrap();
+      const request = dispatch(sendMessage(queryWithTool));
+      inflightRef.current = request;
+      await request.unwrap();
+      inflightRef.current = null;
     } catch (error: any) {
+      inflightRef.current = null;
+      if (error === ABORT_ERROR || error?.name === "AbortError") {
+        setInputValue(lastDraftRef.current);
+        return;
+      }
       toast.error(error || "Failed to send message");
     }
   };
@@ -355,6 +370,25 @@ export const ChatEngine: React.FC = () => {
       .find((m) => m.type === "user");
     if (original && !isChatLoading && !isTyping) {
       dispatch(sendMessage(original.content));
+    }
+  };
+
+  const handleStopQuery = () => {
+    inflightRef.current?.abort();
+    setInputValue(lastDraftRef.current);
+  };
+
+  const handleRegenerate = async () => {
+    if (isChatLoading || isTyping || currentConversation?.isActive === false) return;
+    try {
+      const request = dispatch(regenerateLastResponse());
+      inflightRef.current = request;
+      await request.unwrap();
+      inflightRef.current = null;
+    } catch (error: any) {
+      inflightRef.current = null;
+      if (error === ABORT_ERROR || error === "busy" || error === "inactive") return;
+      toast.error(error || "Failed to regenerate");
     }
   };
 
@@ -509,6 +543,7 @@ export const ChatEngine: React.FC = () => {
             <TagWidget />
           </div>
 
+          <QueryStopButton inFlight={isChatLoading || isTyping} onStop={handleStopQuery} />
           <button
             type="button"
             onClick={() =>
@@ -653,7 +688,18 @@ return (
                 />
               ) : (
                 <div className="max-w-2xl w-full">
-                  <AgentMessage message={message} onCopy={copyToClipboard} />
+                  <AgentMessage
+                    message={message}
+                    onCopy={copyToClipboard}
+                    onRegenerate={handleRegenerate}
+                    canRegenerate={
+                      message.type === "agent" &&
+                      message.id === [...messages].reverse().find((item) => item.type === "agent")?.id &&
+                      !isChatLoading &&
+                      !isTyping &&
+                      currentConversation?.isActive !== false
+                    }
+                  />
                   <AgentTimeoutNotice
                     message={message}
                     onResolve={(updates) => handleResolveTimeout(message.id, updates)}

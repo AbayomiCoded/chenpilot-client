@@ -1,6 +1,29 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
 import { Contact, CreateContactRequest, UpdateContactRequest } from '@/types';
 import apiService from '@/services/api';
+import { PAGINATION } from '@/constants';
+
+export const paginateContacts = (
+  contacts: Contact[],
+  page: number,
+  pageSize = PAGINATION.CONTACTS_PAGE_SIZE,
+): Contact[] => {
+  const start = Math.max(0, page - 1) * pageSize;
+  return contacts.slice(start, start + pageSize);
+};
+export const hasContactAddressChanged = (savedAddress: string, proposedAddress: string): boolean =>
+  proposedAddress.trim() !== savedAddress;
+
+export const filterContacts = (contacts: Contact[], searchTerm: string): Contact[] => {
+  const normalizedTerm = searchTerm.trim().toLowerCase();
+  if (!normalizedTerm) return contacts;
+
+  return contacts.filter((contact) =>
+    contact.name.toLowerCase().includes(normalizedTerm) ||
+    contact.address.toLowerCase().includes(normalizedTerm) ||
+    (contact.note ?? '').toLowerCase().includes(normalizedTerm)
+  );
+};
 
 interface ContactsState {
   list: Contact[];
@@ -27,6 +50,7 @@ export const getContacts = createAsyncThunk(
         name: 'Mock Contact 1',
         address: '0x1234567890abcdef',
         tokenType: 'STRK',
+        note: 'Primary trading account for A/B testing.',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
@@ -35,6 +59,7 @@ export const getContacts = createAsyncThunk(
         name: 'Mock Contact 2',
         address: '0xabcdef1234567890',
         tokenType: 'ETH',
+        note: 'Treasury vault for monthly settlements.',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
@@ -45,13 +70,35 @@ export const getContacts = createAsyncThunk(
 
 export const createContact = createAsyncThunk(
   'contacts/createContact',
-  async (contactData: CreateContactRequest, { rejectWithValue }) => {
+  async (contactData: CreateContactRequest, { rejectWithValue, getState }) => {
+    const validation = validateContact(contactData);
+    if (!validation.isValid) {
+      const firstError = Object.values(validation.errors)[0] ?? 'Invalid contact data';
+      return rejectWithValue(firstError);
+    }
+    const normalized: CreateContactRequest = {
+      ...contactData,
+      address: normalizeContactAddress(contactData.address),
+    };
+
+    // Duplicate check: same normalized address already exists
+    const state = getState() as { contacts: ContactsState };
+    const existing = state.contacts.list.find(
+      (c) => normalizeContactAddress(c.address) === normalized.address
+    );
+    if (existing) {
+      return rejectWithValue(
+        `"${existing.name}" already uses this address. Edit that contact instead.`
+      );
+    }
+
     // Mock create contact
     const mockContact: Contact = {
       id: `mock_${Date.now()}`,
       name: contactData.name,
       address: contactData.address,
       tokenType: contactData.tokenType,
+      note: contactData.note?.trim() || undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -62,12 +109,21 @@ export const createContact = createAsyncThunk(
 export const updateContact = createAsyncThunk(
   'contacts/updateContact',
   async ({ id, data }: { id: string; data: UpdateContactRequest }, { rejectWithValue }) => {
+    const validation = validateUpdateContact(data);
+    if (!validation.isValid) {
+      const firstError = Object.values(validation.errors)[0] ?? 'Invalid contact data';
+      return rejectWithValue(firstError);
+    }
+    const normalized: UpdateContactRequest = data.address
+      ? { ...data, address: normalizeContactAddress(data.address) }
+      : data;
     // Mock update contact
     const mockContact: Contact = {
       id,
       name: data.name || 'Updated Contact',
       address: data.address || '0xupdatedaddress',
       tokenType: data.tokenType || 'STRK',
+      note: data.note?.trim() || undefined,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
