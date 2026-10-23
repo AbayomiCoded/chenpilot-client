@@ -252,6 +252,17 @@ export interface TransactionHistory {
   pending: PendingTransactionConfirmation[];
 }
 
+/**
+ * Client-side search state for the transaction history page.
+ * Filtering is performed in-memory; no additional API calls are required.
+ */
+export interface TransactionSearchState {
+  /** Raw value from the search input */
+  query: string;
+  /** Transactions that survive the current query and any active filters */
+  filtered: StellarTransaction[];
+}
+
 // Agent Query Types
 export interface AgentQueryRequest {
   userId: string;
