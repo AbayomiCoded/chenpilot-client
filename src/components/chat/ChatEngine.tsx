@@ -12,8 +12,10 @@ import {
   queueMessage,
   addMessage as reduxAddMessage,
   addPendingMessage,
+  removeMessage,
 } from "@/store/slices/chatSlice";
 import AgentMessage from "@/components/chat/AgentMessage";
+import { AgentRetryAction } from "@/components/chat/AgentRetryAction";
 import { AgentMarkdown } from "@/components/chat/AgentMarkdown";
 import { AgentTimeoutNotice } from "@/components/chat/AgentTimeoutNotice";
 import agentConfig from "@/config/agent";
@@ -365,6 +367,22 @@ export const ChatEngine: React.FC = () => {
     }
   };
 
+  // Resend a failed prompt exactly as typed, reusing its user bubble and request id (#262)
+  const handleRetryFailed = (failed: ChatMessage) => {
+    const meta = failed.metadata;
+    if (!meta?.retryPrompt || isChatLoading || isTyping) return;
+    dispatch(removeMessage(failed.id));
+    dispatch(
+      sendMessage({
+        query: meta.retryPrompt,
+        tempId: meta.retryTempId,
+        clientRequestId: meta.requestId,
+      }),
+    )
+      .unwrap()
+      .catch((error: unknown) => toast.error(String(error || "Failed to send message")));
+  };
+
   const handleResolveTimeout = (messageId: string, updates: Partial<ChatMessage>) => {
     dispatch(updateMessage({ id: messageId, updates }));
     if (updates.metadata?.actionStatus === "completed") {
@@ -711,6 +729,15 @@ return (
                       currentConversation?.isActive !== false
                     }
                   />
+                  {/* Timeouts are handled by AgentTimeoutNotice (status check first); other
+                      retryable failures get the #262 retry action */}
+                  {message.metadata?.errorKind !== "timeout" && (
+                    <AgentRetryAction
+                      message={message}
+                      onRetry={handleRetryFailed}
+                      onResolve={(updates) => dispatch(updateMessage({ id: message.id, updates }))}
+                    />
+                  )}
                   <AgentTimeoutNotice
                     message={message}
                     onResolve={(updates) => handleResolveTimeout(message.id, updates)}

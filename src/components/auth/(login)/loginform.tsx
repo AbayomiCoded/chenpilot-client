@@ -28,6 +28,7 @@ export default function LoginForm() {
   const {
     register,
     handleSubmit,
+    setValue,
     formState: { errors },
   } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
@@ -39,7 +40,11 @@ export default function LoginForm() {
       toast.success("Successfully logged in!");
       router.push("/chat");
     } catch (error: unknown) {
+      // Privacy-safe (account-enumeration resistance): every login failure shows the same
+      // generic message and no server field errors, so the response can't reveal whether an
+      // account exists. The email is kept; the password is cleared (#258).
       toast.error(authService.normalizeLoginError(error));
+      setValue("password", "");
     }
   };
 

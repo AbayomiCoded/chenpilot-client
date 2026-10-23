@@ -4,17 +4,17 @@ export interface AgentQueryRequest {
   userId: string;
   query: string;
   /**
-   * Client-generated id for this query (#274). Lets the backend dedupe retries and
-   * answer `GET /query/:clientRequestId/status` after a client-side timeout.
+   * Client-generated id for this query (#262, #274). Reused when the query is retried so the
+   * backend can deduplicate it (idempotency key) and answer `GET /query/:clientRequestId/status`.
    */
   clientRequestId?: string;
 }
 
 /**
- * Why an agent query failed (#274). `timeout` means the client stopped waiting; the
- * action may still be running or may have completed on the backend.
+ * Why an agent query failed (#274, #262). `timeout` means the client stopped waiting; the
+ * action may still be running. `invalid_query` and `unauthenticated` are never retried.
  */
-export type AgentErrorKind = 'timeout' | 'network' | 'invalid_query' | 'server' | 'unknown';
+export type AgentErrorKind = 'timeout' | 'network' | 'invalid_query' | 'server' | 'unauthenticated' | 'unknown';
 
 /** Result of checking a query's status after a timeout (#274). */
 export interface AgentActionStatus {
@@ -24,6 +24,21 @@ export interface AgentActionStatus {
   result?: AgentQueryResponse['result'];
   checkedAt: string;
 }
+
+/** Backend-reported status of a previously sent query (#262). */
+export interface AgentOperationStatus {
+  requestId: string;
+  /** `unknown` when the backend cannot report status (endpoint missing or unreachable). */
+  status: 'pending' | 'completed' | 'failed' | 'not_found' | 'unknown';
+  result?: AgentQueryResponse['result'];
+}
+
+/** What to do when the user asks to retry a failed query (#262). */
+export type AgentRetryDecision =
+  | { action: 'retry' }
+  | { action: 'completed'; result?: AgentQueryResponse['result'] }
+  | { action: 'pending' }
+  | { action: 'confirm' };
 
 export interface AgentQueryResponse {
   result: {

@@ -3,6 +3,8 @@ import { logger } from "../../utils/logger";
 import { ChatMessage, AgentQueryRequest, Conversation, ChatHistoryStatus } from "@/types";
 import { AgentQueryResponse } from "@/types/agent";
 import apiService from "@/services/api";
+import { logout } from "./authSlice";
+import { classifyAgentError, isRetryableErrorKind, isStateChangingQuery } from "@/services/agentService";
 import {
   CONVERSATION_DELETED,
   cancelConversationRequests,
@@ -298,7 +300,31 @@ export const mergeIncomingMessages = (existing: ChatMessage[], incoming: ChatMes
 
 export const ABORT_ERROR = "ABORT_ERR";
 
-export type SendMessageArg = string | { query: string; tempId?: string; clientTimestamp?: number };
+export type SendMessageArg =
+  | string
+  | {
+      query: string;
+      tempId?: string;
+      clientTimestamp?: number;
+      /** Reuse the original request id when retrying, so the backend can deduplicate (#262). */
+      clientRequestId?: string;
+    };
+
+const clientRequestIdFor = (arg: SendMessageArg, requestId: string): string =>
+  (typeof arg === 'object' && arg.clientRequestId) || `agent_req_${requestId}`;
+
+/**
+ * Retry metadata for a failed agent reply (#262): whether a retry is offered, plus what is
+ * needed to resend the same prompt with the same request id.
+ */
+const retryMetadata = (query: string, tempId: string, requestId: string, errorKind: ReturnType<typeof classifyAgentError>) => ({
+  errorKind,
+  requestId,
+  retryable: isRetryableErrorKind(errorKind),
+  retryPrompt: query,
+  retryTempId: tempId,
+  stateChanging: isStateChangingQuery(query),
+});
 
 function isAbortError(error: unknown): boolean {
   const err = error as { code?: string; name?: string; message?: string };
@@ -342,6 +368,10 @@ export const sendMessage = createAsyncThunk(
         };
       }
 
+      // The client request id is the idempotency key: a retry reuses it so the backend can
+      // recognise a repeat (#262).
+      const clientRequestId = clientRequestIdFor(arg, requestId);
+
       // Track the request against its conversation so deleting the conversation aborts it (#269).
       // The Stop button aborts the thunk signal, which is forwarded to the tracked request.
       const tracked = trackConversationRequest(conversation.id);
@@ -350,7 +380,7 @@ export const sendMessage = createAsyncThunk(
       let response: AgentQueryResponse;
       try {
         response = await apiService.queryAgent(
-          { userId, query },
+          { userId, query, clientRequestId },
           {
             signal: tracked.signal,
             // Partial text is streamed into `streamingResponse` when the backend supports it (#261)
@@ -436,9 +466,14 @@ export const sendMessage = createAsyncThunk(
           status: 'success',
           success: response.result.success,
           error: response.result.error,
-          errorKind: response.result.errorKind,
-          requestId: response.result.requestId,
-          stateChanging: response.result.stateChanging,
+          // Failed replies carry what a retry needs (#262); every reply keeps the request id (#274)
+          ...(response.result.success === false
+            ? retryMetadata(query, tempId, response.result.requestId ?? clientRequestId, response.result.errorKind ?? 'unknown')
+            : {
+                errorKind: response.result.errorKind,
+                requestId: response.result.requestId ?? clientRequestId,
+                stateChanging: response.result.stateChanging,
+              }),
           executionTrace: response.result.executionTrace,
 serverTimestamp: serverTimestamp,
           // Store raw structured data in metadata if it was JSON
@@ -979,6 +1014,14 @@ state.messages[index] = {
   },
   extraReducers: (builder) => {
     builder
+      // Drop the previous user's chat data from memory on logout; storage is cleared by
+      // clearUserScopedStorage (#256). Online status is device state and is kept.
+      .addCase(logout.fulfilled, (state) => ({
+        ...initialState,
+        isOnline: state.isOnline,
+        pendingMessages: new Set<string>(),
+        optimisticUpdates: new Map<string, ChatMessage>(),
+      }))
       .addCase(fetchChatHistory.pending, (state) => {
         state.historyStatus = "loading";
         state.historyError = null;
@@ -1071,6 +1114,14 @@ state.messages[index] = {
           };
           state.messages.push(optimisticUserMessage);
           state.messages = sortMessagesChronologically(state.messages);
+        } else {
+          // Retry of an existing message (#262): reuse the original bubble and show it as pending again
+          const existing = state.messages.find(
+            m => m.id === tempId || m.metadata?.optimisticId === tempId || m.metadata?.tempId === tempId
+          );
+          if (existing) {
+            existing.metadata = { ...existing.metadata, status: 'pending', error: undefined };
+          }
         }
       })
       .addCase(sendMessage.fulfilled, (state, action) => {
@@ -1221,6 +1272,7 @@ const tempId = typeof action.meta.arg === 'object' && action.meta.arg.tempId
           friendlyMessage = "Please log in to continue the conversation.";
         }
 
+        const failedQuery = typeof action.meta.arg === 'string' ? action.meta.arg : action.meta.arg.query;
         const errorMessage: ChatMessage = {
 id: `msg_err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           type: "agent",
@@ -1232,6 +1284,12 @@ id: `msg_err_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
 type: "error",
             status: "failed",
             error: errorContent,
+            ...retryMetadata(
+              failedQuery,
+              tempId,
+              clientRequestIdFor(action.meta.arg, action.meta.requestId),
+              classifyAgentError({ message: errorContent }),
+            ),
           },
         };
         state.messages.push(errorMessage);

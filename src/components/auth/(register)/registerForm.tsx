@@ -3,7 +3,8 @@ import React, { useState } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useAppDispatch } from "@/store";
-import { register as registerUser } from "@/store/slices/authSlice";
+import { register as registerUser, REGISTER_FIELDS } from "@/store/slices/authSlice";
+import { applyAuthErrors } from "@/components/auth/applyAuthErrors";
 import { registerSchema } from "@/utils/validation";
 import { Button } from "@/components/ui/Button";
 import { Input } from "@/components/ui/Input";
@@ -30,6 +31,8 @@ export function RegisterForm() {
     register,
     handleSubmit,
     watch,
+    setError,
+    setValue,
     formState: { errors, isSubmitting },
   } = useForm<RegisterFormData>({
     resolver: zodResolver(registerSchema),
@@ -48,7 +51,12 @@ export function RegisterForm() {
       toast.success("Account created successfully! Welcome to ChenPilot!");
       router.push("/chat");
     } catch (error: unknown) {
+      // Privacy-safe: the toast is always the generic message. Server field errors are attached
+      // to inputs only when they can't reveal whether an account exists (e.g. password rules);
+      // name and email are kept and the password is cleared (#258).
       toast.error(authService.normalizeRegisterError(error));
+      applyAuthErrors(error, REGISTER_FIELDS, setError, [data.password], { hideAccountExistence: true });
+      setValue("password", "");
     }
   };
 

@@ -36,6 +36,7 @@ import type { AgentStatus } from "@/types/agent";
 import { parseAgentEnvelope, protocolErrorResult } from "./agentEnvelope";
 import { tokenRefreshService } from "./tokenRefreshService";
 import type { MissedEventsPage } from "./socketManager";
+import { clearUserScopedStorage } from "./storageInventory";
 import {
   isRetryableError,
   computeBackoffMs,
@@ -533,12 +534,9 @@ class ApiService {
       );
     } finally {
       this.clearToken();
-
-      if (typeof window !== "undefined") {
-        localStorage.removeItem("user_data");
-        localStorage.removeItem("refresh_token");
-        sessionStorage.clear();
-      }
+      // Purge every user-scoped key (auth, profile, chat history, offline queue) and all
+      // session storage; device preferences stay (#256)
+      clearUserScopedStorage();
     }
   }
 
@@ -1150,6 +1148,7 @@ class ApiService {
           data: friendlyMessage,
           error: errorMsg,
           errorKind,
+          requestId: data.clientRequestId,
           stateChanging,
         },
       };

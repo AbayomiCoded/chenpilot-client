@@ -346,13 +346,19 @@ export interface ChatMessage {
     clientTimestamp?: number | string;
     optimisticId?: string;
     tempId?: string;
-    /** Failure category from the agent service (#274), e.g. `timeout` vs `network`. */
-    errorKind?: "timeout" | "network" | "invalid_query" | "server" | "unknown";
-    /** Client request id used to check status of a timed-out action. */
+    /** Failure category of an agent reply (#274, #262), e.g. `timeout` vs `network`. */
+    errorKind?: "timeout" | "network" | "server" | "invalid_query" | "unauthenticated" | "unknown";
+    /** Client request id / idempotency key of the query this reply belongs to (#274, #262). */
     requestId?: string;
-    /** Whether the query looked like a state-changing action (transfer, swap, ...). */
+    /** Whether a retry action is offered for this failed reply (#262). */
+    retryable?: boolean;
+    /** Original prompt, preserved so a retry resends exactly what the user typed (#262). */
+    retryPrompt?: string;
+    /** Optimistic id of the original user message, reused on retry so no duplicate bubble appears. */
+    retryTempId?: string;
+    /** The prompt looked like a state-changing action (transfer, swap, ...); retries check status first. */
     stateChanging?: boolean;
-    /** Outcome of the latest status check after a timeout. */
+    /** Outcome of the latest status check after a timeout (#274). */
     actionStatus?: "pending" | "completed" | "failed" | "unknown";
   };
 }

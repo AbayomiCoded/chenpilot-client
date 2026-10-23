@@ -2,6 +2,10 @@
 
 This document records the HTTP requests made by [`src/services/api.ts`](../src/services/api.ts) and [`src/services/agentService.ts`](../src/services/agentService.ts). Types and examples below describe the frontend's declared/consumed shapes; they are not evidence that every experimental backend route currently implements them. Confirm the backend before treating an example as a server guarantee. Fields shown with `...` are explanatory omissions, not literal JSON.
 
+## Signing And Authorization Boundary (#260)
+
+The browser never holds private keys and never signs. Every endpoint below that changes on-chain state (`POST /query` for agent actions, `POST /auth/starknet/deploy`, `POST /auth/funding/*`, `POST /api/fund`) is signed and submitted by the backend, which must authorize each call against the bearer token's user. Client-side checks (validation, guards, confirmation UI) are not authorization. See `SECURITY.md` → "Wallet Key Ownership & Signing Boundary".
+
 ## Base URLs And Authentication
 
 - `ApiService` uses `NEXT_PUBLIC_API_BASE_URL`, defaulting to `http://localhost:2333`.
@@ -51,7 +55,7 @@ These routes use `NEXT_PUBLIC_AGENT_API_URL` through `AgentService`, except `api
 | `GET /health` | No body; unauthenticated; 5s timeout. | `{"status":"ok"}`. `status` is `ok`/`healthy`/`up`, `degraded`, or `down`/`unhealthy`. A `503` may carry the same body. | **Proposed; backend support not yet confirmed.** The primary probe in `agentService.healthCheck()` (#272); the measured round trip is reported as `responseTimeMs`. |
 | `HEAD /` | No body; fallback probe. | Any HTTP status below 500; the body is ignored. | Used only when `GET /health` answers `404`/`405`/`501`. The result is connectivity-only: `probe: "connectivity"`, `healthEndpointSupported: false`. |
 | `POST /query` | `{"userId":"user-1","query":"What is my XLM balance?","clientRequestId":"agent_query_1767225600_k3j9xz"}` | `{"result":{"success":true,"data":"Your balance is ...","error":null}}` (`executionTrace` is optional). | Chat query; failures become friendly `result` messages shown in chat. The client adds `requestId`, `stateChanging` and, on failure, `errorKind` to the returned `result`. |
-| `GET /query/{clientRequestId}/status` | `GET /query/agent_query_1767225600_k3j9xz/status` | `{"status":"completed","result":{"success":true,"data":"Sent 50 XLM","transactionHash":"..."}}`; `status` is `pending`, `completed` or `failed`. | **Proposed; backend support not yet confirmed.** The "Check status" action shown after a state-changing query times out. A 404/501, network error or unrecognized body resolves as `unknown`. |
+| `GET /query/{clientRequestId}/status` | `GET /query/agent_query_1767225600_k3j9xz/status` | `{"status":"completed","result":{"success":true,"data":"Sent 50 XLM","transactionHash":"..."}}`; `status` is `pending`, `completed` or `failed`. | **Proposed; backend support not yet confirmed.** The "Check status" action shown after a state-changing query times out. A 404/501, network error or unrecognized body resolves as `unknown`. Also checked before retrying a state-changing prompt (#262), where `not_found` means the id was never seen. |
 | `GET /memory/{userId}` | `GET /memory/user-1` | `[]` (declared `string[]`). | Service method only; failures are logged and return an empty list. |
 | `DELETE /memory/{userId}` | `DELETE /memory/user-1` | `204 No Content`; the response body is ignored. | Service method only; failures reject as `Failed to clear agent memory`. |
 | `GET /tools` | No body. | `[]` (the service currently does not declare tool item fields). | Service method only; failure returns an empty list. |
@@ -138,6 +142,32 @@ The dashboard shows "Unavailable" for `null` metrics and "Protocol health is una
 
 Until (2) ships, status checks resolve as `unknown` and users are pointed to their transaction history. The backend fallback in `apiService.queryAgent` sets `errorKind` but sends no `clientRequestId`, so its timeouts can't be status-checked.
 
+### Retrying Failed Agent Queries (#262)
+
+Uses the same `clientRequestId` and `GET /query/{clientRequestId}/status` endpoint as the timeout flow above. For the retry flow, the status endpoint may also answer `not_found` (a `200` with `{"status":"not_found"}`) for an id it has never seen. Timed-out replies are handled by `AgentTimeoutNotice` above; `AgentRetryAction` covers the other retryable failures.
+
+**Idempotency.** Every `POST /query` carries a `clientRequestId`. A retry sends the **same** id. The backend should treat it as an idempotency key: if that id already completed, return the stored result instead of executing again.
+
+**Which failures offer a retry** (`isRetryableErrorKind`):
+
+| `errorKind` | Source | Retry shown |
+| --- | --- | --- |
+| `timeout` | Axios `ECONNABORTED`/`ETIMEDOUT`, a "timeout" message, HTTP 408/504 | Yes |
+| `network` | `ERR_NETWORK`, no response | Yes |
+| `server` | HTTP 5xx, 429 | Yes |
+| `unknown` | Anything else | Yes |
+| `invalid_query` | "invalid query", other HTTP 4xx | No: the same prompt would fail again |
+| `unauthenticated` | HTTP 401/403, "User not authenticated" | No: the user must sign in |
+
+**Retry flow** (`AgentRetryAction`, `agentService.checkBeforeRetry`):
+- **Preserved prompt:** the failed reply stores the original prompt (`retryPrompt`), the optimistic user-message id (`retryTempId`) and the `requestId`. A retry resends the prompt exactly as typed, reuses the original user bubble (no duplicate) and removes the failed reply.
+- **Read-only prompts** retry immediately.
+- **State-changing prompts** (send, transfer, swap, lend, borrow, withdraw, repay, deposit, stake, claim, harvest, liquidate, deploy, add/remove liquidity or collateral) query the status endpoint first:
+  - `completed`: nothing is resent; the failed reply is replaced with the stored result.
+  - `pending`: nothing is resent; the user is asked to check again shortly.
+  - `failed` / `not_found`: the query is resent with the same `clientRequestId`.
+  - `unknown`: nothing is resent until the user clicks "Retry anyway", after being told to check their transaction history.
+
 ### Chat Event Resync (#277)
 
 **Proposed; backend support not yet confirmed.** The client sends these requests to the API base URL through `apiService.getMissedChatEvents`.
@@ -197,6 +227,36 @@ Pagination (#264):
 - **Scroll position:** the history view records `scrollTop`/`scrollHeight` before requesting an older page and shifts `scrollTop` by the added height after it is prepended (`usePrependScrollAnchor`), so the view does not jump.
 
 ## Authentication Endpoints
+
+### Auth Validation Errors (#258)
+
+When `POST /auth/login` or `POST /auth/register` rejects input, the backend should respond with `400` or `422` and one of these bodies. Each is normalized by `normalizeAuthError` (`src/services/auth.service.ts`):
+
+```json
+{ "success": false, "status": 422, "message": "Validation failed",
+  "errors": { "email": "Email is already registered", "password": ["Too short", "Needs a number"] } }
+```
+```json
+{ "success": false, "status": 400, "message": "Validation failed",
+  "errors": [{ "field": "email", "message": "Invalid email" }] }
+```
+
+Also accepted:
+- `param` / `msg` instead of `field` / `message` (express-validator style)
+- `path` as a string (`"user.email"`) or an array (`["body","email"]`, zod style)
+- `details` instead of `errors`
+
+Field names map onto form inputs `email`, `password` and `name`. The aliases `username` and `emailAddress` map to `email`, and `fullName` and `displayName` map to `name`.
+
+**What the forms show.** "Privacy-Safe Authentication Errors" above takes precedence:
+- **Login:** every failure shows only the generic message (`authService.normalizeLoginError`). No server field errors are attached, because any of them could reveal whether an account exists.
+- **Registration:** the toast is always the generic message (`authService.normalizeRegisterError`). Server field errors are attached to inputs (`aria-invalid`, first errored field focused) only when they cannot reveal account existence (`applyAuthErrors` with `hideAccountExistence`): every server error on `email` is dropped, as is any message matching `ACCOUNT_EXISTENCE_PATTERNS`. A password-policy or name-format message is still shown on its field.
+
+**Rules:**
+- Email and name stay in the form after a failure. The password input is cleared.
+- The submitted password is masked as `••••••` in every displayed message, and echoed `value` fields are ignored. Servers must not echo passwords at all.
+- Failures with no structured body show a generic message rather than raw HTML or stack text.
+- The login/register thunks reject with this normalized payload (`rejectWithValue`). They still return mock users today (see the note below), so the mapping takes effect once they call `apiService.login` / `apiService.register`.
 
 `User` response fields are `id`, `email`, `name`, `address`, `publicKey`, `isDeployed`, `isFunded`, `tokenType`, `authProvider`, `isEmailVerified`, `createdAt`, and `updatedAt`. `RegisterResponse` additionally declares `stellarAccount`, the backward-compatible `starknetAccount` alias, and `setupStatus` with funding/deployment results.
 
