@@ -1,10 +1,13 @@
-import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import {
   logger,
   generateCorrelationId,
   hashValue,
   summarizeContent,
   isContentLoggingEnabled,
+  CORRELATION_ID_HEADER,
+  correlationIdForError,
+  extractCorrelationId,
 } from "../utils/logger";
 import {
   AgentQueryRequest,
@@ -439,6 +442,9 @@ class AgentService {
       });
       
       this.isConnected = true;
+    } catch {
+      this.isConnected = false;
+    }
     const timestamp = () => new Date().toISOString();
     const finish = (result: AgentHealthCheck): AgentHealthCheck => {
       this.isConnected = result.status !== 'unhealthy';
@@ -620,7 +626,10 @@ class AgentService {
       const response = await this.api.post(
         '/query',
         { ...request, clientRequestId: correlationId },
-        { signal: options?.signal }
+        {
+          signal: options?.signal,
+          headers: { [CORRELATION_ID_HEADER]: correlationId },
+        }
       );
 
       logger.debug(
@@ -636,10 +645,30 @@ class AgentService {
       const parsed = parseAgentEnvelope(response.data);
       if (!parsed.ok) {
         logger.error('[AgentService] Malformed /query response:', { correlationId, reason: parsed.reason });
-        return { result: { ...protocolErrorResult(parsed.reason), requestId: correlationId, stateChanging } };
+        return {
+          result: {
+            ...protocolErrorResult(parsed.reason),
+            requestId: correlationId,
+            diagnostics: { correlationId },
+            stateChanging,
+          },
+        };
       }
-      return { result: { ...parsed.result, requestId: correlationId, stateChanging } };
+      const propagatedCorrelationId =
+        extractCorrelationId(response.headers) ??
+        extractCorrelationId(response.config?.headers) ??
+        correlationId;
+      return {
+        result: {
+          ...parsed.result,
+          requestId: propagatedCorrelationId,
+          diagnostics: { correlationId: propagatedCorrelationId },
+          stateChanging,
+        },
+      };
     } catch (error: unknown) {
+      const propagatedCorrelationId =
+        correlationIdForError(error) ?? correlationId;
       const axiosError = error as {
         code?: string;
         name?: string;
@@ -656,7 +685,7 @@ class AgentService {
       }
 
       logger.error('[AgentService] Query failed:', {
-        correlationId,
+        correlationId: propagatedCorrelationId,
         durationMs: Date.now() - startedAt,
         ...describeAgentError(error),
       });
@@ -672,7 +701,8 @@ class AgentService {
           data: agentErrorMessage(errorKind, stateChanging),
           error: errorMsg,
           errorKind,
-          requestId: correlationId,
+          requestId: propagatedCorrelationId,
+          diagnostics: { correlationId: propagatedCorrelationId },
           stateChanging,
           // No HTTP response means the message never reached the service (#266)
           delivered: Boolean((error as { response?: unknown })?.response)

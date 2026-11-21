@@ -27,6 +27,17 @@ To maintain the security of credentials, API keys, and user assets, all contribu
 1. **`.env` File Handling**:
    - Never commit `.env`, `.env.local`, or any file containing actual secrets to version control.
    - Always use `.env.example` as the canonical template containing safe placeholder values.
+   - All `NEXT_PUBLIC_*` values are compiled into browser JavaScript and are therefore public. Only use this prefix for endpoints, OAuth client IDs, network selection, UI values and feature flags.
+   - Keep credentials and tokens unprefixed and server/CI-only (for example `GITHUB_TOKEN`, `VERCEL_TOKEN`, or `LHCI_GITHUB_APP_TOKEN`). A CI test rejects known secret-bearing names that use `NEXT_PUBLIC_`.
+
+   | Classification | Examples | Handling |
+   | :--- | :--- | :--- |
+   | Public | `NEXT_PUBLIC_API_BASE_URL`, `NEXT_PUBLIC_STELLAR_NETWORK`, `NEXT_PUBLIC_APP_NAME` | Safe for browser bundles; must not contain credentials |
+   | Server-only | `GITHUB_TOKEN`, `VERCEL_TOKEN`, `LHCI_GITHUB_APP_TOKEN` | Never expose to browser code or public build output |
+   | Runtime-only | `NODE_ENV`, `CI`, `E2E_SKIP_WEBSERVER`, `PLAYWRIGHT_TEST_BASE_URL` | Framework/test process configuration; not browser application secrets |
+
+   Public origin variables must be absolute HTTP(S) URLs. Production deployments require HTTPS; local HTTP origins such as `http://localhost:2333` are accepted only outside production. Startup validation rejects credentials, fragments, malformed URLs and unsupported schemes.
+
 2. **Issue-Publishing & Release Tokens**:
    - The automated release and publishing script reads `GITHUB_TOKEN` locally from your un-tracked `.env` or `.env.local`.
    - Never hardcode personal access tokens or API keys into source files or commit histories.

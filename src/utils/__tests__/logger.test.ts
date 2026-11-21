@@ -7,6 +7,10 @@ import {
   isSensitiveKey,
   isContentKey,
   isContentLoggingEnabled,
+  CORRELATION_ID_HEADER,
+  extractCorrelationId,
+  setCorrelationIdHeader,
+  correlationIdForError,
 } from "../logger";
 
 describe("logger & high-cardinality log protection (#924)", () => {
@@ -73,6 +77,25 @@ describe("logger & high-cardinality log protection (#924)", () => {
 
     const corrId = generateCorrelationId("stellar_tx");
     expect(corrId).toMatch(/^stellar_tx_\d+_[a-z0-9]+$/);
+  });
+
+  it("propagates only validated correlation IDs from HTTP metadata", () => {
+    const headers: Record<string, string> = {};
+    setCorrelationIdHeader(headers, "agent_query_1234_abcd");
+    expect(headers[CORRELATION_ID_HEADER]).toBe("agent_query_1234_abcd");
+    expect(extractCorrelationId({ "X-Correlation-ID": "http_123_abc" })).toBe("http_123_abc");
+    expect(extractCorrelationId({ "X-Correlation-ID": "Bearer secret" })).toBeUndefined();
+  });
+
+  it("finds a correlation ID on Axios-like errors without reading request payloads", () => {
+    expect(correlationIdForError({
+      correlationId: "http_123_abc",
+      config: { data: { prompt: "private prompt", token: "private-token" } },
+    })).toBe("http_123_abc");
+
+    expect(correlationIdForError({
+      config: { headers: { "X-Correlation-ID": "http_456_def" } },
+    })).toBe("http_456_def");
   });
 
   it("truncates excessively long high-cardinality string inputs", () => {

@@ -130,6 +130,31 @@ describe('AgentService log redaction (#273)', () => {
       expect(text).not.toContain(PRIVATE_PROMPT);
     });
 
+    it('sends and exposes the same correlation ID without request payload logging', async () => {
+      mockInstance.post.mockResolvedValue({
+        status: 200,
+        headers: { 'X-Correlation-ID': 'agent_query_1234_abcd' },
+        data: { result: { success: true, data: 'ok' } },
+      });
+
+      const result = await agentService.queryAgent({
+        userId: 'user-42',
+        query: PRIVATE_PROMPT,
+        clientRequestId: 'agent_query_1234_abcd',
+      });
+
+      expect(mockInstance.post).toHaveBeenCalledWith(
+        '/query',
+        expect.objectContaining({ clientRequestId: 'agent_query_1234_abcd' }),
+        expect.objectContaining({
+          headers: { 'X-Correlation-ID': 'agent_query_1234_abcd' },
+        }),
+      );
+      expect(result.result.diagnostics).toEqual({
+        correlationId: 'agent_query_1234_abcd',
+      });
+    });
+
     it('logs content only when explicitly opted in outside production', async () => {
       process.env.NEXT_PUBLIC_LOG_AGENT_CONTENT = 'true';
       const debugSpy = vi.spyOn(logger, 'debug');

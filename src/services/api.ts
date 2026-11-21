@@ -1,5 +1,11 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from "axios";
-import { logger } from "../utils/logger";
+import {
+  correlationIdForError,
+  extractCorrelationId,
+  generateCorrelationId,
+  logger,
+  setCorrelationIdHeader,
+} from "../utils/logger";
 import { env } from '@/config/env';
 import {
   RegisterRequest,
@@ -26,10 +32,6 @@ import {
   AuditLogsQueryParams,
   AuditLogsResponse,
   AuditLogStats,
-  SendPaymentRequest,
-} from '@/types';
-import agentService from './agentService';
-import { tokenRefreshService } from './tokenRefreshService';
   MfaStatusData,
   MfaEnrollmentData,
   MfaVerifyRequest,
@@ -37,7 +39,11 @@ import { tokenRefreshService } from './tokenRefreshService';
   PaymentSubmissionResult,
   PaymentStatusResult,
 } from "@/types";
-import agentService, { classifyAgentError, isStateChangingQuery, agentErrorMessage } from "./agentService";
+import agentService, {
+  classifyAgentError,
+  isStateChangingQuery,
+  agentErrorMessage,
+} from "./agentService";
 import type { AgentStatus } from "@/types/agent";
 import { parseAgentEnvelope, protocolErrorResult } from "./agentEnvelope";
 import { tokenRefreshService } from "./tokenRefreshService";
@@ -161,7 +167,6 @@ export const requestAccountFunding = async (
             "Account funded successfully via Stellar Testnet Friendbot fallback.",
           txHash: friendbotResponse.data.hash,
         };
-      } catch (_friendbotError: unknown) {
       } catch {
         throw new Error(
           `Funding failed: Backend service unavailable and Friendbot fallback failed. Required: ${requiredAmount} XLM, Current: ${currentBalance} XLM.`,
@@ -209,7 +214,6 @@ interface PaymentRequestConfig extends AxiosRequestConfig {
  * error retries, background token refreshes, and backend integrations.
  */
 export class ApiService {
-class ApiService {
   private api: AxiosInstance;
   private token: string | null = null;
 
@@ -228,6 +232,10 @@ class ApiService {
     // Attach the current token to outgoing requests.
     this.api.interceptors.request.use(
       (config) => {
+        const existingId = extractCorrelationId(config.headers);
+        const correlationId = existingId ?? generateCorrelationId('http');
+        setCorrelationIdHeader(config.headers, correlationId);
+        (config as AxiosRequestConfig & { correlationId?: string }).correlationId = correlationId;
         if (this.token) {
           config.headers.Authorization = `Bearer ${this.token}`;
         }
@@ -240,8 +248,21 @@ class ApiService {
     // Retry eligible transient failures. Payment requests must carry an
     // idempotency key before being retried.
     this.api.interceptors.response.use(
-      (response) => response,
+      (response) => {
+        const correlationId =
+          extractCorrelationId(response.headers) ??
+          extractCorrelationId(response.config?.headers);
+        if (correlationId) {
+          (response as typeof response & { correlationId?: string }).correlationId = correlationId;
+          setCorrelationIdHeader(response.config?.headers, correlationId);
+        }
+        return response;
+      },
       async (error) => {
+        const correlationId = correlationIdForError(error);
+        if (correlationId) {
+          (error as { correlationId?: string }).correlationId = correlationId;
+        }
         const originalRequest = error.config as
           | (AxiosRequestConfig & {
               _retryCount?: number;
@@ -290,6 +311,17 @@ class ApiService {
     this.api.interceptors.response.use(
       (response) => response,
       async (error) => {
+        const correlationId =
+          correlationIdForError(error) ??
+          generateCorrelationId('http');
+        (error as { correlationId?: string }).correlationId = correlationId;
+        logger.error('[ApiService] Request failed:', {
+          correlationId,
+          status: error.response?.status,
+          code: error.code,
+          method: error.config?.method,
+        });
+
         const originalRequest = error.config as
           | (AxiosRequestConfig & {
               _retry?: boolean;
@@ -1196,10 +1228,10 @@ class ApiService {
         throw error;
       }
 
-      console.warn(
-        "[ApiService] Experimental agent service failed; falling back to backend:",
-        error,
-      );
+      logger.warn("[ApiService] Experimental agent service failed; falling back to backend:", {
+        correlationId: correlationIdForError(error) ?? data.clientRequestId,
+        code: (error as { code?: string })?.code,
+      });
     }
 
     try {
@@ -1218,17 +1250,45 @@ class ApiService {
       // Same envelope rules as AgentService: no defaulted success, no raw-body fallback (#275)
       const parsed = parseAgentEnvelope(response.data);
       if (!parsed.ok) {
-        console.error("[ApiService] Malformed /query response:", parsed.reason);
-        return { result: protocolErrorResult(parsed.reason) };
+        const correlationId =
+          extractCorrelationId(response.headers) ??
+          extractCorrelationId(response.config?.headers) ??
+          data.clientRequestId ??
+          generateCorrelationId('http');
+        logger.error("[ApiService] Malformed /query response:", {
+          correlationId,
+          reason: parsed.reason,
+        });
+        return {
+          result: {
+            ...protocolErrorResult(parsed.reason),
+            diagnostics: { correlationId },
+          },
+        };
       }
-      return { result: parsed.result };
+      const correlationId =
+        extractCorrelationId(response.headers) ??
+        extractCorrelationId(response.config?.headers) ??
+        data.clientRequestId ??
+        generateCorrelationId('http');
+      return {
+        result: {
+          ...parsed.result,
+          diagnostics: { correlationId },
+        },
+      };
     } catch (error: unknown) {
       // A user-cancelled request (Stop button / navigation) is not a failure to report
       if (isAbort(error)) {
         throw error;
       }
 
-      console.error("[ApiService] Backend query failed:", error);
+      logger.error("[ApiService] Backend query failed:", {
+        correlationId: correlationIdForError(error) ?? data.clientRequestId,
+        status: (error as { response?: { status?: number } })?.response?.status,
+        code: (error as { code?: string })?.code,
+        method: "POST",
+      });
 
       const errorValue = error as {
         response?: { data?: { message?: string } };
@@ -1254,6 +1314,12 @@ class ApiService {
           error: errorMsg,
           errorKind,
           requestId: data.clientRequestId,
+          diagnostics: {
+            correlationId:
+              correlationIdForError(error) ??
+              data.clientRequestId ??
+              generateCorrelationId('http'),
+          },
           stateChanging,
           // No HTTP response means the message never reached the service (#266)
           delivered: Boolean((error as { response?: unknown })?.response),

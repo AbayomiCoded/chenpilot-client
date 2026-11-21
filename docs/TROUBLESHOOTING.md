@@ -31,7 +31,7 @@ This guide covers common setup failures, environmental errors, socket disconnect
   ```
   Error: [Env Config Error] NEXT_PUBLIC_API_BASE_URL is not a valid HTTP or HTTPS URL: "<value>".
   ```
-* **Cause**: In production `NEXT_PUBLIC_API_BASE_URL` must be explicitly set; the localhost fallback is disabled to prevent accidental production traffic to a local server. The URL must start with `http://` or `https://`.
+* **Cause**: In production `NEXT_PUBLIC_API_BASE_URL` must be explicitly set; the localhost fallback is disabled to prevent accidental production traffic to a local server. The URL must be an absolute HTTP or HTTPS URL, must not contain credentials or fragments, and must use HTTPS in production. HTTP origins are allowed only for local development.
 * **Exact Fix Commands**:
   Copy the example environment file to `.env.local` and set `NEXT_PUBLIC_API_BASE_URL`:
   ```bash
