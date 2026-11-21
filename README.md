@@ -37,6 +37,8 @@ A modern, responsive web client for **ChenPilot** - a crypto wallet management s
    NEXT_PUBLIC_APP_VERSION=1.0.0
    ```
 
+   Use [`.env.example`](./.env.example) for the complete public configuration list and server/CI variable names. Never put secrets in `NEXT_PUBLIC_*` variables: Next.js ships those values to browsers.
+
    Refer to [TROUBLESHOOTING.md](./docs/TROUBLESHOOTING.md) if you encounter environment setup issues.
 
 4. **Start the development server**

@@ -30,7 +30,8 @@ Agent queries and replies can contain private wallet context (balances, addresse
   - request: `correlationId`, `userHash`, `queryLength`, `queryHash`
   - response: `correlationId`, `status`, `success`, `durationMs`, `responseLength`, `responseHash`
   - failure: `correlationId`, `durationMs`, `message`, `code`, `status`, `method`, `url`
-- The same `correlationId` (`agent_query_<ts>_<rand>`) appears on the request, response and failure entries for one query. It is client-side only and is **not** sent to the backend; propagating it as a request header would need backend/CORS support first.
+- The same `correlationId` (`agent_query_<ts>_<rand>`) appears on the request, response and failure entries for one query. Agent query requests send it as `X-Correlation-ID`; backend echoing is optional until server support is confirmed.
+- API requests generate an `X-Correlation-ID` header automatically. The backend may echo `X-Correlation-ID` or `X-Request-ID`; the client preserves that value for diagnostic details. This header does not carry prompts, tokens, account addresses, or secrets. Backend support for correlating the header with server logs is optional and should be documented by the backend team; user-visible messages do not display the ID.
 - Errors are reduced with `describeAgentError` before logging. Never pass a raw Axios error to a logger: it carries `config.data` (the request body, including the prompt) and `response.data`.
 - User ids in agent URLs (`/memory/:userId`) are logged as `/memory/[user]`.
 - The logger redacts these content keys (exact match, case-insensitive, `-`/`_` ignored) as `[REDACTED_CONTENT, len=N, hash_xxxx]`: `query`, `prompt`, `response`, `responseData`, `data`, `content`, `memory`, `executionTrace`. Metadata keys such as `queryLength` or `responseHash` are left untouched.

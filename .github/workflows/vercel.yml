@@ -64,6 +64,9 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
+      - name: Audit public environment names
+        run: pnpm test:env-secrets
+
       - name: Run tests with coverage
         run: pnpm test:coverage || mkdir -p coverage && echo '{"total":{"lines":{"pct":100},"statements":{"pct":100},"functions":{"pct":100},"branches":{"pct":100}}}' > coverage/coverage-summary.json
 
