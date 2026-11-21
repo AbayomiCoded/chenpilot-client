@@ -278,6 +278,8 @@ Field names map onto form inputs `email`, `password` and `name`. The aliases `us
 
 `User` response fields are `id`, `email`, `name`, `address`, `publicKey`, `isDeployed`, `isFunded`, `tokenType`, `authProvider`, `isEmailVerified`, `createdAt`, and `updatedAt`. `RegisterResponse` additionally declares `stellarAccount`, the backward-compatible `starknetAccount` alias, and `setupStatus` with funding/deployment results.
 
+The client validates successful login, registration, and Google-auth response bodies at the API boundary before accepting their token. Profile user envelopes are validated before Redux can store them. Malformed bodies reject with `BackendResponseValidationError`; unknown additional fields are allowed for forward compatibility. The backend must keep the documented required fields and response types.
+
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |
 | `POST /auth/register` | `{"email":"ada@example.test","password":"Example123!","name":"Ada"}` | `{"success":true,"message":"Registered","data":{"user":{"id":"u1","email":"ada@example.test","name":"Ada","address":"G...","publicKey":"G...","isDeployed":true,"isFunded":true,"tokenType":"XLM","authProvider":"email","isEmailVerified":false,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z"},"token":"<jwt>","stellarAccount":{"address":"G...","publicKey":"G...","isDeployed":true},"starknetAccount":{"address":"G...","publicKey":"G...","isDeployed":true},"setupStatus":{"funding":{"success":true,"amount":"10"},"deployment":{"success":true},"fullyReady":true}}}` | Registration form; API wrapper available. |
@@ -409,6 +411,10 @@ The service includes methods for Stellar/Starknet account and funding paths. `ge
 - **Contract Tests**: Verified in [`src/services/__tests__/apiContracts.test.ts`](../src/services/__tests__/apiContracts.test.ts).
 | `GET /account/{userId}/transactions?page={page}&limit={limit}` | `GET /account/u1/transactions?page=1&limit=10` | `{"success":true,"data":{"transactions":[{"id":"tx1","hash":"abc...","ledger":123,"created_at":"2026-01-01T00:00:00Z","source_account":"G...","fee_charged":"100","operation_count":1,"successful":true,"operations":[],"memo":"invoice-42","memo_type":"text"}],"total":1,"page":1,"limit":10}}` | Account transaction thunk/dashboard; errors are stored in account state. `memo` and `memo_type` are optional. `memo_type` may be `text`, `id`, `hash`, or `return`. The transactions page renders the memo below operations with a type badge; values longer than 40 characters are truncated in the UI with the full value accessible via the element's `title` attribute. |
 
+Balance and transaction envelopes are validated against the required fields and primitive types before leaving the service boundary. The transactions page also validates Horizon records before mapping or storing them. Malformed responses reject with a normalized `BackendResponseValidationError`; this is client-side validation and does not change the endpoint contract.
+
+Transaction-history reads pass an `AbortSignal` through the Horizon fetch. The transactions route aborts its initial, refresh, retry, and older-page reads when unmounted or when the active account changes. Cancellation is client-side; no additional backend endpoint or response shape is required.
+
 ### Transaction Schema & Direction Contract
 
 `StellarTransaction` records returned by `GET /account/{userId}/transactions` contain `id`, `hash`, `ledger`, `created_at`, `source_account`, `fee_charged`, `operation_count`, `successful`, `operations: StellarOperation[]`, and optional `direction`. Each `StellarOperation` contains `id`, `type`, `source_account`, optional `amount`, optional `asset` (or `asset_code`, `asset_issuer`, `asset_type`), optional `from`, optional `to`, and optional `direction`.
@@ -451,6 +457,10 @@ When contacting an experimental backend that lacks dedicated `/contacts` routes:
 - `PUT /contacts/{id}`: Catches HTTP 404 and returns `{ success: false, status: 404, message: "Contact updates are available through the chat interface" }`.
 - `DELETE /contacts/{id}`: Catches HTTP 404 and returns `{ success: false, status: 404, message: "Contact deletion is available through the chat interface. Try: \"Remove John from my contacts\"" }`.
 - Non-404 errors (400, 401, 403, 500, network loss) reject with the underlying Axios error and are not converted into fallback success envelopes.
+
+The contacts route passes an `AbortSignal` through the contacts read and aborts it on unmount or authentication-state replacement. Expected cancellation does not populate the contacts error state; no backend contract change is required.
+
+Contact list and mutation success envelopes are runtime-validated before returning to callers. Required fields and token/memo enum values must match the documented `Contact` shape; unknown fields remain allowed. A malformed success envelope rejects rather than being treated as an empty contact list or a successful mutation. The existing 404 compatibility fallbacks are unchanged.
 
 | Endpoint | Request example | Success response example | UI surface / behavior |
 | --- | --- | --- | --- |

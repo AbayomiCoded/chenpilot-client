@@ -1,7 +1,6 @@
 import { z } from 'zod';
-import { VALIDATION_MESSAGES, PAYMENT_LIMITS, SECURITY_VALIDATION } from '@/constants';
-import { SUPPORTED_ASSETS } from '@/types';
 import { VALIDATION_MESSAGES, PAYMENT_LIMITS, SECURITY_VALIDATION, TOKEN_DECIMALS } from '@/constants';
+import { SUPPORTED_ASSETS, type BackendResponseValidationIssue } from '@/types';
 
 // Email validation schema. Surrounding whitespace is accepted (and trimmed in the parsed
 // value) so an accidental space doesn't block sign-in; see normalizeEmail (#259).
@@ -62,8 +61,7 @@ export const createContactSchema = z.object({
   name: nameSchema,
   address: stellarAddressSchema,
   tokenType: z.enum(SUPPORTED_ASSETS, {
-  tokenType: z.enum(['XLM', 'STRK', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA'], {
-    error: 'Please select a token type',
+    error: `Unsupported token type. Supported tokens are: ${SUPPORTED_ASSETS.join(', ')}`,
   }),
   note: z.string().max(280, 'Contact notes are limited to 280 characters').optional(),
 });
@@ -72,9 +70,8 @@ export const updateContactSchema = z.object({
   name: nameSchema.optional(),
   address: stellarAddressSchema.optional(),
   tokenType: z.enum(SUPPORTED_ASSETS, {
-    invalid_type_error: `Unsupported token type. Supported tokens are: ${SUPPORTED_ASSETS.join(', ')}`,
+    error: `Unsupported token type. Supported tokens are: ${SUPPORTED_ASSETS.join(', ')}`,
   }).optional(),
-  tokenType: z.enum(['XLM', 'STRK', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA']).optional(),
   note: z.string().max(280, 'Contact notes are limited to 280 characters').optional(),
 });
 
@@ -116,6 +113,229 @@ export const resetPasswordSchema = z.object({
   message: "Passwords don't match",
   path: ["confirmPassword"],
 });
+
+const nonEmptyStringSchema = z.string().min(1);
+const balanceAmountSchema = z.string().regex(/^\d+(?:\.\d+)?$/, 'Expected a non-negative decimal amount');
+
+export const userResponseSchema = z.object({
+  id: nonEmptyStringSchema,
+  email: z.string().email(),
+  name: nonEmptyStringSchema,
+  address: stellarAddressSchema,
+  publicKey: stellarAddressSchema,
+  isDeployed: z.boolean(),
+  isFunded: z.boolean(),
+  tokenType: z.literal('XLM'),
+  authProvider: z.enum(['email', 'google']),
+  isEmailVerified: z.boolean(),
+  createdAt: nonEmptyStringSchema,
+  updatedAt: nonEmptyStringSchema,
+}).passthrough();
+
+const stellarAccountResponseSchema = z.object({
+  address: stellarAddressSchema,
+  publicKey: stellarAddressSchema,
+  isDeployed: z.boolean(),
+  deploymentTransactionHash: z.string().optional(),
+}).passthrough();
+
+const loginResponseDataSchema = z.object({
+  user: userResponseSchema,
+  token: nonEmptyStringSchema,
+  stellarAccount: stellarAccountResponseSchema,
+  starknetAccount: stellarAccountResponseSchema,
+}).passthrough();
+
+export const loginResponseSchema = z.object({
+  success: z.literal(true),
+  message: nonEmptyStringSchema,
+  data: loginResponseDataSchema,
+}).passthrough();
+
+export const reauthenticationResponseSchema = z.object({
+  success: z.literal(true),
+  message: z.string().optional(),
+}).passthrough();
+
+export const refreshTokenResponseSchema = z.object({
+  token: nonEmptyStringSchema,
+}).passthrough();
+
+export const registerResponseSchema = z.object({
+  success: z.literal(true),
+  message: nonEmptyStringSchema,
+  data: loginResponseDataSchema.extend({
+    setupStatus: z.object({
+      funding: z.object({
+        success: z.boolean(),
+        error: z.string().optional(),
+        amount: balanceAmountSchema,
+        transactionHash: z.string().optional(),
+      }).passthrough(),
+      deployment: z.object({
+        success: z.boolean(),
+        transactionHash: z.string().optional(),
+        contractAddress: z.string().optional(),
+      }).passthrough(),
+      fullyReady: z.boolean(),
+    }).passthrough(),
+  }),
+}).passthrough();
+
+const contactResponseSchema = z.object({
+  id: nonEmptyStringSchema,
+  name: nonEmptyStringSchema,
+  address: stellarAddressSchema,
+  tokenType: z.enum(['XLM', 'STRK', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA']),
+  note: z.string().optional(),
+  createdAt: nonEmptyStringSchema,
+  updatedAt: nonEmptyStringSchema,
+  avatar: z.string().optional(),
+  isFavorite: z.boolean().optional(),
+  lastUsed: z.string().optional(),
+  defaultMemo: z.string().optional(),
+  defaultMemoType: z.enum(['none', 'text', 'id', 'hash']).optional(),
+}).passthrough();
+
+export const contactsResponseSchema = apiResponseSchema(z.array(contactResponseSchema));
+export const contactResponseEnvelopeSchema = apiResponseSchema(contactResponseSchema);
+export const contactDeleteResponseSchema = apiResponseSchema(
+  z.object({ message: nonEmptyStringSchema }).passthrough(),
+);
+
+export const balanceResponseSchema = z.object({
+  success: z.literal(true),
+  data: z.object({
+    hasBalance: z.boolean(),
+    balance: balanceAmountSchema,
+    required: balanceAmountSchema,
+    nativeBalance: balanceAmountSchema,
+  }).passthrough(),
+}).passthrough();
+
+export const fundedAccountBalanceResponseSchema = apiResponseSchema(
+  z.object({
+    balance: balanceAmountSchema,
+    hasBalance: z.boolean(),
+  }).passthrough(),
+);
+
+const stellarOperationResponseSchema = z.object({
+  id: nonEmptyStringSchema,
+  type: nonEmptyStringSchema,
+  amount: z.string().optional(),
+  asset: z.string().optional(),
+  asset_code: z.string().optional(),
+  asset_issuer: z.string().optional(),
+  asset_type: z.string().optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  source_account: nonEmptyStringSchema,
+  direction: z.enum(['incoming', 'outgoing', 'self', 'unknown']).optional(),
+}).passthrough();
+
+export const stellarTransactionResponseSchema = z.object({
+  id: nonEmptyStringSchema,
+  hash: nonEmptyStringSchema,
+  ledger: z.number().int().nonnegative(),
+  created_at: nonEmptyStringSchema,
+  source_account: nonEmptyStringSchema,
+  fee_charged: balanceAmountSchema,
+  operation_count: z.number().int().nonnegative(),
+  successful: z.boolean(),
+  operations: z.array(stellarOperationResponseSchema),
+  memo: z.string().optional(),
+  memo_type: z.enum(['text', 'id', 'hash', 'return']).optional(),
+  direction: z.enum(['incoming', 'outgoing', 'self', 'unknown']).optional(),
+}).passthrough();
+
+export const transactionPageResponseSchema = apiResponseSchema(
+  z.object({
+    transactions: z.array(stellarTransactionResponseSchema),
+    total: z.number().int().nonnegative(),
+    page: z.number().int().positive(),
+    limit: z.number().int().positive(),
+  }).passthrough(),
+);
+
+const horizonOperationResponseSchema = z.object({
+  id: nonEmptyStringSchema,
+  type: nonEmptyStringSchema,
+  amount: z.string().optional(),
+  asset_type: z.string().optional(),
+  asset_code: z.string().optional(),
+  asset_issuer: z.string().optional(),
+  from: z.string().optional(),
+  to: z.string().optional(),
+  source_account: nonEmptyStringSchema,
+}).passthrough();
+
+const horizonTransactionRecordSchema = z.object({
+  id: nonEmptyStringSchema,
+  hash: nonEmptyStringSchema,
+  ledger: z.number().int().nonnegative(),
+  created_at: nonEmptyStringSchema,
+  source_account: nonEmptyStringSchema,
+  fee_charged: balanceAmountSchema,
+  operation_count: z.number().int().nonnegative(),
+  successful: z.boolean(),
+  paging_token: z.string().optional(),
+  memo: z.string().optional(),
+  memo_type: z.enum(['text', 'id', 'hash', 'return']).optional(),
+  _embedded: z.object({
+    records: z.array(horizonOperationResponseSchema),
+  }).passthrough(),
+}).passthrough();
+
+export const horizonTransactionPageResponseSchema = z.object({
+  _embedded: z.object({
+    records: z.array(horizonTransactionRecordSchema),
+  }).passthrough(),
+}).passthrough();
+
+export function apiResponseSchema<T extends z.ZodType>(dataSchema: T) {
+  return z.discriminatedUnion('success', [
+    z.object({
+      success: z.literal(true),
+      data: dataSchema,
+      message: z.string().optional(),
+    }).passthrough(),
+    z.object({
+      success: z.literal(false),
+      status: z.number().int().nonnegative(),
+      message: nonEmptyStringSchema,
+    }).passthrough(),
+  ]);
+}
+
+export class BackendResponseValidationError extends Error {
+  constructor(
+    readonly endpoint: string,
+    readonly issues: BackendResponseValidationIssue[],
+  ) {
+    super(`Invalid backend response from ${endpoint}: ${issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ')}`);
+    this.name = 'BackendResponseValidationError';
+  }
+}
+
+export function parseBackendResponse<TSchema extends z.ZodType>(
+  endpoint: string,
+  schema: TSchema,
+  payload: unknown,
+): z.infer<TSchema> {
+  const parsed = schema.safeParse(payload);
+  if (!parsed.success) {
+    throw new BackendResponseValidationError(
+      endpoint,
+      parsed.error.issues.map((issue) => ({
+        path: issue.path.length ? issue.path.join('.') : '<root>',
+        message: issue.message,
+      })),
+    );
+  }
+
+  return parsed.data;
+}
 
 const MAX_STELLAR_MEMO_ID = "18446744073709551615";
 
@@ -182,6 +402,7 @@ export const sendPaymentSchema = z.object({
       });
       return;
     }
+  }
 
   if (
     data.memo &&
@@ -215,7 +436,7 @@ export const validateContactAddress = (raw: string): string | null => {
   const normalized = normalizeContactAddress(raw);
   const result = stellarAddressSchema.safeParse(normalized);
   if (!result.success) {
-    const issues = (result.error as any).issues ?? (result.error as any).errors ?? [];
+    const issues = result.error.issues;
     return issues[0]?.message ?? 'Invalid Stellar address';
   }
   return null;
@@ -228,7 +449,7 @@ export const validateContact = (
   const normalized = { ...data, address: normalizeContactAddress(data.address) };
   const result = createContactSchema.safeParse(normalized);
   if (result.success) return { isValid: true, errors: {} };
-  const issues = (result.error as any).issues ?? (result.error as any).errors ?? [];
+  const issues = result.error.issues;
   const errors: Record<string, string> = {};
   for (const issue of issues) {
     const key = issue.path[0] as string;
@@ -245,7 +466,7 @@ export const validateUpdateContact = (
     : data;
   const result = updateContactSchema.safeParse(normalized);
   if (result.success) return { isValid: true, errors: {} };
-  const issues = (result.error as any).issues ?? (result.error as any).errors ?? [];
+  const issues = result.error.issues;
   const errors: Record<string, string> = {};
   for (const issue of issues) {
     const key = issue.path[0] as string;

@@ -59,14 +59,17 @@ const initialState: ContactsState = {
 
 export const getContacts = createAsyncThunk(
   'contacts/getContacts',
-  async (_, { rejectWithValue }) => {
+  async (_, { rejectWithValue, signal }) => {
     try {
-      const response = await apiService.getContacts();
+      const response = await apiService.getContacts(signal);
       if (!response.success) {
         return rejectWithValue(response.message);
       }
       return response.data as Contact[];
     } catch (error: unknown) {
+      if (signal.aborted) {
+        throw error;
+      }
       const message = error instanceof Error ? error.message : 'Failed to load contacts';
       return rejectWithValue(message);
     }
@@ -332,7 +335,9 @@ const contactsSlice = createSlice({
       })
       .addCase(getContacts.rejected, (state, action) => {
         state.isLoading = false;
-        state.error = action.payload as string;
+        if (!action.meta.aborted) {
+          state.error = action.payload as string;
+        }
       })
 
       // ── createContact ────────────────────────────────────────────────────

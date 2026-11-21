@@ -3,6 +3,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import accountReducer, {
   TRANSACTION_HISTORY_PAGE_SIZE,
   getOlderTransactionHistory,
+  getAccountTransactions,
   getTransactionHistory,
   refreshTransactionHistory,
   resolvePendingTransaction,
@@ -16,6 +17,8 @@ vi.mock('@/utils/horizonFetch', () => ({ horizonFetch: h.horizonFetch }));
 vi.mock('@/services/api', () => ({
   default: { getAccountTransactions: vi.fn(), setStore: vi.fn() },
 }));
+
+import apiService from '@/services/api';
 
 const horizonFetchMock = h.horizonFetch;
 
@@ -73,6 +76,73 @@ describe('accountSlice — transaction history refresh (#238)', () => {
     expect(history.nextCursor).toBe(`token-first-${TRANSACTION_HISTORY_PAGE_SIZE - 1}`);
     expect(history.lastUpdatedAt).not.toBeNull();
     expect(history.error).toBeNull();
+  });
+
+  it('rejects malformed Horizon records before storing transaction history', async () => {
+    horizonFetchMock.mockResolvedValueOnce(
+      pageResponse([horizonRecord('bad', true, { ledger: 'not-a-ledger' })]),
+    );
+    const store = createStore();
+
+    await store.dispatch(getTransactionHistory(PUBLIC_KEY));
+
+    const history = store.getState().account.transactions;
+    expect(history.transactions).toEqual([]);
+    expect(history.error).toContain(
+      'Invalid backend response from GET /horizon/accounts/{publicKey}/transactions',
+    );
+  });
+
+  it('passes cancellation to Horizon and does not expose an abort as a history error', async () => {
+    const store = createStore();
+    const controller = new AbortController();
+    horizonFetchMock.mockImplementationOnce(
+      (_url: string, init: RequestInit) => new Promise((resolve) => {
+        expect(init.signal).toBeInstanceOf(AbortSignal);
+        init.signal?.addEventListener('abort', () => {
+          expect(init.signal?.aborted).toBe(true);
+          resolve(pageResponse([]));
+        });
+      }),
+    );
+
+    const request = store.dispatch(
+      getTransactionHistory(PUBLIC_KEY, { signal: controller.signal }),
+    );
+    controller.abort();
+    const result = await request;
+
+    expect(result.meta).toMatchObject({ aborted: true });
+    expect(store.getState().account.transactions.isLoading).toBe(false);
+    expect(store.getState().account.transactions.error).toBeNull();
+  });
+
+  it('passes cancellation to the account transaction service and ignores its abort', async () => {
+    vi.mocked(apiService.getAccountTransactions).mockImplementationOnce(
+      (...args) => new Promise((resolve) => {
+        const signal = args[3];
+        expect(signal).toBeInstanceOf(AbortSignal);
+        signal?.addEventListener('abort', () => resolve({
+          success: true,
+          data: { transactions: [], total: 0, page: 1, limit: 10 },
+        }));
+      }),
+    );
+
+    const store = createStore();
+    const controller = new AbortController();
+    const request = store.dispatch(
+      getAccountTransactions(
+        { userId: 'user-1' },
+        { signal: controller.signal },
+      ),
+    );
+    controller.abort();
+    const result = await request;
+
+    expect(result.meta).toMatchObject({ aborted: true });
+    expect(store.getState().account.transactions.isLoading).toBe(false);
+    expect(store.getState().account.transactions.error).toBeNull();
   });
 
   it('refreshes only the newest page (no cursor is sent)', async () => {

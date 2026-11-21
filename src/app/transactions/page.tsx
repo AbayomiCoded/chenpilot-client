@@ -88,6 +88,7 @@ function formatLastUpdated(value: string | null): string | null {
 export default function TransactionsPage() {
   const [selectedTransaction, setSelectedTransaction] = useState<StellarTransaction | null>(null);
   const selectedTriggerRef = useRef<HTMLElement | null>(null);
+  const requestsControllerRef = useRef<AbortController | null>(null);
   const router = useRouter();
   const dispatch = useDispatch<AppDispatch>();
   const { status, transactions } = useSelector(
@@ -109,9 +110,29 @@ export default function TransactionsPage() {
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
-    if (publicKey) {
-      dispatch(getTransactionHistory(publicKey));
-    }
+    if (!publicKey) return;
+
+    const controller = new AbortController();
+    requestsControllerRef.current = controller;
+    dispatch(getTransactionHistory(publicKey, { signal: controller.signal }));
+
+    return () => {
+      controller.abort();
+      if (requestsControllerRef.current === controller) {
+        requestsControllerRef.current = null;
+      }
+    };
+  }, [dispatch, publicKey]);
+
+  const handleRetry = useCallback(() => {
+    if (!publicKey) return;
+    const signal = requestsControllerRef.current?.signal;
+    dispatch(
+      getTransactionHistory(
+        publicKey,
+        signal ? { signal } : undefined,
+      ),
+    );
   }, [dispatch, publicKey]);
 
   /**
@@ -125,7 +146,11 @@ export default function TransactionsPage() {
     }
     void singleFlight
       .run(`transaction-history:${publicKey}`, () =>
-        dispatch(refreshTransactionHistory(publicKey)).unwrap(),
+        dispatch(
+          refreshTransactionHistory(publicKey, {
+            signal: requestsControllerRef.current?.signal,
+          }),
+        ).unwrap(),
       )
       .catch(() => {
         // The failure is surfaced through `transactions.refreshError`; it must
@@ -141,6 +166,8 @@ export default function TransactionsPage() {
       getOlderTransactionHistory({
         publicKey,
         cursor: transactions.nextCursor,
+      }, {
+        signal: requestsControllerRef.current?.signal,
       }),
     );
   }, [dispatch, publicKey, transactions.nextCursor]);
@@ -184,7 +211,7 @@ export default function TransactionsPage() {
             {publicKey && (
               <Button
                 type="button"
-                onClick={() => dispatch(getTransactionHistory(publicKey))}
+                onClick={handleRetry}
                 className="inline-flex items-center gap-2"
               >
                 <RefreshCw aria-hidden="true" className="h-4 w-4" />

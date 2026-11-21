@@ -16,6 +16,12 @@ import {
   mergeTransactionHistory,
   reconcilePendingConfirmations,
 } from "@/utils/transactionHistory";
+import {
+  BackendResponseValidationError,
+  horizonTransactionPageResponseSchema,
+  parseBackendResponse,
+  stellarTransactionResponseSchema,
+} from "@/utils/validation";
 
 export type { TransactionFilters };
 
@@ -210,6 +216,7 @@ function mapHorizonTransaction(
 async function fetchTransactionHistoryPage(
   publicKey: string,
   cursor?: string,
+  signal?: AbortSignal,
 ): Promise<TransactionHistoryPage> {
   const params = new URLSearchParams({
     order: "desc",
@@ -222,15 +229,38 @@ async function fetchTransactionHistoryPage(
 
   const response = await horizonFetch(
     `https://horizon.stellar.org/accounts/${publicKey}/transactions?${params.toString()}`,
+    { signal },
   );
 
   if (!response.ok) {
     throw new Error("Failed to fetch transaction history");
   }
 
-  const data = await response.json();
-  const records: Record<string, unknown>[] = data?._embedded?.records ?? [];
-  const transactions = records.map(mapHorizonTransaction);
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch (error: unknown) {
+    if (error instanceof SyntaxError) {
+      throw new BackendResponseValidationError(
+        "GET /horizon/accounts/{publicKey}/transactions",
+        [{ path: "<root>", message: "Expected valid JSON" }],
+      );
+    }
+    throw error;
+  }
+  const parsedPage = parseBackendResponse(
+    "GET /horizon/accounts/{publicKey}/transactions",
+    horizonTransactionPageResponseSchema,
+    data,
+  );
+  const records = parsedPage._embedded.records;
+  const transactions = records.map((record, index) =>
+    parseBackendResponse(
+      `GET /horizon/accounts/{publicKey}/transactions record ${index}`,
+      stellarTransactionResponseSchema,
+      mapHorizonTransaction(record),
+    ),
+  );
   const oldestRecord = records[records.length - 1];
 
   const nextCursor =
@@ -248,10 +278,13 @@ async function fetchTransactionHistoryPage(
 
 export const getTransactionHistory = createAsyncThunk(
   "account/getTransactionHistory",
-  async (publicKey: string, { rejectWithValue }) => {
+  async (publicKey: string, { rejectWithValue, signal }) => {
     try {
-      return await fetchTransactionHistoryPage(publicKey);
+      return await fetchTransactionHistoryPage(publicKey, undefined, signal);
     } catch (error: unknown) {
+      if (signal.aborted) {
+        throw error;
+      }
       return rejectWithValue(
         (error as { message?: string }).message ||
           "Failed to fetch transaction history",
@@ -263,10 +296,13 @@ export const getTransactionHistory = createAsyncThunk(
 /** Refresh the newest page without dropping older pages already loaded. */
 export const refreshTransactionHistory = createAsyncThunk(
   "account/refreshTransactionHistory",
-  async (publicKey: string, { rejectWithValue }) => {
+  async (publicKey: string, { rejectWithValue, signal }) => {
     try {
-      return await fetchTransactionHistoryPage(publicKey);
+      return await fetchTransactionHistoryPage(publicKey, undefined, signal);
     } catch (error: unknown) {
+      if (signal.aborted) {
+        throw error;
+      }
       return rejectWithValue(
         (error as { message?: string }).message ||
           "Failed to refresh transaction history",
@@ -280,11 +316,14 @@ export const getOlderTransactionHistory = createAsyncThunk(
   "account/getOlderTransactionHistory",
   async (
     { publicKey, cursor }: { publicKey: string; cursor: string },
-    { rejectWithValue },
+    { rejectWithValue, signal },
   ) => {
     try {
-      return await fetchTransactionHistoryPage(publicKey, cursor);
+      return await fetchTransactionHistoryPage(publicKey, cursor, signal);
     } catch (error: unknown) {
+      if (signal.aborted) {
+        throw error;
+      }
       return rejectWithValue(
         (error as { message?: string }).message ||
           "Failed to load older transactions",
@@ -305,13 +344,14 @@ export const getAccountTransactions = createAsyncThunk(
       page?: number;
       limit?: number;
     },
-    { rejectWithValue },
+    { rejectWithValue, signal },
   ) => {
     try {
       const response = await apiService.getAccountTransactions(
         userId,
         page,
         limit,
+        signal,
       );
 
       if (!response.success) {
@@ -322,6 +362,9 @@ export const getAccountTransactions = createAsyncThunk(
 
       return response.data;
     } catch (error: unknown) {
+      if (signal.aborted) {
+        throw error;
+      }
       return rejectWithValue(
         (error as { message?: string }).message ||
           "Failed to fetch account transactions",
@@ -705,6 +748,7 @@ const accountSlice = createSlice({
       })
       .addCase(getTransactionHistory.rejected, (state, action) => {
         state.transactions.isLoading = false;
+        if (action.meta.aborted) return;
         state.transactions.error =
           (action.payload as string) ||
           action.error.message ||
@@ -741,6 +785,7 @@ const accountSlice = createSlice({
       })
       .addCase(refreshTransactionHistory.rejected, (state, action) => {
         state.transactions.isRefreshing = false;
+        if (action.meta.aborted) return;
         state.transactions.refreshError =
           (action.payload as string) ||
           action.error.message ||
@@ -772,6 +817,7 @@ const accountSlice = createSlice({
       })
       .addCase(getOlderTransactionHistory.rejected, (state, action) => {
         state.transactions.isLoadingMore = false;
+        if (action.meta.aborted) return;
         state.transactions.loadMoreError =
           (action.payload as string) ||
           action.error.message ||
@@ -790,6 +836,7 @@ const accountSlice = createSlice({
       })
       .addCase(getAccountTransactions.rejected, (state, action) => {
         state.transactions.isLoading = false;
+        if (action.meta.aborted) return;
         state.transactions.error =
           (action.payload as string) ||
           action.error.message ||
