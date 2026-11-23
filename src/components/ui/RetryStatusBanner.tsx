@@ -44,16 +44,18 @@ export default function RetryStatusBanner() {
 
   return (
     <div
-      role="status"
-      aria-live="polite"
-      aria-label={`Retrying ${label}, attempt ${attempt} of ${maxAttempts}`}
       className="flex items-center gap-3 px-4 py-2 bg-amber-500/10 border-b border-amber-500/25 text-amber-300 text-sm"
     >
+      {/* Only this text is announced, once per attempt. The visible countdown below ticks every
+          250ms and is kept out of the live region so it isn't re-read (#307). */}
+      <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {`Retrying ${label}, attempt ${attempt} of ${maxAttempts}`}
+      </span>
       {/* Spinning icon */}
       <RefreshCw className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
 
       {/* Message */}
-      <span className="flex-1 min-w-0 truncate">
+      <span className="flex-1 min-w-0 truncate" aria-hidden="true">
         Retrying{' '}
         <span className="font-mono text-xs opacity-75">{label}</span>
         {' — '}attempt {attempt} of {maxAttempts}

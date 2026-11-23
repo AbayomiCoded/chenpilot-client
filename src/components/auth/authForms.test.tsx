@@ -42,7 +42,7 @@ describe('LoginForm server errors (#258, privacy-safe)', () => {
     fill(/^Password$/i, PASSWORD);
     fireEvent.click(screen.getByRole('button', { name: /Sign In/ }));
 
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR, expect.anything()));
     expect(container.textContent).not.toContain('No account with this email');
     const email = screen.getByLabelText(/Email Address/i) as HTMLInputElement;
     expect(email.value).toBe('ada@example.test');
@@ -62,7 +62,7 @@ describe('LoginForm server errors (#258, privacy-safe)', () => {
 
     await waitFor(() => expect((screen.getByLabelText(/^Password$/i) as HTMLInputElement).value).toBe(''));
     expect(container.textContent).not.toContain(PASSWORD);
-    expect(toastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR);
+    expect(toastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR, expect.anything());
     expect(JSON.stringify(toastError.mock.calls)).not.toContain('Invalid password');
   });
 });
@@ -89,7 +89,7 @@ describe('RegisterForm server errors (#258, privacy-safe)', () => {
 
     expect(await screen.findByText('Name contains invalid characters')).toBeInTheDocument();
     expect(container.textContent).not.toContain('Email is already registered');
-    expect(toastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR);
+    expect(toastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR, expect.anything());
     expect((screen.getByLabelText(/Email Address/i) as HTMLInputElement).value).toBe('ada@example.test');
     expect((screen.getByLabelText(/Full Name/i) as HTMLInputElement).value).toBe('Ada Lovelace');
     expect((screen.getByLabelText(/^Password$/i) as HTMLInputElement).value).toBe('');
@@ -104,7 +104,7 @@ describe('RegisterForm server errors (#258, privacy-safe)', () => {
     fill(/^Password$/i, PASSWORD);
     fireEvent.click(screen.getByRole('button', { name: /Create Account/i }));
 
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR));
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR, expect.anything()));
     expect(container.textContent).not.toContain('Duplicate account');
   });
 });

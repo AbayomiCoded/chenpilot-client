@@ -83,7 +83,7 @@ describe('LoginForm — privacy-safe error messages', () => {
     await fillAndSubmit('test@example.com', 'Password1');
 
     await waitFor(() => {
-      expect(mockToastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR);
+      expect(mockToastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR, expect.anything());
     });
   });
 
@@ -95,7 +95,7 @@ describe('LoginForm — privacy-safe error messages', () => {
     await fillAndSubmit('test@example.com', 'Password1');
 
     await waitFor(() => {
-      expect(mockToastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR);
+      expect(mockToastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR, expect.anything());
     });
   });
 
@@ -108,7 +108,7 @@ describe('LoginForm — privacy-safe error messages', () => {
     await fillAndSubmit('test@example.com', 'Password1');
 
     await waitFor(() => {
-      expect(mockToastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR);
+      expect(mockToastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR, expect.anything());
     });
   });
 
@@ -120,7 +120,7 @@ describe('LoginForm — privacy-safe error messages', () => {
     await fillAndSubmit('test@example.com', 'Password1');
 
     await waitFor(() => {
-      expect(mockToastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR);
+      expect(mockToastError).toHaveBeenCalledWith(GENERIC_AUTH_ERROR, expect.anything());
     });
   });
 

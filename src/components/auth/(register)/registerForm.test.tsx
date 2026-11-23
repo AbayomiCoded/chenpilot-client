@@ -90,7 +90,7 @@ describe('RegisterForm — privacy-safe error messages', () => {
     await fillAndSubmit('taken@example.com', 'Password1!', 'Ada');
 
     await waitFor(() => {
-      expect(mockToastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR);
+      expect(mockToastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR, expect.anything());
     });
   });
 
@@ -105,7 +105,7 @@ describe('RegisterForm — privacy-safe error messages', () => {
     await fillAndSubmit('taken@example.com', 'Password1!', 'Ada');
 
     await waitFor(() => {
-      expect(mockToastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR);
+      expect(mockToastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR, expect.anything());
     });
   });
 
@@ -117,7 +117,7 @@ describe('RegisterForm — privacy-safe error messages', () => {
     await fillAndSubmit('new@example.com', 'Password1!', 'Ada');
 
     await waitFor(() => {
-      expect(mockToastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR);
+      expect(mockToastError).toHaveBeenCalledWith(GENERIC_REGISTER_ERROR, expect.anything());
     });
   });
 

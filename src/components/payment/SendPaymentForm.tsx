@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import toast from 'react-hot-toast';
+import { LiveAnnouncer, SILENT_TOAST, type Announcement } from '@/components/ui/LiveAnnouncer';
 
 interface SendPaymentFormProps {
   onSubmit: (data: SendPaymentRequest) => Promise<void>;
@@ -39,6 +40,8 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
   const [selectedContact, setSelectedContact] = useState<ContactSelection | null>(null);
   const [isContactPickerOpen, setIsContactPickerOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // Screen-reader status for submission (#307)
+  const [announcement, setAnnouncement] = useState<Announcement | null>(null);
 
   const {
     register,
@@ -128,6 +131,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
     try {
       setIsSubmitting(true);
+      setAnnouncement({ text: 'Sending payment…', tone: 'polite' });
       
       // Sanitize input
       const sanitizedData = sanitizePaymentInput(data);
@@ -140,12 +144,14 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
       // Validate again (defensive programming)
       const validation = validateSendPayment(sanitizedData);
       if (!validation.isValid) {
-        validation.errors.forEach((error) => toast.error(error));
+        validation.errors.forEach((error) => toast.error(error, SILENT_TOAST));
+        setAnnouncement({ text: `Payment not sent: ${validation.errors[0] ?? 'invalid details'}`, tone: 'assertive' });
         return;
       }
       
       await onSubmit(sanitizedData);
       
+      setAnnouncement({ text: 'Payment sent.', tone: 'polite' });
       // Reset form on success
       reset();
       setSelectedContact(null);
@@ -153,7 +159,9 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
       setSelfTransferAcknowledged(false);
     } catch (error: unknown) {
       console.error('Payment submission error:', error);
-      toast.error(error?.message || 'Failed to send payment');
+      const message = (error as { message?: string })?.message || 'Failed to send payment';
+      toast.error(message, SILENT_TOAST);
+      setAnnouncement({ text: `Payment failed: ${message}`, tone: 'assertive' });
     } finally {
       setIsSubmitting(false);
     }
@@ -173,6 +181,7 @@ export const SendPaymentForm: React.FC<SendPaymentFormProps> = ({
 
   return (
     <div className="space-y-6">
+      <LiveAnnouncer announcement={announcement} />
       {/* Contact Selection */}
       <Card className="p-4">
         <div className="flex items-center justify-between mb-4">
