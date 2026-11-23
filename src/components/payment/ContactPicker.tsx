@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { formatAddress } from '@/utils/format';
 import { cn } from '@/utils/cn';
+import { LtrText } from '@/components/ui/LtrText';
 
 export const ContactPicker: React.FC<ContactPickerProps> = ({
   contacts,
@@ -106,17 +107,17 @@ export const ContactPicker: React.FC<ContactPickerProps> = ({
       <div className="space-y-4">
         {/* Search Input */}
         <div className="relative">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+          <Search className="absolute start-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
           <Input
             placeholder="Search contacts by name or address..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10"
+            className="ps-10"
           />
           {searchTerm && (
             <button
               onClick={() => setSearchTerm('')}
-              className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              className="absolute end-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
             >
               <X className="h-4 w-4" />
             </button>
@@ -125,11 +126,11 @@ export const ContactPicker: React.FC<ContactPickerProps> = ({
 
         {/* Token Type Filter Badge */}
         {tokenType && (
-          <div className="flex items-center space-x-2">
+          <div className="flex items-center gap-2">
             <span className="text-sm text-gray-500">Filtering by:</span>
-            <span className="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-medium">
+            <LtrText className="px-2 py-1 bg-blue-100 text-blue-800 rounded-full text-xs font-medium">
               {tokenType}
-            </span>
+            </LtrText>
             <button
               onClick={() => setSearchTerm('')}
               className="text-xs text-blue-600 hover:text-blue-800"
@@ -200,14 +201,14 @@ export const ContactPicker: React.FC<ContactPickerProps> = ({
                           <Star className="h-3 w-3 text-yellow-400 fill-current" />
                         )}
                       </div>
-                      <div className="flex items-center space-x-2 mt-1">
+                      <div className="flex items-center gap-2 mt-1">
                         <code className="text-xs text-gray-400 bg-gray-800 px-2 py-0.5 rounded">
-                          {formatAddress(contact.address)}
+                          <LtrText>{formatAddress(contact.address)}</LtrText>
                         </code>
-                        <span className="text-xs text-gray-500">{contact.tokenType}</span>
+                        <LtrText className="text-xs text-gray-500">{contact.tokenType}</LtrText>
                       </div>
                       {contact.lastUsed && (
-                        <div className="flex items-center space-x-1 mt-1">
+                        <div className="flex items-center gap-1 mt-1">
                           <Clock className="h-3 w-3 text-gray-500" />
                           <span className="text-xs text-gray-500">
                             Used {new Date(contact.lastUsed).toLocaleDateString()}
@@ -217,7 +218,7 @@ export const ContactPicker: React.FC<ContactPickerProps> = ({
                     </div>
 
                     {/* Select Indicator */}
-                    <ChevronRight className="h-4 w-4 text-gray-400" />
+                    <ChevronRight className="h-4 w-4 text-gray-400 rtl:rotate-180" />
                   </div>
                 </Card>
               ))}

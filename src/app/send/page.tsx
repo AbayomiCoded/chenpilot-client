@@ -101,7 +101,7 @@ export default function SendPaymentPage() {
         <div className="border-b border-gray-800 bg-[#060816]/80 backdrop-blur-xl">
           <div className="max-w-4xl mx-auto px-4 py-4">
             <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-4">
+              <div className="flex items-center gap-4">
                 <Button
                   variant="ghost"
                   size="sm"
@@ -109,7 +109,7 @@ export default function SendPaymentPage() {
                   className="text-gray-400 hover:text-white"
                   aria-label="Go back"
                 >
-                  <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+                  <ArrowLeft className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
                 </Button>
                 <div>
                   <h1 className="text-2xl font-bold">Send Payment</h1>
