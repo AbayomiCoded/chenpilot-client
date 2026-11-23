@@ -248,6 +248,18 @@ Pagination (#264):
 - **One request at a time:** a page request is skipped while another is in flight or when there is nothing older. A failed page keeps the cursor and shows "Retry loading older messages".
 - **Scroll position:** the history view records `scrollTop`/`scrollHeight` before requesting an older page and shifts `scrollTop` by the added height after it is prepended (`usePrependScrollAnchor`), so the view does not jump.
 
+## Message Translation (#83)
+
+**Proposed; backend support not yet confirmed.**
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `POST /translate` | `{"text":"¿Cuál es el saldo de mi cartera?","targetLanguage":"en"}` | `{"translatedText":"What is my wallet balance?","detectedLanguage":"es"}` | `MessageTranslation` under chat messages. Failures (including 404/501) show "Translation is unavailable right now." |
+
+- **When the button appears:** a "Translate to <language>" button shows only on messages that `detectLanguage` (`src/lib/translation.ts`) identifies as a different language from the user's preference. Detection is a lightweight client heuristic for en/ar/es/fr.
+- **Display:** the translation appears inline below the message, labelled "Translated from <language>". The original text is never replaced, and the button toggles the translation off again.
+- **Preference:** set under Settings → Language → "Translate messages into" (`ui.translationLanguage`, stored in `localStorage["translation_language"]`). The default, "Same as app language", follows the UI language.
+
 ## Authentication Endpoints
 
 ### Auth Validation Errors (#258)

@@ -1,5 +1,6 @@
 import { createSlice, PayloadAction, createAction } from "@reduxjs/toolkit";
 import { readSavedTheme, saveTheme } from "@/lib/theme";
+import { readTranslationLanguage, saveTranslationLanguage, TranslationLanguage } from "@/lib/translation";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RetryStatus {
@@ -12,6 +13,8 @@ export interface RetryStatus {
 export interface ThemeState {
   mode: "light" | "dark";
   language: "en" | "ar" | "es" | "fr";
+  /** Language messages are translated into (#83); null follows `language`. */
+  translationLanguage: TranslationLanguage | null;
   retryStatus: RetryStatus | null;
   sidebarOpen: boolean;
   notifications: unknown[];
@@ -21,6 +24,7 @@ export interface ThemeState {
 const initialState: ThemeState = {
   mode: "dark", // Default to dark mode
   language: "en", // Default to English
+  translationLanguage: typeof window !== "undefined" ? readTranslationLanguage() : null,
   retryStatus: null,
   sidebarOpen: false,
   notifications: [],
@@ -65,6 +69,11 @@ export const uiSlice = createSlice({
     applyTheme: (state, action: PayloadAction<"light" | "dark">) => {
       state.mode = action.payload;
     },
+    /** Set the "translate messages into" preference; null follows the app language (#83). */
+    setTranslationLanguage: (state, action: PayloadAction<TranslationLanguage | null>) => {
+      state.translationLanguage = action.payload;
+      if (typeof window !== "undefined") saveTranslationLanguage(action.payload);
+    },
     setLanguage: (state, action: PayloadAction<"en" | "ar" | "es" | "fr">) => {
       state.language = action.payload;
       // Save to localStorage
@@ -100,6 +109,7 @@ export const {
   setTheme,
   applyTheme,
   setLanguage,
+  setTranslationLanguage,
   setRetryStatus,
   clearRetryStatus,
 } =

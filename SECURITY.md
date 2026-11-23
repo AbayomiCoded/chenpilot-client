@@ -94,6 +94,7 @@ These are all the keys the client reads or writes. The source of truth is `STORA
 | `mfa_secret` | localStorage + sessionStorage | `services/auth.service.ts` | Never written; removed defensively when MFA setup is cancelled | ✅ | Credential | Must never hold an MFA secret |
 | `mfa_recovery_codes` | localStorage + sessionStorage | `services/auth.service.ts` | Never written; removed defensively when MFA setup is cancelled | ✅ | Credential | Must never hold MFA recovery codes |
 | `theme` | localStorage | `store/slices/uiSlice.ts`, `ThemeProvider` | Persistent | ❌ | Preference | `light` / `dark` |
+| `translation_language` | localStorage | `store/slices/uiSlice.ts` | Persistent | ❌ | Preference | Language messages are translated into (#83) |
 | `language` | localStorage | `store/slices/uiSlice.ts`, `lib/i18n` | Persistent | ❌ | Preference | UI language code |
 | *(all keys)* | sessionStorage | none currently | Tab | ✅ (`sessionStorage.clear()`) | — | — |
 

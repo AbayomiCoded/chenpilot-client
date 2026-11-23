@@ -706,6 +706,24 @@ export class ApiService {
     return response.data;
   }
 
+  /**
+   * Translate a message on demand (#83).
+   * Proposed contract: `POST /translate` `{ text, targetLanguage }` →
+   * `{ translatedText, detectedLanguage? }`.
+   *
+   * @throws {AxiosError} When the request fails; 404/501 means translation is not supported.
+   */
+  async translateText(
+    text: string,
+    targetLanguage: string,
+  ): Promise<{ translatedText: string; detectedLanguage?: string }> {
+    const response = await this.api.post<{ translatedText: string; detectedLanguage?: string }>(
+      "/translate",
+      { text, targetLanguage },
+    );
+    return response.data;
+  }
+
   async changePassword(
     currentPassword: string,
     newPassword: string,

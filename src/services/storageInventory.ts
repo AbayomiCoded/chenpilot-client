@@ -126,6 +126,15 @@ export const STORAGE_INVENTORY: readonly StorageKeyInfo[] = [
     contents: 'light | dark',
   },
   {
+    key: 'translation_language',
+    area: 'localStorage',
+    owner: 'src/store/slices/uiSlice.ts (src/lib/translation.ts)',
+    lifetime: 'Persistent device preference',
+    userScoped: false,
+    sensitivity: 'preference',
+    contents: 'Language messages are translated into (#83)',
+  },
+  {
     key: 'language',
     area: 'localStorage',
     owner: 'src/store/slices/uiSlice.ts, src/lib/i18n/i18n.ts',
