@@ -24,6 +24,7 @@ import toast from "react-hot-toast";
 import { PasswordStrengthMeter } from "@/components/auth/(register)/passwordStrengthMeter";
 import { changePasswordSchema } from "@/utils/validation";
 import { NotificationPermissionStatus } from "@/components/settings/NotificationPermissionStatus";
+import { NotificationPreferencesSection } from "@/components/settings/NotificationPreferencesSection";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
@@ -359,41 +360,8 @@ export default function SettingsPage() {
                   <div className="space-y-4">
                     {/* Browser permission: read without prompting, requested only on click (#302) */}
                     <NotificationPermissionStatus />
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-white">
-                          Transaction Notifications
-                        </p>
-                        <p className="text-sm text-gray-400">
-                          Get notified when transactions complete
-                        </p>
-                      </div>
-
-                      <input
-                        type="checkbox"
-                        defaultChecked
-                        aria-label="Transaction Notifications"
-                        className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-white">
-                          Chat Notifications
-                        </p>
-                        <p className="text-sm text-gray-400">
-                          Get notified of new AI agent responses
-                        </p>
-                      </div>
-
-                      <input
-                        type="checkbox"
-                        defaultChecked
-                        aria-label="Chat Notifications"
-                        className="h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                      />
-                    </div>
+                    {/* Saved account preferences, controlled and persisted (#301) */}
+                    <NotificationPreferencesSection />
                   </div>
                 </div>
               </Card>

@@ -59,6 +59,7 @@ import {
 import { horizonFetch } from "@/utils/horizonFetch";
 import { buildPaymentIdempotencyKey } from "@/utils/paymentIdempotency";
 import {
+import type { NotificationPreferences } from "@/types/notificationPreferences";
   PaymentOutcomeUnknownError,
   isPaymentOutcomeUnknown,
 } from "@/utils/paymentOutcome";
@@ -703,6 +704,27 @@ export class ApiService {
       { password },
       { withCredentials: true },
     );
+    return response.data;
+  }
+
+  /**
+   * Saved notification preferences for the current user (#301).
+   * Proposed contract: `GET /users/me/notification-preferences` →
+   * `{ "transactions": boolean, "chat": boolean }`.
+   *
+   * @throws {AxiosError} 404/501 when the backend does not support preferences yet.
+   */
+  async getNotificationPreferences(): Promise<NotificationPreferences> {
+    const response = await this.api.get<NotificationPreferences>("/users/me/notification-preferences");
+    return response.data;
+  }
+
+  /**
+   * Save notification preferences (#301). Proposed: `PUT /users/me/notification-preferences`
+   * with the full object; responds with the saved object.
+   */
+  async updateNotificationPreferences(preferences: NotificationPreferences): Promise<NotificationPreferences> {
+    const response = await this.api.put<NotificationPreferences>("/users/me/notification-preferences", preferences);
     return response.data;
   }
 

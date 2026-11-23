@@ -248,6 +248,17 @@ Pagination (#264):
 - **One request at a time:** a page request is skipped while another is in flight or when there is nothing older. A failed page keeps the cursor and shows "Retry loading older messages".
 - **Scroll position:** the history view records `scrollTop`/`scrollHeight` before requesting an older page and shifts `scrollTop` by the added height after it is prepended (`usePrependScrollAnchor`), so the view does not jump.
 
+## Notification Preferences (#301)
+
+**Proposed; backend support not yet confirmed.** These routes are used by `NotificationPreferencesSection` (Settings → Notifications) through `apiService`.
+
+| Endpoint | Request example | Success response example | UI surface / behavior |
+| --- | --- | --- | --- |
+| `GET /users/me/notification-preferences` | No body; bearer token. | `{"transactions":true,"chat":false}` | Loads the saved values into controlled checkboxes. `404`/`501` shows the controls as unavailable; other failures show "Try again". |
+| `PUT /users/me/notification-preferences` | `{"transactions":true,"chat":false}` (full object) | The saved object | Sent on every toggle. On failure the checkbox reverts to the saved value and a "Retry" re-sends the same change. |
+
+Both fields are booleans. A response missing either field is treated as a load failure.
+
 ## Authentication Endpoints
 
 ### Auth Validation Errors (#258)
