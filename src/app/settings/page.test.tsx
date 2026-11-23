@@ -58,6 +58,8 @@ vi.mock("@/store/slices/authSlice", () => ({
 
 vi.mock("@/store/slices/uiSlice", () => ({
   setLanguage: vi.fn(),
+  setTheme: vi.fn(),
+  setTranslationLanguage: vi.fn(),
 }));
 
 vi.mock("@/components/layout/ChatLayout", () => ({

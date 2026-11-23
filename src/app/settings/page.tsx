@@ -7,7 +7,8 @@ import { SignInActivity } from "@/components/settings/SignInActivity";
 import { useReauthPrompt } from "@/components/auth/ReauthDialog";
 import { withRecentAuth } from "@/services/auth.service";
 import { describeSensitiveActionError } from "@/utils/sensitiveActionErrors";
-import { setLanguage } from "@/store/slices/uiSlice";
+import { setLanguage, setTheme } from "@/store/slices/uiSlice";
+import { SettingsSectionNav } from "@/components/settings/SettingsSectionNav";
 import { ChatLayout } from "@/components/layout/ChatLayout";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -34,8 +35,6 @@ export default function SettingsPage() {
   );
   const { mode: themeMode, language } = useAppSelector((state) => state.ui) || {
     mode: "dark",
-  const { theme, language } = useAppSelector((state) => state.ui) || {
-    theme: { mode: "dark" },
     language: "en",
   };
   const [passwordChangeStage, setPasswordChangeStage] = useState<
@@ -216,7 +215,12 @@ export default function SettingsPage() {
               </p>
             </div>
 
+            {/* Navigable sections (#300) */}
+            <SettingsSectionNav />
+
             <div className="space-y-6">
+              <section id="settings-profile" aria-labelledby="settings-profile-heading" className="scroll-mt-20 space-y-6">
+                <h2 id="settings-profile-heading" className="sr-only">Profile</h2>
               {/* Profile Settings */}
               <Card>
                 <div className="p-6">
@@ -257,6 +261,7 @@ export default function SettingsPage() {
                   <div className="space-y-4">
                     <Input
                       label="Name"
+                      helperText="Managed by your account. Editing isn't available here yet."
                       value={user?.name || ""}
                       disabled
                       placeholder="Your display name"
@@ -264,6 +269,7 @@ export default function SettingsPage() {
 
                     <Input
                       label="Email"
+                      helperText="Managed by your account. Editing isn't available here yet."
                       value={user?.email || ""}
                       disabled
                       placeholder="Your email address"
@@ -282,6 +288,7 @@ export default function SettingsPage() {
                         value={user?.address || ""}
                         disabled
                         aria-label="Wallet Address"
+                        helperText="Your wallet address is fixed and can't be changed."
                         placeholder="Your Stellar wallet address"
                       />
                     </div>
@@ -289,6 +296,10 @@ export default function SettingsPage() {
                 </div>
               </Card>
 
+              </section>
+
+              <section id="settings-appearance" aria-labelledby="settings-appearance-heading" className="scroll-mt-20 space-y-6">
+                <h2 id="settings-appearance-heading" className="sr-only">Appearance & language</h2>
               {/* Appearance Settings */}
               <Card>
                 <div className="p-6">
@@ -305,6 +316,8 @@ export default function SettingsPage() {
                       <Button
                         variant={themeMode === "light" ? "primary" : "ghost"}
                         size="sm"
+                        aria-pressed={themeMode === "light"}
+                        onClick={() => dispatch(setTheme("light"))}
                       >
                         {t(language, "settings.light")}
                       </Button>
@@ -312,6 +325,8 @@ export default function SettingsPage() {
                       <Button
                         variant={themeMode === "dark" ? "primary" : "ghost"}
                         size="sm"
+                        aria-pressed={themeMode === "dark"}
+                        onClick={() => dispatch(setTheme("dark"))}
                       >
                         {t(language, "settings.dark")}
                       </Button>
@@ -347,9 +362,17 @@ export default function SettingsPage() {
                 </div>
               </Card>
 
+              </section>
+
+              <section id="settings-wallet" aria-labelledby="settings-wallet-heading" className="scroll-mt-20 space-y-6">
+                <h2 id="settings-wallet-heading" className="sr-only">Wallet</h2>
               {/* Stellar Trustlines Management */}
               <TrustlinesPanel />
 
+              </section>
+
+              <section id="settings-notifications" aria-labelledby="settings-notifications-heading" className="scroll-mt-20 space-y-6">
+                <h2 id="settings-notifications-heading" className="sr-only">Notifications</h2>
               {/* Notifications */}
               <Card>
                 <div className="p-6">
@@ -366,6 +389,10 @@ export default function SettingsPage() {
                 </div>
               </Card>
 
+              </section>
+
+              <section id="settings-security" aria-labelledby="settings-security-heading" className="scroll-mt-20 space-y-6">
+                <h2 id="settings-security-heading" className="sr-only">Security</h2>
               {/* Security. Sensitive calls also honour server step-up challenges (#255, ADR-0006) */}
               <Card>
                 <div className="p-6">
@@ -431,6 +458,7 @@ export default function SettingsPage() {
                   <SignInActivity />
                 </div>
               </Card>
+              </section>
             </div>
           </div>
         </div>
