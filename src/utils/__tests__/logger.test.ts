@@ -5,6 +5,12 @@ import {
   generateCorrelationId,
   sanitizeLogValue,
   isSensitiveKey,
+  isContentKey,
+  isContentLoggingEnabled,
+  CORRELATION_ID_HEADER,
+  extractCorrelationId,
+  setCorrelationIdHeader,
+  correlationIdForError,
 } from "../logger";
 
 describe("logger & high-cardinality log protection (#924)", () => {
@@ -24,7 +30,7 @@ describe("logger & high-cardinality log protection (#924)", () => {
   });
 
   it("is silent in production for info/debug", async () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     vi.resetModules();
     const { logger: prodLogger } = await import("../logger");
     prodLogger.info("hello");
@@ -33,7 +39,7 @@ describe("logger & high-cardinality log protection (#924)", () => {
   });
 
   it("routes error calls through console.error", async () => {
-    process.env.NODE_ENV = "development";
+    vi.stubEnv("NODE_ENV", "development");
     vi.resetModules();
     const { logger: devLogger } = await import("../logger");
     devLogger.error("boom");
@@ -46,7 +52,8 @@ describe("logger & high-cardinality log protection (#924)", () => {
       password: "SuperSecretPassword123!",
       secretKey: "SD1234567890ABCDEF1234567890ABCDEF1234567890ABCDEF123456",
       token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-      promptText: "This is a private prompt payload that should not be logged raw.",
+      promptText:
+        "This is a private prompt payload that should not be logged raw.",
     };
 
     const sanitized = sanitizeLogValue(rawPayload) as Record<string, string>;
@@ -72,6 +79,25 @@ describe("logger & high-cardinality log protection (#924)", () => {
     expect(corrId).toMatch(/^stellar_tx_\d+_[a-z0-9]+$/);
   });
 
+  it("propagates only validated correlation IDs from HTTP metadata", () => {
+    const headers: Record<string, string> = {};
+    setCorrelationIdHeader(headers, "agent_query_1234_abcd");
+    expect(headers[CORRELATION_ID_HEADER]).toBe("agent_query_1234_abcd");
+    expect(extractCorrelationId({ "X-Correlation-ID": "http_123_abc" })).toBe("http_123_abc");
+    expect(extractCorrelationId({ "X-Correlation-ID": "Bearer secret" })).toBeUndefined();
+  });
+
+  it("finds a correlation ID on Axios-like errors without reading request payloads", () => {
+    expect(correlationIdForError({
+      correlationId: "http_123_abc",
+      config: { data: { prompt: "private prompt", token: "private-token" } },
+    })).toBe("http_123_abc");
+
+    expect(correlationIdForError({
+      config: { headers: { "X-Correlation-ID": "http_456_def" } },
+    })).toBe("http_456_def");
+  });
+
   it("truncates excessively long high-cardinality string inputs", () => {
     const longString = "A".repeat(200);
     const sanitized = sanitizeLogValue(longString) as string;
@@ -86,5 +112,56 @@ describe("logger & high-cardinality log protection (#924)", () => {
     expect(isSensitiveKey("secretKey")).toBe(true);
     expect(isSensitiveKey("email")).toBe(true);
     expect(isSensitiveKey("userName")).toBe(false);
+  });
+
+  describe("agent content redaction (#273)", () => {
+    const prompt = "Move all my USDC to wallet GDXYZ and tell me my seed backup";
+    const reply = { result: { success: true, data: "Your balance is 9,000 XLM" } };
+
+    it("redacts query/response content keys by default while keeping metadata", () => {
+      delete process.env.NEXT_PUBLIC_LOG_AGENT_CONTENT;
+      const sanitized = sanitizeLogValue({
+        correlationId: "agent_query_1_abc",
+        queryLength: prompt.length,
+        query: prompt,
+        response: reply,
+      }) as Record<string, unknown>;
+
+      expect(sanitized.correlationId).toBe("agent_query_1_abc");
+      expect(sanitized.queryLength).toBe(prompt.length);
+      expect(sanitized.query).toMatch(/^\[REDACTED_CONTENT, len=\d+, hash_[0-9a-f]{8}\]$/);
+      expect(sanitized.response).toMatch(/^\[REDACTED_CONTENT/);
+      expect(JSON.stringify(sanitized)).not.toContain("USDC");
+      expect(JSON.stringify(sanitized)).not.toContain("9,000");
+    });
+
+    it("matches content keys exactly so metadata keys are not redacted", () => {
+      expect(isContentKey("query")).toBe(true);
+      expect(isContentKey("data")).toBe(true);
+      expect(isContentKey("execution_trace")).toBe(true);
+      expect(isContentKey("queryLength")).toBe(false);
+      expect(isContentKey("responseHash")).toBe(false);
+      expect(isContentKey("correlationId")).toBe(false);
+    });
+
+    it("allows content only when opted in and never in production", () => {
+      process.env.NODE_ENV = "development";
+      delete process.env.NEXT_PUBLIC_LOG_AGENT_CONTENT;
+      expect(isContentLoggingEnabled()).toBe(false);
+
+      process.env.NEXT_PUBLIC_LOG_AGENT_CONTENT = "true";
+      expect(isContentLoggingEnabled()).toBe(true);
+      expect((sanitizeLogValue({ query: "hello" }) as Record<string, unknown>).query).toBe("hello");
+
+      process.env.NODE_ENV = "production";
+      expect(isContentLoggingEnabled()).toBe(false);
+    });
+
+    it("never prints prompt content through logger.error by default", () => {
+      delete process.env.NEXT_PUBLIC_LOG_AGENT_CONTENT;
+      logger.error("[AgentService] Query failed:", { correlationId: "c1", query: prompt });
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(prompt);
+      expect(JSON.stringify(errorSpy.mock.calls)).toContain("c1");
+    });
   });
 });

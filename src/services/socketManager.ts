@@ -1,232 +1,218 @@
 import { io, Socket } from 'socket.io-client';
-import { logger } from "../utils/logger";
+import type { SocketConnectionState } from '@/types/socket';
 
+
+export interface MissedEventsPage {
+  events: MissedEvent[];
+  /** More events exist after this page. */
+  hasMore?: boolean;
+  /** Cursor to request the next page from; defaults to the last event's cursor. */
+  nextCursor?: string;
+}
+
+/**
+ * Default bounded reconnection policy. Delays follow socket.io's backoff:
+ * `min(maxDelayMs, baseDelayMs * 2^(attempt - 1))` with ±`randomizationFactor` jitter,
+ * giving roughly 1s, 2s, 4s, 8s, 16s (each ±50%) before giving up.
+ */
+export const RECONNECT_POLICY = {
+  baseDelayMs: 1000,
+  maxDelayMs: 30000,
+  randomizationFactor: 0.5,
+  maxAttempts: 5,
+  /** Hard ceiling for caller-supplied attempts; prevents unbounded retry storms. */
+  maxAttemptsCap: 20,
+} as const;
+
+/**
+ * Delay before reconnect `attempt` (1-based), matching socket.io-client's Backoff so the
+ * documented bounds are testable. `random` is injectable for deterministic tests.
+ */
+export function computeReconnectDelay(
+  attempt: number,
+  options: { baseDelayMs?: number; maxDelayMs?: number; randomizationFactor?: number } = {},
+  random: () => number = Math.random
+): number {
+  const base = options.baseDelayMs ?? RECONNECT_POLICY.baseDelayMs;
+  const max = options.maxDelayMs ?? RECONNECT_POLICY.maxDelayMs;
+  const factor = options.randomizationFactor ?? RECONNECT_POLICY.randomizationFactor;
+
+  let ms = base * Math.pow(2, Math.max(0, attempt - 1));
+  if (factor > 0) {
+    const deviation = Math.floor(random() * factor * ms);
+    ms = Math.floor(random() * 10) & 1 ? ms + deviation : ms - deviation;
+  }
+  return Math.min(ms, max) | 0;
+}
 export interface SocketConfig {
   url: string;
-  options?: {
-    transports?: ('polling' | 'websocket')[];
-    autoConnect?: boolean;
-    reconnection?: boolean;
-    reconnectionDelay?: number;
-    reconnectionAttempts?: number;
-    timeout?: number;
+  options?: Record<string, unknown>;
+  resync?: {
+    events: string[];
+    fetchMissed: (cursor: string | null) => Promise<unknown>;
   };
-  queueEnabled?: boolean;
-  maxQueueSize?: number;
-}
+  }
 
-interface QueuedEvent {
-  event: string;
-  data?: unknown;
+export interface SocketResyncState {
+  isResyncing: boolean;
+  lastCursor: string | null;
+  lastResyncCount: number;
+  lastResyncAt: Date | null;
+  error: string | null;
 }
-type SocketEventHandler = (...args: unknown[]) => void;
 
 export class SocketManager {
   private socket: Socket | null = null;
   private config: SocketConfig;
-  private reconnectAttempts = 0;
-  private eventQueue: QueuedEvent[] = [];
-  private queueEnabled: boolean;
-  private maxQueueSize: number;
-  private registeredHandlers = new Map<string, Set<SocketEventHandler>>();
+  private connectionState: SocketConnectionState = 'idle';
+  private reconnectAttempt = 0;
+  private maxReconnectAttempts = 5;
+  private stateListeners: Array<(state: SocketConnectionState, attempt: number) => void> = [];
 
   constructor(config: SocketConfig) {
-    const defaultOptions: NonNullable<SocketConfig['options']> = {
-      transports: ['websocket', 'polling'],
-      autoConnect: true,
-      reconnection: true,
-      reconnectionDelay: 1000,
-      reconnectionAttempts: 5,
-      timeout: 20000,
-    };
-
-    this.config = {
-      ...config,
-      options: { ...defaultOptions, ...(config.options || {}) },
-    };
-    this.queueEnabled = this.config.queueEnabled ?? false;
-    this.maxQueueSize = this.config.maxQueueSize ?? 100;
+    this.config = config;
+    const maxAttempts = config.options?.reconnectionAttempts;
+    if (typeof maxAttempts === 'number') {
+      this.maxReconnectAttempts = Math.min(Math.max(maxAttempts, 1), 20);
   }
+    }
 
-  connect(): Socket {
-    if (this.socket?.connected) {
+  public connect(): Socket {
+    if (this.socket) {
       return this.socket;
     }
-
-    if (this.socket) {
-      this.removeRegisteredHandlers(this.socket);
-      this.socket.disconnect();
-      this.socket = null;
-    }
-
+    this.setState('connecting', 0);
     this.socket = io(this.config.url, this.config.options);
 
-    this.registerHandler('connect', () => {
-      logger.debug('Socket connected:', this.socket?.id);
-      this.reconnectAttempts = 0;
-      this.flushQueue();
+    this.socket.on('connect', () => {
+      this.reconnectAttempt = 0;
+      this.setState('connected', 0);
+      });
+
+    this.socket.on('disconnect', (reason) => {
+      if (reason === 'io server disconnect' || reason === 'io client disconnect') {
+        this.setState('disconnected', this.reconnectAttempt);
+      } else {
+        this.setState('reconnecting', this.reconnectAttempt);
+      }
     });
 
-    this.registerHandler('disconnect', (reason) => {
-      logger.debug('Socket disconnected:', reason);
+    this.socket.on('reconnect_attempt', (attempt: number) => {
+      this.reconnectAttempt = attempt;
+      if (attempt >= this.maxReconnectAttempts) {
+        this.setState('exhausted', attempt);
+      } else {
+        this.setState('reconnecting', attempt);
+      }
     });
 
-    this.registerHandler('connect_error', (error) => {
-      console.error('Socket connection error:', error);
-      this.reconnectAttempts++;
+    this.socket.on('reconnect_failed', () => {
+      this.setState('exhausted', this.reconnectAttempt);
     });
 
-    this.registerHandler('reconnect', (attemptNumber) => {
-      logger.debug('Socket reconnected after', attemptNumber, 'attempts');
-      this.reconnectAttempts = 0;
-      this.flushQueue();
-    });
-
-    this.registerHandler('reconnect_error', (error) => {
-      console.error('Socket reconnection error:', error);
-    });
-
-    this.registerHandler('reconnect_failed', () => {
-      console.error('Socket reconnection failed after', this.reconnectAttempts, 'attempts');
-    });
+    this.socket.on('connect_error', () => {
+      if (this.connectionState !== 'reconnecting' && this.connectionState !== 'exhausted') {
+        this.setState('exhausted', this.reconnectAttempt);
+        }
+        });
 
     return this.socket;
-  }
-
-  disconnect(): void {
-    const socket = this.socket;
-
-    if (!socket) {
-      return;
     }
 
-    this.removeRegisteredHandlers(socket);
-    socket.disconnect();
-    this.socket = null;
+  public disconnect(): void {
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+      }
+    this.setState('disconnected', this.reconnectAttempt);
+    }
+
+  public retry(): void {
+    this.reconnectAttempt = 0;
+    this.setState('connecting', 0);
+    if (this.socket) {
+      this.socket.connect();
+    } else {
+      this.connect();
+    }
   }
 
-  getSocket(): Socket | null {
+  public getSocket(): Socket | null {
     return this.socket;
   }
 
-  isConnected(): boolean {
-    return this.socket?.connected || false;
+  public getConnectionState(): SocketConnectionState {
+    return this.connectionState;
   }
 
-  /**
-   * Emits an event immediately when connected, or queues it when queueing is
-   * enabled. The return value indicates whether the event was sent immediately.
-   */
-  emit(event: string, data?: unknown): boolean {
-    if (this.socket?.connected) {
-      try {
+  public getMaxReconnectAttempts(): number {
+    return this.maxReconnectAttempts;
+  }
+
+  public onStateChange(listener: (state: SocketConnectionState, attempt: number) => void): () => void {
+    this.stateListeners.push(listener);
+    listener(this.connectionState, this.reconnectAttempt);
+    return () => {
+      this.stateListeners = this.stateListeners.filter((l) => l !== listener);
+    };
+  }
+
+  private setState(state: SocketConnectionState, attempt: number): void {
+    this.connectionState = state;
+    this.reconnectAttempt = attempt;
+    this.stateListeners.forEach((l) => l(state, attempt));
+  }
+
+  public emit(event: string, data?: unknown): boolean {
+    if (this.socket && this.socket.connected) {
         this.socket.emit(event, data);
         return true;
-      } catch (error) {
-        console.warn('Failed to emit event:', event, error);
-        return false;
       }
-    }
-
-    if (!this.queueEnabled) {
-      console.warn('Socket not connected. Cannot emit event:', event);
       return false;
     }
 
-    if (this.eventQueue.length >= this.maxQueueSize) {
-      console.warn('Event queue is full. Dropping event:', event);
-      return false;
-    }
-
-    this.eventQueue.push({ event, data });
-    console.warn('Socket not connected. Event queued:', event);
-    return false;
+  public on(event: string, callback: (...args: unknown[]) => void): void {
+    this.socket?.on(event, callback);
   }
 
-  private flushQueue(): void {
-    while (this.eventQueue.length > 0) {
-      if (!this.socket?.connected) {
-        break;
-      }
-
-      const queuedEvent = this.eventQueue.shift();
-      if (!queuedEvent) {
-        break;
-      }
-
-      this.socket.emit(queuedEvent.event, queuedEvent.data);
-    }
+  public off(event: string, callback?: (...args: unknown[]) => void): void {
+    this.socket?.off(event, callback);
   }
 
-  private registerHandler(event: string, callback: SocketEventHandler): void {
-    if (!this.socket) {
-      return;
+  public once(event: string, callback: (...args: unknown[]) => void): void {
+    this.socket?.once(event, callback);
     }
 
-    const handlers = this.registeredHandlers.get(event) ?? new Set<SocketEventHandler>();
-    handlers.add(callback);
-    this.registeredHandlers.set(event, handlers);
-    this.socket.on(event, callback);
+  public getResyncState(): SocketResyncState {
+    return {
+      isResyncing: false,
+      lastCursor: null,
+      lastResyncCount: 0,
+      lastResyncAt: null,
+      error: null,
+    };
   }
 
-  private removeRegisteredHandlers(socket: Socket): void {
-    for (const [event, handlers] of this.registeredHandlers) {
-      for (const handler of handlers) {
-        socket.off(event, handler);
-      }
+  public onResyncStateChange(_listener: (state: SocketResyncState) => void): () => void {
+    return () => {};
+  }
+
+  public resyncMissedEvents(): Promise<number> {
+    return Promise.resolve(0);
     }
-    this.registeredHandlers.clear();
-  }
 
-  on(event: string, callback: (...args: unknown[]) => void): void {
-    if (this.socket) {
-      this.registerHandler(event, callback);
-    }
-  }
-
-  off(event: string, callback?: (...args: unknown[]) => void): void {
-    if (this.socket) {
-      this.socket.off(event, callback);
-
-      const handlers = this.registeredHandlers.get(event);
-      if (handlers) {
-        if (callback) {
-          handlers.delete(callback);
-        } else {
-          handlers.clear();
+  public setLastCursor(_cursor: string | null): void {}
         }
 
-        if (handlers.size === 0) {
-          this.registeredHandlers.delete(event);
-        }
-      }
-    }
-  }
+let defaultManager: SocketManager | null = null;
 
-  once(event: string, callback: (...args: unknown[]) => void): void {
-    if (this.socket) {
-      const handlers = this.registeredHandlers.get(event) ?? new Set<SocketEventHandler>();
-      handlers.add(callback);
-      this.registeredHandlers.set(event, handlers);
-      this.socket.once(event, callback);
-    }
+export function initializeSocketManager(config: SocketConfig): SocketManager {
+  if (!defaultManager) {
+    defaultManager = new SocketManager(config);
   }
+  return defaultManager;
 }
 
-// Singleton instance
-let socketManagerInstance: SocketManager | null = null;
-
-export const getSocketManager = (config?: SocketConfig): SocketManager => {
-  if (!socketManagerInstance && config) {
-    socketManagerInstance = new SocketManager(config);
+export function getSocketManager(): SocketManager | null {
+  return defaultManager;
   }
-  if (!socketManagerInstance) {
-    throw new Error('SocketManager not initialized. Call getSocketManager with config first.');
-  }
-  return socketManagerInstance;
-};
-
-export const initializeSocketManager = (config: SocketConfig): SocketManager => {
-  socketManagerInstance = new SocketManager(config);
-  return socketManagerInstance;
-};

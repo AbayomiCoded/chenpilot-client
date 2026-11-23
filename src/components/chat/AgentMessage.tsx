@@ -4,19 +4,156 @@ import React, { useState } from "react";
 import { logger } from "../../utils/logger";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import type { Components } from "react-markdown";
 import { ChatMessage } from "@/types";
-import { Copy, Check } from "lucide-react";
+import { Copy, Check, RefreshCw, ThumbsDown, ThumbsUp } from "lucide-react";
 import { CodeBlock } from "./CodeBlock";
 import ExecutionTrace from "./ExecutionTrace";
+import { useAppDispatch } from "@/store";
+import { setMessageFeedback } from "@/store/slices/chatSlice";
+import { submitFeedback } from "@/services/feedbackService";
+import type { MessageFeedback } from "@/types";
+
+type DataRecord = Record<string, unknown>;
+
+function isDataRecord(value: unknown): value is DataRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function recordList(value: unknown): DataRecord[] {
+  return Array.isArray(value) ? value.filter(isDataRecord) : [];
+}
+
+function displayValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function displayField(record: DataRecord, key: string): string {
+  return displayValue(record[key]);
+}
+
+function nestedRecord(record: DataRecord, key: string): DataRecord {
+  const value = record[key];
+  return isDataRecord(value) ? value : {};
+}
+
+const markdownComponents: Components = {
+  p: ({ children, ...props }) => (
+    <p className="mb-3 last:mb-0" {...props}>
+      {children}
+    </p>
+  ),
+  strong: ({ children, ...props }) => (
+    <strong className="font-semibold text-white" {...props}>
+      {children}
+    </strong>
+  ),
+  em: ({ children, ...props }) => (
+    <em className="italic text-gray-300" {...props}>
+      {children}
+    </em>
+  ),
+  code: ({ className, children, ...props }) => {
+    const inline = !className?.includes('language-');
+    return (
+      <CodeBlock className={className} inline={inline} {...props}>
+        {String(children).replace(/\n$/, '')}
+      </CodeBlock>
+    );
+  },
+  pre: ({ children }) => <>{children}</>,
+  ul: ({ children, ...props }) => (
+    <ul className="mb-3 list-disc list-inside space-y-1" {...props}>
+      {children}
+    </ul>
+  ),
+  ol: ({ children, ...props }) => (
+    <ol className="mb-3 list-decimal list-inside space-y-1" {...props}>
+      {children}
+    </ol>
+  ),
+  li: ({ children, ...props }) => (
+    <li className="text-gray-200" {...props}>
+      {children}
+    </li>
+  ),
+  h1: ({ children, ...props }) => (
+    <h1 className="mb-4 text-2xl font-bold text-white" {...props}>
+      {children}
+    </h1>
+  ),
+  h2: ({ children, ...props }) => (
+    <h2 className="mb-3 text-xl font-bold text-white" {...props}>
+      {children}
+    </h2>
+  ),
+  h3: ({ children, ...props }) => (
+    <h3 className="mb-2 text-lg font-semibold text-white" {...props}>
+      {children}
+    </h3>
+  ),
+  blockquote: ({ children, ...props }) => (
+    <blockquote className="my-4 border-l-4 border-purple-500 pl-4 italic text-gray-300" {...props}>
+      {children}
+    </blockquote>
+  ),
+};
 
 interface AgentMessageProps {
   message: ChatMessage;
   onCopy?: (text: string) => void;
   onReply?: (messageId: string) => void;
+  onRegenerate?: () => void;
+  canRegenerate?: boolean;
 }
 
-export default function AgentMessage({ message, onCopy, onReply }: AgentMessageProps) {
+export default function AgentMessage({
+  message,
+  onCopy,
+  onReply,
+  onRegenerate,
+  canRegenerate = false,
+}: AgentMessageProps) {
   const [copied, setCopied] = useState(false);
+  const [showFeedbackComment, setShowFeedbackComment] = useState(false);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const dispatch = useAppDispatch();
+
+  const updateFeedback = (feedback: MessageFeedback | null) => {
+    dispatch(setMessageFeedback({ messageId: message.id, feedback }));
+    void submitFeedback(message.id, feedback);
+  };
+
+  const handlePositiveFeedback = () => {
+    const selected = message.metadata?.feedback?.rating === "up";
+    updateFeedback(
+      selected
+        ? null
+        : { rating: "up", submittedAt: new Date().toISOString() },
+    );
+  };
+
+  const handleNegativeFeedback = () => {
+    if (message.metadata?.feedback?.rating === "down") {
+      updateFeedback(null);
+      setShowFeedbackComment(false);
+      setFeedbackComment("");
+      return;
+    }
+    setFeedbackComment("");
+    setShowFeedbackComment(true);
+  };
+
+  const submitNegativeFeedback = () => {
+    updateFeedback({
+      rating: "down",
+      comment: feedbackComment.trim() || undefined,
+      submittedAt: new Date().toISOString(),
+    });
+    setShowFeedbackComment(false);
+  };
 
   // Handle both string and object content
   const renderContent = () => {
@@ -29,17 +166,17 @@ export default function AgentMessage({ message, onCopy, onReply }: AgentMessageP
     }
 
     if (typeof message.content === "object" && message.content !== null) {
-      const content = message.content as any;
+      const content = message.content as DataRecord;
       logger.debug("[AgentMessage] Object content keys:", Object.keys(content));
 
       // Handle the new backend response format with vaults array
-      if (content.vaults && Array.isArray(content.vaults)) {
-        return renderVaultsContent(content.vaults, content.marketInsights);
+      if (Array.isArray(content.vaults)) {
+        return renderVaultsContent(recordList(content.vaults), content.marketInsights);
       }
 
       // Handle troves positions response
-      if (content.positions && Array.isArray(content.positions)) {
-        return renderPositionsContent(content.positions);
+      if (Array.isArray(content.positions)) {
+        return renderPositionsContent(recordList(content.positions));
       }
 
       // Handle troves quote response
@@ -53,8 +190,8 @@ export default function AgentMessage({ message, onCopy, onReply }: AgentMessageP
       }
 
       // Handle troves strategies response
-      if (content.strategies && Array.isArray(content.strategies)) {
-        return renderStrategiesContent(content.strategies);
+      if (Array.isArray(content.strategies)) {
+        return renderStrategiesContent(recordList(content.strategies));
       }
 
       // Handle troves yield response
@@ -79,40 +216,42 @@ export default function AgentMessage({ message, onCopy, onReply }: AgentMessageP
     return String(message.content || "");
   };
 
-  const renderVaultsContent = (vaults: any[], marketInsights?: any) => {
+  const renderVaultsContent = (vaults: DataRecord[], marketInsights?: unknown) => {
     let content = `🏦 **Available Vaults (${vaults.length})**\n\n`;
 
-    // Add market insights if available
-    if (marketInsights) {
+    if (isDataRecord(marketInsights)) {
+      const topPerformer = nestedRecord(marketInsights, 'topPerformer');
+      const riskDistribution = nestedRecord(marketInsights, 'riskDistribution');
       content +=
         `📊 **Market Overview**\n` +
-        `• Total TVL: ${marketInsights.totalTvl}\n` +
-        `• Average APY: ${marketInsights.averageApy}\n` +
-        `• Top Performer: ${marketInsights.topPerformer.name} (${marketInsights.topPerformer.apy})\n` +
-        `• Risk Distribution: ${marketInsights.riskDistribution.highRisk} High, ${marketInsights.riskDistribution.mediumRisk} Medium, ${marketInsights.riskDistribution.lowRisk} Low Risk\n\n`;
+        `• Total TVL: ${displayField(marketInsights, 'totalTvl')}\n` +
+        `• Average APY: ${displayField(marketInsights, 'averageApy')}\n` +
+        `• Top Performer: ${displayField(topPerformer, 'name')} (${displayField(topPerformer, 'apy')})\n` +
+        `• Risk Distribution: ${displayField(riskDistribution, 'highRisk')} High, ${displayField(riskDistribution, 'mediumRisk')} Medium, ${displayField(riskDistribution, 'lowRisk')} Low Risk\n\n`;
     }
 
-    // Add vault details
     content +=
       `**Vault Details:**\n\n` +
       vaults
         .map(
-          (vault) =>
-            `**${vault.name}**\n` +
-            `• Asset: ${vault.asset}\n` +
-            `• APY: ${vault.apy}\n` +
-            `• TVL: ${vault.tvl}\n` +
-            `• Strategy: ${vault.strategy}\n` +
-            `• Min Deposit: ${vault.minDeposit} ${vault.asset}\n` +
-            `• Risk Level: ${vault.riskLevel}\n` +
-            `• Fees: ${vault.fees.managementFee * 100}% management, ${vault.fees.performanceFee * 100}% performance\n`,
+          (vault) => {
+            const fees = nestedRecord(vault, 'fees');
+            return `**${displayField(vault, 'name')}**\n` +
+              `• Asset: ${displayField(vault, 'asset')}\n` +
+              `• APY: ${displayField(vault, 'apy')}\n` +
+              `• TVL: ${displayField(vault, 'tvl')}\n` +
+              `• Strategy: ${displayField(vault, 'strategy')}\n` +
+              `• Min Deposit: ${displayField(vault, 'minDeposit')} ${displayField(vault, 'asset')}\n` +
+              `• Risk Level: ${displayField(vault, 'riskLevel')}\n` +
+              `• Fees: ${displayValue(fees.managementFee)} management, ${displayValue(fees.performanceFee)} performance\n`;
+          },
         )
         .join("\n");
 
     return content;
   };
 
-  const renderPositionsContent = (positions: any[]) => {
+  const renderPositionsContent = (positions: DataRecord[]) => {
     if (positions.length === 0) {
       return "📊 **Your Positions**\n\nNo positions found.";
     }
@@ -122,119 +261,128 @@ export default function AgentMessage({ message, onCopy, onReply }: AgentMessageP
       positions
         .map(
           (position) =>
-            `**${position.vaultName}**\n` +
-            `• Asset: ${position.asset}\n` +
-            `• Shares: ${position.shares}\n` +
-            `• Assets: ${position.assets}\n` +
-            `• Estimated Value: $${position.estimatedValue}\n` +
-            `• APY: ${position.apy}%\n` +
-            `• Total Earned: $${position.totalEarned}\n` +
-            `• Deposited: ${position.depositedAt}\n`,
+            `**${displayField(position, 'vaultName')}**\n` +
+            `• Asset: ${displayField(position, 'asset')}\n` +
+            `• Shares: ${displayField(position, 'shares')}\n` +
+            `• Assets: ${displayField(position, 'assets')}\n` +
+            `• Estimated Value: $${displayField(position, 'estimatedValue')}\n` +
+            `• APY: ${displayField(position, 'apy')}%\n` +
+            `• Total Earned: $${displayField(position, 'totalEarned')}\n` +
+            `• Deposited: ${displayField(position, 'depositedAt')}\n`,
         )
         .join("\n")
     );
   };
 
-  const renderQuoteContent = (quote: any) => {
+  const renderQuoteContent = (quote: DataRecord) => {
     return (
       `💰 **Deposit Quote**\n\n` +
-      `• Vault: ${quote.vaultId}\n` +
-      `• Asset: ${quote.asset}\n` +
-      `• Amount: ${quote.amount}\n` +
-      `• Estimated Shares: ${quote.estimatedShares}\n` +
-      `• APY: ${quote.apy}%\n` +
-      `• Estimated Yield: $${quote.estimatedYield}\n` +
-      `• Time Horizon: ${quote.timeHorizon}\n` +
-      `• Fees: ${quote.fees}\n`
+      `• Vault: ${displayField(quote, 'vaultId')}\n` +
+      `• Asset: ${displayField(quote, 'asset')}\n` +
+      `• Amount: ${displayField(quote, 'amount')}\n` +
+      `• Estimated Shares: ${displayField(quote, 'estimatedShares')}\n` +
+      `• APY: ${displayField(quote, 'apy')}%\n` +
+      `• Estimated Yield: $${displayField(quote, 'estimatedYield')}\n` +
+      `• Time Horizon: ${displayField(quote, 'timeHorizon')}\n` +
+      `• Fees: ${displayField(quote, 'fees')}\n`
     );
   };
 
-  const renderDepositQuoteContent = (data: any) => {
-    const { message, vault, deposit, yieldProjections, fees, riskAssessment } =
-      data;
+  const renderDepositQuoteContent = (data: DataRecord) => {
+    const vault = nestedRecord(data, 'vault');
+    const deposit = nestedRecord(data, 'deposit');
+    const yieldProjections = nestedRecord(data, 'yieldProjections');
+    const fees = nestedRecord(data, 'fees');
+    const riskAssessment = nestedRecord(data, 'riskAssessment');
 
     return (
-      `💰 **${message}**\n\n` +
+      `💰 **${displayField(data, 'message')}**\n\n` +
       `**Vault Information:**\n` +
-      `• Name: ${vault.name}\n` +
-      `• Asset: ${vault.asset}\n` +
-      `• APY: ${vault.apy}\n` +
-      `• TVL: ${vault.tvl}\n` +
-      `• Strategy: ${vault.strategy}\n\n` +
+      `• Name: ${displayField(vault, 'name')}\n` +
+      `• Asset: ${displayField(vault, 'asset')}\n` +
+      `• APY: ${displayField(vault, 'apy')}\n` +
+      `• TVL: ${displayField(vault, 'tvl')}\n` +
+      `• Strategy: ${displayField(vault, 'strategy')}\n\n` +
       `**Deposit Details:**\n` +
-      `• Amount: ${deposit.amount} ${deposit.asset}\n` +
-      `• Estimated Shares: ${deposit.estimatedShares}\n` +
-      `• Share Price: ${deposit.sharePrice}\n\n` +
+      `• Amount: ${displayField(deposit, 'amount')} ${displayField(deposit, 'asset')}\n` +
+      `• Estimated Shares: ${displayField(deposit, 'estimatedShares')}\n` +
+      `• Share Price: ${displayField(deposit, 'sharePrice')}\n\n` +
       `**Yield Projections:**\n` +
-      `• Daily: ${yieldProjections.daily}\n` +
-      `• Weekly: ${yieldProjections.weekly}\n` +
-      `• Monthly: ${yieldProjections.monthly}\n` +
-      `• Annual: ${yieldProjections.annual}\n\n` +
+      `• Daily: ${displayField(yieldProjections, 'daily')}\n` +
+      `• Weekly: ${displayField(yieldProjections, 'weekly')}\n` +
+      `• Monthly: ${displayField(yieldProjections, 'monthly')}\n` +
+      `• Annual: ${displayField(yieldProjections, 'annual')}\n\n` +
       `**Fees:**\n` +
-      `• Management Fee: ${fees.managementFee} (${fees.managementFeeAmount})\n` +
-      `• Performance Fee: ${fees.performanceFee} (${fees.performanceFeeAmount})\n\n` +
+      `• Management Fee: ${displayField(fees, 'managementFee')} (${displayField(fees, 'managementFeeAmount')})\n` +
+      `• Performance Fee: ${displayField(fees, 'performanceFee')} (${displayField(fees, 'performanceFeeAmount')})\n\n` +
       `**Risk Assessment:**\n` +
-      `• Risk Level: ${riskAssessment.riskLevel}\n` +
-      `• Recommendation: ${riskAssessment.recommendation}\n`
+      `• Risk Level: ${displayField(riskAssessment, 'riskLevel')}\n` +
+      `• Recommendation: ${displayField(riskAssessment, 'recommendation')}\n`
     );
   };
 
-  const renderStrategiesContent = (strategies: any[]) => {
+  const renderStrategiesContent = (strategies: DataRecord[]) => {
     return (
       `🎯 **Available Strategies (${strategies.length})**\n\n` +
       strategies
         .map(
-          (strategy) =>
-            `**${strategy.name}**\n` +
-            `• Description: ${strategy.description}\n` +
-            `• Risk Level: ${strategy.riskLevel}\n` +
-            `• Target APY: ${strategy.targetApy}%\n` +
-            `• Current APY: ${strategy.currentApy}%\n` +
-            `• TVL: $${strategy.tvl}\n` +
-            `• Supported Assets: ${strategy.supportedAssets.join(", ")}\n` +
-            `• Strategy Type: ${strategy.strategyType}\n`,
+          (strategy) => {
+            const supportedAssets = Array.isArray(strategy.supportedAssets)
+              ? strategy.supportedAssets.map(displayValue).join(', ')
+              : displayValue(strategy.supportedAssets);
+            return `**${displayField(strategy, 'name')}**\n` +
+              `• Description: ${displayField(strategy, 'description')}\n` +
+              `• Risk Level: ${displayField(strategy, 'riskLevel')}\n` +
+              `• Target APY: ${displayField(strategy, 'targetApy')}%\n` +
+              `• Current APY: ${displayField(strategy, 'currentApy')}%\n` +
+              `• TVL: $${displayField(strategy, 'tvl')}\n` +
+              `• Supported Assets: ${supportedAssets}\n` +
+              `• Strategy Type: ${displayField(strategy, 'strategyType')}\n`;
+          },
         )
         .join("\n")
     );
   };
 
-  const renderYieldContent = (yieldData: any) => {
+  const renderYieldContent = (yieldData: DataRecord) => {
     return (
-      `📈 **Yield Data for ${yieldData.vaultName}**\n\n` +
-      `• Asset: ${yieldData.asset}\n` +
-      `• Current APY: ${yieldData.currentApy}%\n` +
-      `• Historical APY: ${yieldData.historicalApy}%\n` +
-      `• TVL: $${yieldData.tvl}\n` +
-      `• Risk Level: ${yieldData.riskLevel}\n` +
-      `• Last Updated: ${yieldData.lastUpdated}\n`
+      `📈 **Yield Data for ${displayField(yieldData, 'vaultName')}**\n\n` +
+      `• Asset: ${displayField(yieldData, 'asset')}\n` +
+      `• Current APY: ${displayField(yieldData, 'currentApy')}%\n` +
+      `• Historical APY: ${displayField(yieldData, 'historicalApy')}%\n` +
+      `• TVL: $${displayField(yieldData, 'tvl')}\n` +
+      `• Risk Level: ${displayField(yieldData, 'riskLevel')}\n` +
+      `• Last Updated: ${displayField(yieldData, 'lastUpdated')}\n`
     );
   };
 
-  const renderHealthContent = (health: any) => {
+  const renderHealthContent = (health: DataRecord) => {
     return (
       `🏥 **Troves Health Status**\n\n` +
-      `• Status: ${health.status}\n` +
-      `• Total TVL: $${health.totalTvl}\n` +
-      `• Total APY: ${health.totalApy}%\n` +
-      `• Vault Status: ${health.vaultStatus}\n` +
-      `• Recommendations: ${health.recommendations}\n`
+      `• Status: ${displayField(health, 'status')}\n` +
+      `• Total TVL: $${displayField(health, 'totalTvl')}\n` +
+      `• Total APY: ${displayField(health, 'totalApy')}%\n` +
+      `• Vault Status: ${displayField(health, 'vaultStatus')}\n` +
+      `• Recommendations: ${displayField(health, 'recommendations')}\n`
     );
   };
 
-  const renderOperationContent = (operation: any) => {
+  const renderOperationContent = (operation: DataRecord) => {
     if (operation.success) {
+      const quote = operation.quote;
+      const vault = nestedRecord(operation, 'vault');
       return (
-        `✅ **${operation.message || "Operation Successful"}**\n\n` +
-        (operation.quote
-          ? `Quote: ${JSON.stringify(operation.quote, null, 2)}\n`
+        `✅ **${displayValue(operation.message || 'Operation Successful')}**\n\n` +
+        (quote
+          ? `Quote: ${JSON.stringify(quote, null, 2)}\n`
           : "") +
         (operation.vault
-          ? `Vault: ${operation.vault.name} (${operation.vault.asset})\n`
+          ? `Vault: ${displayField(vault, 'name')} (${displayField(vault, 'asset')})\n`
           : "") +
-        (operation.note ? `\n${operation.note}` : "")
+        (operation.note ? `\n${displayValue(operation.note)}` : "")
       );
     } else {
-      return `❌ **Operation Failed**\n\n${operation.message || "Unknown error occurred"}`;
+      return `❌ **Operation Failed**\n\n${displayValue(operation.message || 'Unknown error occurred')}`;
     }
   };
 
@@ -243,13 +391,41 @@ export default function AgentMessage({ message, onCopy, onReply }: AgentMessageP
     try {
       await navigator.clipboard.writeText(content);
       setCopied(true);
-      if (onCopy) {
-        onCopy(content);
-      }
+      if (onCopy) onCopy(content);
       setTimeout(() => setCopied(false), 2000);
     } catch (error) {
       console.error("Failed to copy text:", error);
     }
+  };
+
+  // Track a running offset so each text node in the markdown gets the right
+  // global match index. Re-created on each component render, stable within
+  // the single ReactMarkdown render pass.
+  const offsetTracker = useMemo(
+    () => ({ current: searchMatchOffset }),
+    [searchMatchOffset]
+  );
+
+  /**
+   * Wrap a child string (text node inside a ReactMarkdown component) with
+   * HighlightedText, advancing the running offset by the number of matches.
+   */
+  const wrapChildren = (children: React.ReactNode): React.ReactNode => {
+    if (!searchQuery) return children;
+    if (typeof children === 'string') {
+      const matchCount = findMatches(children, searchQuery).length;
+      const offset = offsetTracker.current;
+      offsetTracker.current += matchCount;
+      return (
+        <HighlightedText
+          text={children}
+          query={searchQuery}
+          activeIndex={searchActiveIndex}
+          matchOffset={offset}
+        />
+      );
+    }
+    return children;
   };
 
   return (
@@ -257,73 +433,11 @@ export default function AgentMessage({ message, onCopy, onReply }: AgentMessageP
       <div className="prose prose-invert prose-lg max-w-none leading-relaxed pr-8">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
-          components={{
-            p: ({ children, ...props }: any) => (
-              <p className="mb-3 last:mb-0" {...props}>
-                {children}
-              </p>
-            ),
-            strong: ({ children, ...props }: any) => (
-              <strong className="font-semibold text-white" {...props}>
-                {children}
-              </strong>
-            ),
-            em: ({ children, ...props }: any) => (
-              <em className="italic text-gray-300" {...props}>
-                {children}
-              </em>
-            ),
-            code: ({ inline, className, children, ...props }: any) => (
-              <CodeBlock className={className} inline={inline}>
-                {String(children).replace(/\n$/, "")}
-              </CodeBlock>
-            ),
-            pre: ({ children, ...props }: any) => <>{children}</>,
-            ul: ({ children, ...props }: any) => (
-              <ul className="list-disc list-inside mb-3 space-y-1" {...props}>
-                {children}
-              </ul>
-            ),
-            ol: ({ children, ...props }: any) => (
-              <ol
-                className="list-decimal list-inside mb-3 space-y-1"
-                {...props}
-              >
-                {children}
-              </ol>
-            ),
-            li: ({ children, ...props }: any) => (
-              <li className="text-gray-200" {...props}>
-                {children}
-              </li>
-            ),
-            h1: ({ children, ...props }: any) => (
-              <h1 className="text-2xl font-bold text-white mb-4" {...props}>
-                {children}
-              </h1>
-            ),
-            h2: ({ children, ...props }: any) => (
-              <h2 className="text-xl font-bold text-white mb-3" {...props}>
-                {children}
-              </h2>
-            ),
-            h3: ({ children, ...props }: any) => (
-              <h3 className="text-lg font-semibold text-white mb-2" {...props}>
-                {children}
-              </h3>
-            ),
-            blockquote: ({ children, ...props }: any) => (
-              <blockquote
-                className="border-l-4 border-purple-500 pl-4 italic text-gray-300 my-4"
-                {...props}
-              >
-                {children}
-              </blockquote>
-            ),
-          }}
+          components={markdownComponents}
         >
           {renderContent()}
         </ReactMarkdown>
+        <AgentMarkdown>{renderContent()}</AgentMarkdown>
       </div>
 
       {/* Execution Trace */}
@@ -331,17 +445,96 @@ export default function AgentMessage({ message, onCopy, onReply }: AgentMessageP
         <ExecutionTrace trace={message.metadata.executionTrace} />
       )}
 
-      <button
-        onClick={() => onReply(message.id)}
-        className="mt-1.5 flex items-center space-x-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
-        aria-label={`View ${message.replyCount} ${message.replyCount === 1 ? 'reply' : 'replies'}`}
-      >
-        <MessageSquare className="h-3.5 w-3.5" />
-        <span>
-          {message.replyCount} {message.replyCount === 1 ? 'reply' : 'replies'}
-        </span>
-      </button>
-    )}
+      {message.metadata?.status === "cancelled" && (
+        <p className="mt-2 text-xs text-amber-400">cancelled</p>
+      )}
+
+      <div className="mt-2 flex items-center space-x-3">
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="flex items-center space-x-1 text-xs text-gray-400 hover:text-white"
+        >
+          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          <span>{copied ? "Copied" : "Copy"}</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Helpful"
+          aria-pressed={message.metadata?.feedback?.rating === "up"}
+          onClick={handlePositiveFeedback}
+          className={`flex items-center space-x-1 text-xs hover:text-white ${
+            message.metadata?.feedback?.rating === "up" ? "text-green-400" : "text-gray-400"
+          }`}
+        >
+          <ThumbsUp className="h-3.5 w-3.5" />
+          <span>Helpful</span>
+        </button>
+        <button
+          type="button"
+          aria-label="Not helpful"
+          aria-pressed={message.metadata?.feedback?.rating === "down"}
+          onClick={handleNegativeFeedback}
+          className={`flex items-center space-x-1 text-xs hover:text-white ${
+            message.metadata?.feedback?.rating === "down" ? "text-red-400" : "text-gray-400"
+          }`}
+        >
+          <ThumbsDown className="h-3.5 w-3.5" />
+          <span>Not helpful</span>
+        </button>
+        <button
+          type="button"
+          onClick={onRegenerate}
+          disabled={!canRegenerate}
+          className="flex items-center space-x-1 text-xs text-gray-400 hover:text-white disabled:opacity-40 disabled:hover:text-gray-400"
+        >
+          <RefreshCw className="h-3.5 w-3.5" />
+          <span>Regenerate</span>
+        </button>
+        {onReply && message.replyCount ? (
+          <button
+            type="button"
+            onClick={() => onReply(message.id)}
+            className="flex items-center space-x-1 text-xs text-purple-400 hover:text-purple-300 transition-colors"
+          >
+            <span>
+              {message.replyCount} {message.replyCount === 1 ? "reply" : "replies"}
+            </span>
+          </button>
+        ) : null}
+      </div>
+      {showFeedbackComment && (
+        <form
+          className="mt-3 max-w-sm space-y-2 rounded-lg border border-gray-700 p-3"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitNegativeFeedback();
+          }}
+        >
+          <label className="block text-xs text-gray-300" htmlFor={`feedback-${message.id}`}>
+            What could be improved? (optional)
+          </label>
+          <textarea
+            id={`feedback-${message.id}`}
+            maxLength={280}
+            value={feedbackComment}
+            onChange={(event) => setFeedbackComment(event.target.value)}
+            className="w-full rounded border border-gray-700 bg-gray-900 p-2 text-sm text-white"
+          />
+          <div className="flex gap-2">
+            <button type="submit" className="text-xs text-blue-300 hover:text-blue-200">
+              Submit feedback
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowFeedbackComment(false)}
+              className="text-xs text-gray-400 hover:text-white"
+            >
+              Dismiss
+            </button>
+          </div>
+        </form>
+      )}
     </div>
   );
 }

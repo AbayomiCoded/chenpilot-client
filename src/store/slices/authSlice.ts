@@ -1,6 +1,11 @@
 import { createSlice, createAsyncThunk, PayloadAction } from "@reduxjs/toolkit";
 import { User, LoginRequest, RegisterRequest } from "@/types";
 import apiService from "@/services/api";
+import { normalizeAuthError } from "@/services/auth.service";
+import { clearUserScopedStorage, fromPersistedUser, toPersistedUser } from "@/services/storageInventory";
+
+export const LOGIN_FIELDS = ["email", "password"] as const;
+export const REGISTER_FIELDS = ["name", "email", "password"] as const;
 
 interface AuthState {
   user: User | null;
@@ -35,7 +40,7 @@ export const login = createAsyncThunk(
       publicKey: "0xabcdef1234567890",
       isDeployed: true,
       isFunded: true,
-      tokenType: "STRK",
+      tokenType: "XLM",
       authProvider: "email",
       isEmailVerified: true,
       createdAt: new Date().toISOString(),
@@ -58,7 +63,7 @@ export const register = createAsyncThunk(
       publicKey: "0xabcdef1234567890",
       isDeployed: true,
       isFunded: true,
-      tokenType: "STRK",
+      tokenType: "XLM",
       authProvider: "email",
       isEmailVerified: true,
       createdAt: new Date().toISOString(),
@@ -88,7 +93,7 @@ export const loadUser = createAsyncThunk("auth/loadUser", async () => {
     publicKey: "0xabcdef1234567890",
     isDeployed: true,
     isFunded: true,
-    tokenType: "STRK",
+    tokenType: "XLM",
     authProvider: "email",
     isEmailVerified: true,
     createdAt: new Date().toISOString(),
@@ -109,7 +114,7 @@ export const updateProfile = createAsyncThunk(
       publicKey: "0xabcdef1234567890",
       isDeployed: true,
       isFunded: true,
-      tokenType: "STRK",
+      tokenType: "XLM",
       authProvider: "email",
       isEmailVerified: true,
       createdAt: new Date().toISOString(),
@@ -127,25 +132,26 @@ export const changePassword = createAsyncThunk(
   },
 );
 
-export const googleAuth = createAsyncThunk("auth/googleAuth", async () => {
-  // Mock google auth - always succeed
-  const mockUser: User = {
-    id: "mock-google-user-id",
-    email: "mockgoogle@example.com",
-    name: "Mock Google User",
-    address: "0x1234567890abcdef",
-    publicKey: "0xabcdef1234567890",
-    isDeployed: true,
-    isFunded: true,
-    tokenType: "STRK",
-    authProvider: "google",
-    isEmailVerified: true,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  const mockToken = "mock-google-jwt-token";
-  return { user: mockUser, token: mockToken };
-});
+export const googleAuth = createAsyncThunk(
+  "auth/googleAuth",
+  async (credential: string) => {
+    const mockUser: User = {
+      id: "mock-google-user-id",
+      email: "mockgoogle@example.com",
+      name: "Mock Google User",
+      address: "0x1234567890abcdef",
+      publicKey: "0xabcdef1234567890",
+      isDeployed: true,
+      isFunded: true,
+      tokenType: "XLM",
+      authProvider: "google",
+      isEmailVerified: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    return { user: mockUser, token: credential };
+  },
+);
 
 export const refreshToken = createAsyncThunk(
   "auth/refreshToken",
@@ -210,42 +216,42 @@ const authSlice = createSlice({
       // If no real token exists we leave the state as unauthenticated so the
       // app routes the user to the login page — mock data is only used when
       // the env variable NEXT_PUBLIC_USE_MOCK_AUTH is explicitly set to 'true'.
-      if (typeof window === 'undefined') return;
+      if (typeof window === "undefined") return;
 
-      const useMock = process.env.NEXT_PUBLIC_USE_MOCK_AUTH === 'true';
+      const useMock = process.env.NEXT_PUBLIC_USE_MOCK_AUTH === "true";
 
-      const storedToken = localStorage.getItem('auth_token');
-      const storedUser  = localStorage.getItem('user_data');
+      const storedToken = localStorage.getItem("auth_token");
+      const storedUser = localStorage.getItem("user_data");
 
       if (storedToken && storedUser) {
         // Real credentials from a previous session.
         try {
-          state.token           = storedToken;
-          state.user            = JSON.parse(storedUser) as User;
+          state.token = storedToken;
+          state.user = JSON.parse(storedUser) as User;
           state.isAuthenticated = true;
         } catch {
           // Corrupt data — fall through to the unauthenticated default.
-          localStorage.removeItem('auth_token');
-          localStorage.removeItem('user_data');
+          localStorage.removeItem("auth_token");
+          localStorage.removeItem("user_data");
         }
       } else if (useMock) {
         // Development convenience: no backend needed when the flag is set.
         const mockUser: User = {
-          id: 'mock-user-id',
-          email: 'mock@example.com',
-          name: 'Mock User',
-          address: '0x1234567890abcdef',
-          publicKey: '0xabcdef1234567890',
+          id: "mock-user-id",
+          email: "mock@example.com",
+          name: "Mock User",
+          address: "0x1234567890abcdef",
+          publicKey: "0xabcdef1234567890",
           isDeployed: true,
           isFunded: true,
-          tokenType: 'STRK',
-          authProvider: 'email',
+          tokenType: "XLM",
+          authProvider: "email",
           isEmailVerified: true,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         };
-        state.user            = mockUser;
-        state.token           = 'mock-jwt-token';
+        state.user = mockUser;
+        state.token = "mock-jwt-token";
         state.isAuthenticated = true;
       }
       // else: leave state.isAuthenticated = false → app will redirect to /auth/login
@@ -267,15 +273,20 @@ const authSlice = createSlice({
         // Save to localStorage for persistence
         if (typeof window !== "undefined") {
           localStorage.setItem("auth_token", action.payload.token);
+          // Persist a minimized profile only; no wallet address or public key (#256)
           localStorage.setItem(
             "user_data",
-            JSON.stringify(action.payload.user),
+            JSON.stringify(toPersistedUser(action.payload.user)),
           );
         }
       })
       .addCase(login.rejected, (state, action) => {
         state.isLoading = false;
-        state.error = action.payload as string;
+        // Payload is a NormalizedAuthError (#258); keep only the safe general message in state
+        state.error =
+          (action.payload as { message?: string } | undefined)?.message ??
+          action.error.message ??
+          "Authentication failed";
         state.isAuthenticated = false;
       })
       // Register
@@ -292,15 +303,20 @@ const authSlice = createSlice({
         // Save to localStorage for persistence
         if (typeof window !== "undefined") {
           localStorage.setItem("auth_token", action.payload.token);
+          // Persist a minimized profile only; no wallet address or public key (#256)
           localStorage.setItem(
             "user_data",
-            JSON.stringify(action.payload.user),
+            JSON.stringify(toPersistedUser(action.payload.user)),
           );
         }
       })
       .addCase(register.rejected, (state, action) => {
         state.isLoading = false;
-        state.error = action.payload as string;
+        // Payload is a NormalizedAuthError (#258); keep only the safe general message in state
+        state.error =
+          (action.payload as { message?: string } | undefined)?.message ??
+          action.error.message ??
+          "Authentication failed";
         state.isAuthenticated = false;
       })
       // Logout
@@ -311,12 +327,8 @@ const authSlice = createSlice({
         state.error = null;
         state.sessionExpirationTime = null;
         state.isSessionWarningActive = false;
-        // Clear localStorage on logout
-        if (typeof window !== "undefined") {
-          localStorage.removeItem("auth_token");
-          localStorage.removeItem("user_data");
-          localStorage.removeItem("session_expiration");
-        }
+        // Clear every user-scoped key on logout (#256)
+        clearUserScopedStorage();
       })
       // Load User
       .addCase(loadUser.pending, (state) => {
@@ -418,15 +430,4 @@ export const {
   setSessionExpirationTime,
   setSessionWarningActive,
 } = authSlice.actions;
-export {
-  login,
-  register,
-  logout,
-  loadUser,
-  updateProfile,
-  changePassword,
-  googleAuth,
-  refreshToken,
-  fetchProfile,
-};
 export default authSlice.reducer;

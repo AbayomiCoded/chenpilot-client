@@ -33,12 +33,13 @@ export default function ContactsPage() {
   
   const [searchTerm, setSearchTerm] = useState('');
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  // Edit modal
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [editingContact, setEditingContact] = useState<Contact | null>(null);
   const [formData, setFormData] = useState<CreateContactRequest>({
     name: '',
     address: '',
-    tokenType: 'STRK',
+    tokenType: 'XLM',
   });
 
   useEffect(() => {
@@ -55,23 +56,80 @@ export default function ContactsPage() {
     contact.address.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
+  const favoriteCount = contacts.filter((c) => c.isFavorite).length;
+
+  // ─── Create / Edit ───────────────────────────────────────────────────────────
+
+  // ── Create ──────────────────────────────────────────────────────────────
   const handleCreateContact = async (e: React.FormEvent) => {
-    e.preventDefault();
+    e.preventDefault();entDefault();
+    dispatch(clearCreateError());
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) { setAddressError(addrErr); return; }
+    setAddressError(null);
     try {
       await dispatch(createContact(formData)).unwrap();
       toast.success('Contact created successfully!');
       setIsCreateModalOpen(false);
-      setFormData({ name: '', address: '', tokenType: 'STRK' });
+      setFormData({ name: '', address: '', tokenType: 'XLM' });
     } catch (error: any) {
       const errorMessage = error instanceof Error ? error.message : String(error || 'Failed to create contact');
       toast.error(errorMessage);
+      setFormData(blankForm());
+    } catch (error: unknown) {
+      // mutationError.create is already set in the slice; toast for visibility
+      const msg =
+        typeof error === 'string'
+          ? error
+          : error instanceof Error
+            ? error.message
+            : 'Failed to create contact';
+      toast.error(msg);
     }
   };
 
   const handleUpdateContact = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingContact) return;
+    dispatch(clearUpdateError(editingContact.id));
+    try {
+      await dispatch(updateContact({ id: editingContact.id, data: formData })).unwrap();
+      setFormData(createEmptyContactForm());
+      setPendingContactAction(null);
+    } catch (error: unknown) {
+      if (typeof navigator !== 'undefined' && !navigator.onLine) {
+        setPendingContactAction('create');
+      }
+      toast.error(error instanceof Error ? error.message : String(error || 'Failed to create contact'));
+    }
+  };
 
+  const handleCreateContact = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isOnline) {
+      setPendingContactAction('create');
+      return;
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error ?? 'Failed to create contact');
+      if (typeof msg === 'string' && msg.includes('already uses this address')) {
+        setAddressError(msg);
+      } else {
+        toast.error(msg);
+      }
+    }
+    await submitCreateContact();
+  };
+
+  // ── Update ────────────────────────────────────────────────────────────────
+  const persistContactUpdate = async () => {
+    if (!editingContact) return;
+    try {
+      await dispatch(
+        updateContact({ id: editingContact.id, data: formData }),
+      ).unwrap();
+    const addrErr = validateContactAddress(formData.address);
+    if (addrErr) { setAddressError(addrErr); return; }
+    setAddressError(null);
     try {
       await dispatch(updateContact({
         id: editingContact.id,
@@ -80,11 +138,12 @@ export default function ContactsPage() {
       toast.success('Contact updated successfully!');
       setIsEditModalOpen(false);
       setEditingContact(null);
-      setFormData({ name: '', address: '', tokenType: 'STRK' });
+      setFormData({ name: '', address: '', tokenType: 'XLM' });
     } catch (error: any) {
       const errorMessage = error instanceof Error ? error.message : String(error || 'Failed to update contact');
       toast.error(errorMessage);
-    }
+      setFormData(createEmptyContactForm());
+    } 
   };
 
   const handleDeleteContact = async (contact: Contact) => {
@@ -92,20 +151,35 @@ export default function ContactsPage() {
       try {
         await dispatch(deleteContact(contact.id)).unwrap();
         toast.success('Contact deleted successfully!');
-      } catch (error: any) {
-        const errorMessage = error instanceof Error ? error.message : String(error || 'Failed to delete contact');
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error
+            ? error.message
+            : String(error || 'Failed to delete contact');
         toast.error(errorMessage);
       }
+    if (!window.confirm(`Are you sure you want to delete ${contact.name}?`)) return;
+
+    try {
+      await dispatch(deleteContact(contact.id)).unwrap();
+      toast.success('Contact deleted successfully!');
+    } catch (error: unknown) {
+      const msg = error instanceof Error ? error.message : String(error ?? 'Failed to delete contact');
+      toast.error(msg);
     }
   };
 
+  // ── Open edit modal ──────────────────────────────────────────────────────
   const openEditModal = (contact: Contact) => {
+    setPendingContactAction(null);
     setEditingContact(contact);
     setFormData({
       name: contact.name,
       address: contact.address,
       tokenType: contact.tokenType,
     });
+    setAddressError(null);
+    setFormData({ name: contact.name, address: contact.address, tokenType: contact.tokenType, note: contact.note ?? '' });
     setIsEditModalOpen(true);
   };
 
@@ -114,19 +188,54 @@ export default function ContactsPage() {
     toast.success(`${label} copied to clipboard`);
   };
 
+  /** Readable summary of the current search results for the live region. */
+  const resultCountMessage = searchTerm
+    ? filteredContacts.length === 0
+      ? 'No contacts found.'
+      : `${filteredContacts.length} contact${filteredContacts.length !== 1 ? 's' : ''} found.`
+    : '';
+  // ─── Loading gate ─────────────────────────────────────────────────────────────
+
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600 mx-auto"></div>
+          <div className="animate-spin rounded-full h-32 w-32 border-b-2 border-primary-600 mx-auto" />
           <p className="mt-4 text-gray-300">Loading...</p>
         </div>
       </div>
     );
   }
 
+  const tokenTypeOptions: CreateContactRequest['tokenType'][] = ['XLM', 'USDC', 'USDT', 'BTC', 'ETH', 'AQUA'];
+  const emptyTitle = showFavoritesOnly
+    ? 'No favorites yet'
+    : searchTerm
+    ? 'No contacts found'
+    : 'No contacts yet';
+
+  const emptyDescription = showFavoritesOnly
+    ? 'Star a contact to add it here.'
+    : searchTerm
+    ? 'Try another name or address.'
+    : 'Save a contact to make future transfers easier.';
+
   return (
     <ChatLayout>
+      <OfflineIndicator
+        canRetry={isOnline && pendingContactAction !== null}
+        onRetry={retryPendingContactAction}
+      />
+      <div className="h-full overflow-auto bg-black text-white">
+        <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+          <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h1 className="text-2xl font-bold">Your Contacts</h1>
+              <p className="text-gray-300">
+                {contacts.length} contact{contacts.length !== 1 ? 's' : ''} total
+              </p>
+            </div>
+            <div className="flex gap-3">
       <div className="h-full flex flex-col bg-black text-white overflow-hidden relative">
         {/* Simple Background */}
         <div className="absolute inset-0">
@@ -155,6 +264,20 @@ export default function ContactsPage() {
                 className="pl-10 w-full sm:w-64"
               />
             </div>
+
+            {/*
+              Polite live region — announces result count to screen readers
+              when the search term changes, without interrupting existing
+              announcements.
+            */}
+            <p
+              id={resultCountId}
+              className="sr-only"
+              aria-live="polite"
+              aria-atomic="true"
+            >
+              {resultCountMessage}
+            </p>
           </div>
         </div>
 
@@ -217,6 +340,7 @@ export default function ContactsPage() {
                         {formatAddress(contact.address)}
                       </code>
                       <Button
+                        type="button"
                         variant="ghost"
                         size="sm"
                         onClick={() => copyToClipboard(contact.address, 'Address')}

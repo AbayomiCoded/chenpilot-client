@@ -29,4 +29,32 @@ describe('buildSecurityHeaders', () => {
     expect(values['Content-Security-Policy']).not.toContain('javascript:');
     expect(values['Content-Security-Policy']).toContain("'unsafe-eval'");
   });
+
+  it('excludes insecure HTTP origins and credential URLs in production CSP', () => {
+    const headers = buildSecurityHeaders(
+      'production',
+      'http://api.example.test',
+      'https://user:pass@socket.example.test',
+    );
+    const csp = Object.fromEntries(headers.map(({ key, value }) => [key, value]))[
+      'Content-Security-Policy'
+    ];
+
+    expect(csp).not.toContain('http://api.example.test');
+    expect(csp).not.toContain('socket.example.test');
+  });
+
+  it('allows local HTTP origins outside production', () => {
+    const headers = buildSecurityHeaders(
+      'development',
+      'http://localhost:2333',
+      'http://127.0.0.1:3001',
+    );
+    const csp = Object.fromEntries(headers.map(({ key, value }) => [key, value]))[
+      'Content-Security-Policy'
+    ];
+
+    expect(csp).toContain('http://localhost:2333');
+    expect(csp).toContain('http://127.0.0.1:3001');
+  });
 });

@@ -1,0 +1,16 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`serializeConversationMarkdown > summarises an execution trace, including substeps 1`] = `
+"# Trace
+
+## Agent · 2026-10-28T09:00:05.000Z
+
+Done.
+
+**Execution trace**: 2 steps, 2000 ms (2026-10-28T09:00:03.000Z to 2026-10-28T09:00:05.000Z)
+
+- [thought] Plan transfer (300 ms): Resolve the recipient
+  - [tool_call] Lookup contact (120 ms): Found Ada
+- [action] Submit payment (1500 ms): Signed and submitted
+"
+`;
