@@ -28,7 +28,13 @@ const { mockAxiosInstance, mockBareAxios } = vi.hoisted(() => {
       request: { use: vi.fn() },
       response: { use: vi.fn() },
     },
-    isAxiosError: vi.fn((err: unknown) => !!(err && typeof err === 'object' && 'isAxiosError' in err)),
+    isAxiosError: vi.fn((err: unknown) =>
+      !!(
+        err &&
+        typeof err === 'object' &&
+        ('isAxiosError' in err || 'response' in err)
+      ),
+    ),
   };
 
   return { mockAxiosInstance, mockBareAxios };
@@ -37,6 +43,23 @@ const { mockAxiosInstance, mockBareAxios } = vi.hoisted(() => {
 vi.mock('axios', () => ({
   default: mockBareAxios,
   ...mockBareAxios,
+}));
+
+vi.mock('../agentService', () => ({
+  default: {
+    isAgentConnected: vi.fn(() => false),
+    queryAgentStreaming: vi.fn(),
+    getStatus: vi.fn(),
+    getCapabilities: vi.fn(),
+    healthCheck: vi.fn(),
+    getTools: vi.fn(),
+    executeTool: vi.fn(),
+    getMemory: vi.fn(),
+    clearMemory: vi.fn(),
+  },
+  classifyAgentError: vi.fn(),
+  isStateChangingQuery: vi.fn(),
+  agentErrorMessage: vi.fn(),
 }));
 
 import { ApiService, requestAccountFunding } from '../api';
@@ -50,6 +73,35 @@ describe('ApiService - Contact & Transaction API Contracts', () => {
     vi.clearAllMocks();
     mockBareAxios.create.mockReturnValue(mockAxiosInstance);
     apiService = new ApiService();
+  });
+
+  describe('Authentication response validation', () => {
+    it('rejects malformed login data before accepting its token', async () => {
+      mockAxiosInstance.post.mockResolvedValueOnce({
+        data: {
+          success: true,
+          message: 'Signed in',
+          data: { token: 'unexpected-token' },
+        },
+        status: 200,
+      });
+
+      await expect(apiService.login({
+        email: 'ada@example.test',
+        password: 'Example123!',
+      })).rejects.toThrow('Invalid backend response from POST /auth/login');
+    });
+
+    it('rejects a malformed refresh token before replacing the active token', async () => {
+      mockBareAxios.post.mockResolvedValueOnce({
+        data: { token: '' },
+        status: 200,
+      });
+
+      await expect(apiService.refreshToken()).rejects.toThrow(
+        'Invalid backend response from POST /auth/refresh',
+      );
+    });
   });
 
   describe('Contact Endpoints Contract', () => {
@@ -77,6 +129,31 @@ describe('ApiService - Contact & Transaction API Contracts', () => {
         expect(mockAxiosInstance.get).toHaveBeenCalledTimes(1);
         expect(mockAxiosInstance.get).toHaveBeenCalledWith('/contacts');
         expect(result).toEqual(responseData);
+      });
+
+      it('passes an AbortSignal to the contacts read when supplied', async () => {
+        const controller = new AbortController();
+        mockAxiosInstance.get.mockResolvedValueOnce({
+          data: { success: true, data: [mockContact] },
+          status: 200,
+        });
+
+        await apiService.getContacts(controller.signal);
+
+        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/contacts', {
+          signal: controller.signal,
+        });
+      });
+
+      it('rejects a malformed contact envelope with a normalized validation error', async () => {
+        mockAxiosInstance.get.mockResolvedValueOnce({
+          data: { success: true, data: [{ id: 'missing-required-fields' }] },
+          status: 200,
+        });
+
+        await expect(apiService.getContacts()).rejects.toThrow(
+          'Invalid backend response from GET /contacts',
+        );
       });
 
       it('handles 404 response with graceful fallback envelope', async () => {
@@ -269,18 +346,64 @@ describe('ApiService - Contact & Transaction API Contracts', () => {
     });
   });
 
+  describe('Balance Endpoint Contract', () => {
+    it('validates the balance envelope before returning it', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            hasBalance: true,
+            balance: '12.5',
+            required: '1',
+            nativeBalance: '12.5',
+          },
+        },
+        status: 200,
+      });
+
+      await expect(apiService.getBalance()).resolves.toMatchObject({
+        success: true,
+        data: { balance: '12.5' },
+      });
+
+      mockAxiosInstance.get.mockResolvedValueOnce({
+        data: {
+          success: true,
+          data: {
+            hasBalance: true,
+            balance: 'twelve',
+            required: '1',
+            nativeBalance: '12.5',
+          },
+        },
+        status: 200,
+      });
+
+      await expect(apiService.getBalance()).rejects.toThrow(
+        'Invalid backend response from GET /auth/starknet/balance',
+      );
+    });
+  });
+
   describe('Transaction Endpoints Contract', () => {
     const mockTransaction: StellarTransaction = {
       id: 'tx-001',
       hash: 'a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0',
-      type: 'payment',
-      amount: '50.0000000',
-      assetCode: 'XLM',
-      from: sampleAddress,
-      to: 'GA2C5RFPE6GCKMY3US5PAB6UZLKIGAHWKXX2UROW6MDQKVMJYOCSFJSC',
-      createdAt: '2026-01-01T12:00:00Z',
-      status: 'success',
-      fee: '0.0000100',
+      ledger: 123,
+      created_at: '2026-01-01T12:00:00Z',
+      source_account: sampleAddress,
+      fee_charged: '100',
+      operation_count: 1,
+      successful: true,
+      operations: [{
+        id: 'op-1',
+        type: 'payment',
+        amount: '50.0000000',
+        asset: 'XLM',
+        source_account: sampleAddress,
+        from: sampleAddress,
+        to: 'GA2C5RFPE6GCKMY3US5PAB6UZLKIGAHWKXX2UROW6MDQKVMJYOCSFJSC',
+      }],
     };
 
     describe('getAccountTransactions()', () => {
@@ -299,8 +422,8 @@ describe('ApiService - Contact & Transaction API Contracts', () => {
         const result = await apiService.getAccountTransactions('usr-42');
 
         expect(mockAxiosInstance.get).toHaveBeenCalledTimes(1);
-        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/account/usr-42/transactions', {
-          params: { page: 1, limit: 10 },
+        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/account/transactions', {
+          params: { userId: 'usr-42', page: 1, limit: 10 },
         });
         expect(result).toEqual(responseData);
       });
@@ -319,13 +442,57 @@ describe('ApiService - Contact & Transaction API Contracts', () => {
 
         const result = await apiService.getAccountTransactions('usr-42', 3, 25);
 
-        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/account/usr-42/transactions', {
-          params: { page: 3, limit: 25 },
+        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/account/transactions', {
+          params: { userId: 'usr-42', page: 3, limit: 25 },
         });
         expect(result.data.page).toBe(3);
         expect(result.data.limit).toBe(25);
       });
 
+      it('passes an AbortSignal to the transaction read when supplied', async () => {
+        const controller = new AbortController();
+        mockAxiosInstance.get.mockResolvedValueOnce({
+          data: {
+            success: true,
+            data: { transactions: [], total: 0, page: 1, limit: 10 },
+          },
+          status: 200,
+        });
+
+        await apiService.getAccountTransactions(
+          'usr-42',
+          1,
+          10,
+          controller.signal,
+        );
+
+        expect(mockAxiosInstance.get).toHaveBeenCalledWith(
+          '/account/transactions',
+          {
+            params: { userId: 'usr-42', page: 1, limit: 10 },
+            signal: controller.signal,
+          },
+        );
+      });
+
+      it('rejects malformed transaction pages before returning them', async () => {
+        mockAxiosInstance.get.mockResolvedValueOnce({
+          data: {
+            success: true,
+            data: {
+              transactions: [{ ...mockTransaction, successful: 'yes' }],
+              total: 1,
+              page: 1,
+              limit: 10,
+            },
+          },
+          status: 200,
+        });
+
+        await expect(apiService.getAccountTransactions('usr-42')).rejects.toThrow(
+          'Invalid backend response from GET /account/transactions',
+        );
+      });
       it('handles empty transaction list contract', async () => {
         const responseData = {
           success: true,
@@ -351,6 +518,7 @@ describe('ApiService - Contact & Transaction API Contracts', () => {
             data: { success: false, status: 404, message: 'User account not found' },
           },
         };
+        mockAxiosInstance.get.mockRejectedValueOnce(notFoundError);
         mockAxiosInstance.get.mockRejectedValueOnce(notFoundError);
 
         await expect(apiService.getAccountTransactions('usr-unknown')).rejects.toEqual(notFoundError);

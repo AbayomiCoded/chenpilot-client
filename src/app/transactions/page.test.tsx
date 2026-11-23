@@ -43,18 +43,20 @@ function renderPage() {
   });
   store.dispatch(login({ email: "person@example.com", password: "Password1" }));
   store.dispatch(updateAccountStatus({ publicKey: "G" + "A".repeat(55) }));
-  render(
+  const view = render(
     <Provider store={store}>
       <TransactionsPage />
     </Provider>,
   );
-  return store;
+  return { store, ...view };
 }
 
 // The page dispatches on mount, so the initial empty render is replaced by the
 // loading state and then by the settled result. Wait for the request to be
 // issued and for the slice to settle before asserting on the DOM.
-async function waitForSettled(store: ReturnType<typeof renderPage>) {
+async function waitForSettled(
+  store: ReturnType<typeof renderPage>["store"],
+) {
   await waitFor(() => expect(horizonFetch).toHaveBeenCalled());
   await waitFor(() =>
     expect(store.getState().account.transactions.isLoading).toBe(false),
@@ -71,7 +73,7 @@ describe("TransactionsPage", () => {
   });
 
   it("renders the empty state when there are no transactions", async () => {
-    const store = renderPage();
+    const { store } = renderPage();
     await waitForSettled(store);
 
     expect(screen.getByText("No transactions yet")).toBeInTheDocument();
@@ -101,7 +103,7 @@ describe("TransactionsPage", () => {
       }),
     });
 
-    const store = renderPage();
+    const { store } = renderPage();
     await waitForSettled(store);
 
     const { transactions } = store.getState().account;
@@ -115,5 +117,19 @@ describe("TransactionsPage", () => {
     );
     expect(screen.getByRole("dialog")).toHaveTextContent("Invoice 42");
     expect(screen.getByRole("dialog")).toHaveTextContent("25 USDC");
+  });
+
+  it("aborts the history request when the route unmounts", async () => {
+    horizonFetch.mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+
+    const { unmount } = renderPage();
+    await waitFor(() => expect(horizonFetch).toHaveBeenCalled());
+    const signal = horizonFetch.mock.calls[0][1].signal as AbortSignal;
+
+    expect(signal.aborted).toBe(false);
+    unmount();
+    expect(signal.aborted).toBe(true);
   });
 });

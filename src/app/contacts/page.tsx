@@ -49,7 +49,12 @@ export default function ContactsPage() {
       return;
     }
 
-    dispatch(getContacts());
+    const controller = new AbortController();
+    dispatch(getContacts(undefined, { signal: controller.signal }));
+
+    return () => {
+      controller.abort();
+    };
   }, [dispatch, isAuthenticated, router]);
 
   const filteredContacts = contacts.filter(contact =>

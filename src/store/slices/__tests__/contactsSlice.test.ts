@@ -119,6 +119,27 @@ describe('getContacts', () => {
     expect(s.list).toHaveLength(0);
     expect(s.error).toBe('Not found');
   });
+
+  it('passes cancellation to the contacts read without recording an error', async () => {
+    const controller = new AbortController();
+    mockApi.getContacts.mockImplementationOnce(
+      (signal: AbortSignal) => new Promise((resolve) => {
+        signal.addEventListener('abort', () => resolve({ success: true, data: [] }));
+      }),
+    );
+
+    const store = makeStore();
+    const request = store.dispatch(
+      getContacts(undefined, { signal: controller.signal }),
+    );
+    controller.abort();
+    const result = await request;
+
+    expect(mockApi.getContacts).toHaveBeenCalledWith(expect.any(AbortSignal));
+    expect(result.meta).toMatchObject({ aborted: true });
+    expect((store.getState().contacts as ContactsState).isLoading).toBe(false);
+    expect((store.getState().contacts as ContactsState).error).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
