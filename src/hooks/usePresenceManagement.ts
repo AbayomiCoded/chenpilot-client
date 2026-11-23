@@ -143,3 +143,82 @@ export function usePresenceCounts() {
     away: state.presence.awayCount,
   }));
 }
+
+/** Debounce window for nonessential presence transitions (#288). */
+export const PRESENCE_TRANSITION_DEBOUNCE_MS = 2000;
+
+type BrowserPresenceStatus = 'online' | 'away' | 'offline';
+
+/**
+ * Collapses rapid presence transitions into one update (#288).
+ * `offline` is sent immediately (and cancels any pending update); `online`/`away` wait for
+ * `delayMs` so a tab that backgrounds and wakes, or a connection that flaps, emits only the
+ * final state. Repeating the last sent status is skipped.
+ */
+export function createPresenceTransitionScheduler(
+  send: (status: BrowserPresenceStatus) => void,
+  delayMs: number = PRESENCE_TRANSITION_DEBOUNCE_MS
+) {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let lastSent: BrowserPresenceStatus | null = null;
+
+  const cancel = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+  };
+
+  const flush = (status: BrowserPresenceStatus) => {
+    if (status === lastSent) return;
+    lastSent = status;
+    send(status);
+  };
+
+  return {
+    schedule(status: BrowserPresenceStatus) {
+      cancel();
+      if (status === 'offline') {
+        flush(status);
+        return;
+      }
+      timer = setTimeout(() => {
+        timer = null;
+        flush(status);
+      }, delayMs);
+    },
+    dispose: cancel,
+  };
+}
+
+/**
+ * Updates own presence from browser events (#288):
+ * - `visibilitychange` → hidden: `away`, visible: `online` (debounced)
+ * - `online` → `online` (debounced); `offline` → `offline` (immediate)
+ * Listeners and pending timers are removed on unmount.
+ */
+export function useBrowserPresenceTransitions(enabled: boolean = true) {
+  const { user } = useAppSelector((state) => state.auth);
+  const { emit } = useSocket();
+
+  useEffect(() => {
+    if (!enabled || !user || typeof window === 'undefined') return;
+
+    const scheduler = createPresenceTransitionScheduler((status) => {
+      emit('presence:status_change', { userId: user.id, status });
+    });
+
+    const onVisibility = () => scheduler.schedule(document.visibilityState === 'hidden' ? 'away' : 'online');
+    const onOnline = () => scheduler.schedule('online');
+    const onOffline = () => scheduler.schedule('offline');
+
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('offline', onOffline);
+
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', onOffline);
+      scheduler.dispose();
+    };
+  }, [enabled, user, emit]);
+}

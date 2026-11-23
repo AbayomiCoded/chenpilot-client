@@ -6,6 +6,7 @@ import remarkGfm from "remark-gfm";
 import { Check, Clock, Copy, Edit2, X } from "lucide-react";
 import { useAppSelector } from "@/store";
 import type { ChatMessage } from "@/types";
+import { MessageTranslation } from "./MessageTranslation";
 
 interface UserMessageProps {
   message: ChatMessage;
@@ -191,6 +192,8 @@ export default function UserMessage({
               {contentText}
             </ReactMarkdown>
           </div>
+          {/* On-demand translation for messages in another language (#83) */}
+          {typeof message.content === "string" && <MessageTranslation text={message.content} />}
 
           <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity flex items-center space-x-1">
             <button

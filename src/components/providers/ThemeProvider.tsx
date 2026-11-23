@@ -1,66 +1,39 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect } from "react";
 import { useAppDispatch, useAppSelector } from "@/store";
-import { setTheme } from "@/store/slices/uiSlice";
+import { applyTheme } from "@/store/slices/uiSlice";
+import { readSavedTheme, resolveTheme } from "@/lib/theme";
 
+/**
+ * Keeps the store and the <html> class in sync with the theme preference (#296).
+ * The first frame is already themed by THEME_INIT_SCRIPT in the root layout; this provider
+ * only syncs Redux and follows system changes while no explicit choice is saved.
+ */
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const dispatch = useAppDispatch();
   const theme = useAppSelector((state) => state.ui.mode);
-  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
-    // Initialize theme from localStorage or system preference
-    const initTheme = () => {
-      if (typeof window === "undefined") return;
-
-      const savedTheme = localStorage.getItem("theme") as
-        | "light"
-        | "dark"
-        | null;
-
-      if (savedTheme) {
-        dispatch(setTheme(savedTheme));
-      } else {
-        // Detect system preference
-        const prefersDark = window.matchMedia(
-          "(prefers-color-scheme: dark)",
-        ).matches;
-        dispatch(setTheme(prefersDark ? "dark" : "light"));
-      }
-    };
-
-    initTheme();
-
-    // Listen for system theme changes
+    if (typeof window === "undefined") return;
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
-    const handleChange = (e: MediaQueryListEvent) => {
-      // Only apply if no saved preference
-      if (!localStorage.getItem("theme")) {
-        dispatch(setTheme(e.matches ? "dark" : "light"));
-      }
-    };
 
+    // Saved explicit choice wins; otherwise system preference (not persisted)
+    dispatch(applyTheme(resolveTheme(readSavedTheme(), mediaQuery.matches)));
+
+    const handleChange = (e: MediaQueryListEvent) => {
+      if (!readSavedTheme()) dispatch(applyTheme(e.matches ? "dark" : "light"));
+    };
     mediaQuery.addEventListener("change", handleChange);
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, [dispatch]);
 
-  // Apply theme to HTML element
   useEffect(() => {
-    if (typeof document === "undefined" || !mounted) return;
-
+    if (typeof document === "undefined") return;
     const html = document.documentElement;
-    if (theme === "dark") {
-      html.classList.add("dark");
-    } else {
-      html.classList.remove("dark");
-    }
-  }, [theme, mounted]);
-
-  if (!mounted) {
-    return <>{children}</>;
-  }
+    html.classList.toggle("dark", theme === "dark");
+    html.style.colorScheme = theme;
+  }, [theme]);
 
   return <>{children}</>;
 }
