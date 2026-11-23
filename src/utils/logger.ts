@@ -51,6 +51,66 @@ export function generateCorrelationId(prefix = 'corr'): string {
   return `${prefix}_${timestamp}_${rand}`;
 }
 
+export const CORRELATION_ID_HEADER = 'X-Correlation-ID';
+
+/**
+ * Read a correlation ID only from HTTP metadata. Payload bodies are never inspected.
+ */
+export function extractCorrelationId(headers: unknown): string | undefined {
+  if (!headers) return undefined;
+
+  const read = (key: string): unknown => {
+    if (typeof headers === 'object') {
+      const axiosHeaders = headers as { get?: (name: string) => unknown };
+      if (typeof axiosHeaders.get === 'function') {
+        const value = axiosHeaders.get(key);
+        if (value !== undefined) return value;
+      }
+      const record = headers as Record<string, unknown>;
+      const exact = record[key];
+      if (exact !== undefined) return exact;
+      const lowerKey = key.toLowerCase();
+      const found = Object.entries(record).find(([name]) => name.toLowerCase() === lowerKey);
+      return found?.[1];
+    }
+    return undefined;
+  };
+
+  for (const key of [CORRELATION_ID_HEADER, 'X-Request-ID', 'X-Request-Id']) {
+    const value = read(key);
+    if (typeof value === 'string' && /^[A-Za-z0-9._:-]{1,128}$/.test(value)) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+export function setCorrelationIdHeader(headers: unknown, correlationId: string): void {
+  if (!headers || typeof headers !== 'object') return;
+  const mutable = headers as {
+    set?: (name: string, value: string) => unknown;
+  };
+  if (typeof mutable.set === 'function') {
+    mutable.set(CORRELATION_ID_HEADER, correlationId);
+    return;
+  }
+  (headers as Record<string, unknown>)[CORRELATION_ID_HEADER] = correlationId;
+}
+
+export function correlationIdForError(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const record = error as {
+    correlationId?: unknown;
+    config?: { headers?: unknown };
+    response?: { headers?: unknown };
+  };
+  if (typeof record.correlationId === 'string') return record.correlationId;
+  return (
+    extractCorrelationId(record.response?.headers) ??
+    extractCorrelationId(record.config?.headers)
+  );
+}
+
 /**
  * Checks if a string or object key contains sensitive or high-cardinality fields.
  */

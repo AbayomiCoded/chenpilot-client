@@ -56,6 +56,10 @@ export interface AgentQueryResponse {
     errorKind?: AgentErrorKind;
     /** Echo of `clientRequestId`; use with `agentService.getActionStatus`. */
     requestId?: string;
+    /** Safe support diagnostics; never contains prompts, tokens, or wallet secrets. */
+    diagnostics?: {
+      correlationId: string;
+    };
     /** True when the query looked like a state-changing action (transfer, swap, ...). */
     stateChanging?: boolean;
     transactionHash?: string;

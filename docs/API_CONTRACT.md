@@ -8,8 +8,11 @@ The browser never holds private keys and never signs. Every endpoint below that 
 
 ## Base URLs And Authentication
 
+Environment variables beginning with `NEXT_PUBLIC_` are browser-visible configuration. They may contain public endpoints and identifiers, but never credentials or tokens. Server/CI secrets must remain unprefixed and must not be read by client code. See `SECURITY.md` → "Secret-Handling & Development Rules".
+
 - `ApiService` uses `NEXT_PUBLIC_API_BASE_URL`, defaulting to `http://localhost:2333`.
 - `AgentService` uses `NEXT_PUBLIC_AGENT_API_URL`, also defaulting to `http://localhost:2333`. These clients are separate even when configured to the same host.
+- Public API, agent, and socket origins are parsed at startup. Production requires HTTPS; credentials, fragments, malformed URLs, and non-HTTP(S) schemes are rejected. HTTP is permitted only in development/test for local backend origins.
 - `ApiService` attaches `Authorization: Bearer <access-token>` when a token is present. Its explicit refresh call and the 401 interceptor send `POST /auth/refresh` with cookies (`withCredentials: true`).
 - Next.js rewrites `/horizon/:path*` to `${NEXT_PUBLIC_API_BASE_URL || 'http://localhost:2333'}/proxy/:path*`. `horizonFetch` calls the local `/horizon` path; keep the backend `/proxy/:path*` handler available. Stellar Horizon reads made through `horizonFetch` are in `src/store/slices/accountSlice.ts`, not these service endpoint lists.
 - `NEXT_PUBLIC_STELLAR_NETWORK` must be explicitly set to `mainnet` or `testnet` for the UI to identify the active network. Missing or unsupported values display `Network unknown`; do not infer it from `NODE_ENV`. The backend Horizon proxy and payment execution service must be configured for the same network. This frontend configuration does not itself switch backend networks.
@@ -27,6 +30,7 @@ The browser never holds private keys and never signs. Every endpoint below that 
 
 - Axios HTTP failures normally reject with an Axios error; the client does not normalize every backend error body into `ApiError`. `ApiError.status` is a number, not a closed set of application error codes. The backend error envelope beyond that type is not specified here.
 - A 401 on an `ApiService` request triggers one queued refresh attempt and then retries the original request once. If refresh fails, local auth is cleared and the browser is sent to `/auth/login`. The auth UI may show the rejected thunk/error message.
+- Requests may include `X-Correlation-ID`. This is a safe diagnostic identifier, not authentication or a payload field. The backend MAY echo `X-Correlation-ID` or `X-Request-ID` in the response. The client keeps the value in structured diagnostic details and logs only status, method/code, and correlation metadata; prompts, tokens, private keys, wallet secrets, and response payloads are excluded. Backend log correlation support is not currently guaranteed by this contract.
 - The retry interceptor retries eligible network failures and the configured 408, 429, and 5xx statuses, subject to method safety; 503 is retried for any method. It exposes retry state to the UI. This is transport retry behavior, not an application error envelope.
 - Contact wrappers specially handle 404: `GET /contacts` becomes `{ success: true, data: [], message: ... }`; contact create/update/delete become `{ success: false, status: 404, message: ... }`. Other failures reject. The contacts page and send flow now use these wrappers; contact requests are blocked while the browser is offline and are not queued.
 - Agent query wrappers catch failures and return `result.success: false`. Messages containing `invalid query`, `timeout`, or `network` map to friendly text; other failures use a generic unavailable/query-failed message. Chat displays the returned error/message to the user.

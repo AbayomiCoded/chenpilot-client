@@ -11,6 +11,7 @@
     "lint:fix": "eslint . --ext .ts,.tsx,.js,.jsx --fix",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:env-secrets": "vitest run src/config/env.test.ts",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lighthouse": "lhci autorun",
