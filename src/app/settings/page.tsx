@@ -23,6 +23,7 @@ import { StellarNetworkBadge } from "@/components/wallet/StellarNetworkBadge";
 import toast from "react-hot-toast";
 import { PasswordStrengthMeter } from "@/components/auth/(register)/passwordStrengthMeter";
 import { changePasswordSchema } from "@/utils/validation";
+import { NotificationPermissionStatus } from "@/components/settings/NotificationPermissionStatus";
 
 export default function SettingsPage() {
   const dispatch = useAppDispatch();
@@ -356,6 +357,8 @@ export default function SettingsPage() {
                   </h3>
 
                   <div className="space-y-4">
+                    {/* Browser permission: read without prompting, requested only on click (#302) */}
+                    <NotificationPermissionStatus />
                     <div className="flex items-center justify-between">
                       <div>
                         <p className="text-sm font-medium text-white">
