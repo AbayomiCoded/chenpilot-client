@@ -1,4 +1,5 @@
 import { createSlice, PayloadAction, createAction } from "@reduxjs/toolkit";
+import { readSavedTheme, saveTheme } from "@/lib/theme";
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RetryStatus {
@@ -29,10 +30,7 @@ const initialState: ThemeState = {
 // Create action for initialization
 export const initializeUI = createAction("ui/initialize", () => {
   // Get theme and language from localStorage or use defaults
-  const savedTheme =
-    typeof window !== "undefined"
-      ? (localStorage.getItem("theme") as "light" | "dark" | null)
-      : null;
+  const savedTheme = typeof window !== "undefined" ? readSavedTheme() : null;
 
   const savedLanguage =
     typeof window !== "undefined"
@@ -55,17 +53,17 @@ export const uiSlice = createSlice({
   reducers: {
     toggleTheme: (state) => {
       state.mode = state.mode === "light" ? "dark" : "light";
-      // Save to localStorage
-      if (typeof window !== "undefined") {
-        localStorage.setItem("theme", state.mode);
-      }
+      // An explicit user choice is persisted (#296)
+      if (typeof window !== "undefined") saveTheme(state.mode);
     },
     setTheme: (state, action: PayloadAction<"light" | "dark">) => {
       state.mode = action.payload;
-      // Save to localStorage
-      if (typeof window !== "undefined") {
-        localStorage.setItem("theme", state.mode);
-      }
+      // An explicit user choice is persisted (#296)
+      if (typeof window !== "undefined") saveTheme(state.mode);
+    },
+    /** Apply a theme derived from the system preference without persisting it (#296). */
+    applyTheme: (state, action: PayloadAction<"light" | "dark">) => {
+      state.mode = action.payload;
     },
     setLanguage: (state, action: PayloadAction<"en" | "ar" | "es" | "fr">) => {
       state.language = action.payload;
@@ -100,6 +98,7 @@ export const uiSlice = createSlice({
 export const {
   toggleTheme,
   setTheme,
+  applyTheme,
   setLanguage,
   setRetryStatus,
   clearRetryStatus,
