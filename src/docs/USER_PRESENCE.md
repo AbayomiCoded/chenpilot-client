@@ -192,6 +192,41 @@ emit('presence:heartbeat', { userId })
 emit('presence:leave', { userId })
 ```
 
+### Reconnection Policy (#276)
+
+`SocketManager` uses a bounded, jittered backoff so a backend outage does not trigger a retry storm from every open client. The delays are applied by socket.io-client's built-in Manager backoff; the client only sets its options.
+
+| Setting | Default | socket.io option |
+|---------|---------|------------------|
+| Base delay | 1000 ms | `reconnectionDelay` |
+| Max delay | 30000 ms | `reconnectionDelayMax` |
+| Jitter | ±50% | `randomizationFactor: 0.5` |
+| Max attempts | 5 (hard cap 20) | `reconnectionAttempts` |
+
+Delay for attempt `n` (1-based): `min(30000, 1000 * 2^(n-1)) ± 50%`, i.e. roughly 1s, 2s, 4s, 8s, 16s. Worst case that adds up to about 47s of backoff delay (plus each attempt's connect `timeout`) before the client gives up. Caller-supplied `reconnectionAttempts` above 20 is clamped to 20; `Infinity` or invalid values fall back to 5. `computeReconnectDelay()` in `src/services/socketManager.ts` mirrors the formula for tests.
+
+**Connection states** (`SocketManager.getConnectionState()`, `onStateChange()`, and `useSocketConnection()`):
+
+| State | Meaning |
+|-------|---------|
+| `idle` | Never connected |
+| `connecting` | Initial connect or manual `retry()` in flight |
+| `connected` | Socket open; reconnect attempt counter reset to 0 |
+| `reconnecting` | Connection lost, automatic retries in progress (`reconnectAttempt` / `maxReconnectAttempts`) |
+| `exhausted` | All automatic attempts failed; no more retries until `retry()` |
+| `disconnected` | Closed on purpose (client `disconnect()` or server `io server disconnect`); not retried |
+
+```tsx
+const { isReconnecting, isExhausted, reconnectAttempt, maxReconnectAttempts, retry } = useSocketConnection();
+
+if (isExhausted) return <button onClick={retry}>Reconnect</button>;
+if (isReconnecting) return <span>Reconnecting ({reconnectAttempt}/{maxReconnectAttempts})</span>;
+```
+
+`retry()` resets the attempt counter and reconnects the existing socket, so the full backoff schedule applies again. Events emitted while offline are queued (when `queueEnabled`) and flushed on `connect`/`reconnect`. Presence should re-send `presence:join` after reconnecting, because the server may have expired the session while the client was offline.
+
+**Backend contract:** this needs no new server endpoints. It uses the standard socket.io handshake and reconnect events (`reconnect_attempt`, `reconnect`, `reconnect_failed` on the Manager). Server-side, `io server disconnect` is treated as final and not retried. Backend rate limits on handshakes should allow at least 5 attempts per client within about 60s.
+
 ### Redux Synchronization
 ```typescript
 // Listen for remote events

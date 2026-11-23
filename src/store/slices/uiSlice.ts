@@ -1,15 +1,29 @@
 import { createSlice, PayloadAction, createAction } from "@reduxjs/toolkit";
-
 // ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface RetryStatus {
+  label: string;
+  attempt: number;
+  maxAttempts: number;
+  nextRetryAt: number;
+}
 
 export interface ThemeState {
   mode: "light" | "dark";
   language: "en" | "ar" | "es" | "fr";
+  retryStatus: RetryStatus | null;
+  sidebarOpen: boolean;
+  notifications: unknown[];
+  modals: Record<string, boolean>;
 }
 
 const initialState: ThemeState = {
   mode: "dark", // Default to dark mode
   language: "en", // Default to English
+  retryStatus: null,
+  sidebarOpen: false,
+  notifications: [],
+  modals: {},
 };
 
 // Create action for initialization
@@ -83,5 +97,12 @@ export const uiSlice = createSlice({
   },
 });
 
-export const { toggleTheme, setTheme, setRetryStatus, clearRetryStatus } = uiSlice.actions;
+export const {
+  toggleTheme,
+  setTheme,
+  setLanguage,
+  setRetryStatus,
+  clearRetryStatus,
+} =
+  uiSlice.actions;
 export default uiSlice.reducer;

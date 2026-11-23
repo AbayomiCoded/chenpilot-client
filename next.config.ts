@@ -5,12 +5,11 @@ const nextConfig: NextConfig = {
   eslint: {
     ignoreDuringBuilds: false,
   },
-  typescript: {
-    ignoreBuildErrors: false,
-  },
   // Optimize bundle size
   swcMinify: true,
   compress: true,
+  poweredByHeader: false,
+  reactStrictMode: true,
   // Improve production build performance
   productionBrowserSourceMaps: false,
   // Optimize images

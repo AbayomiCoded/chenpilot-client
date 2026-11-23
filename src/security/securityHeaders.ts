@@ -1,10 +1,12 @@
 type SecurityHeader = { key: string; value: string };
 
-function originFrom(value: string | undefined): string | undefined {
+function originFrom(value: string | undefined, environment: string): string | undefined {
   if (!value) return undefined;
   try {
     const url = new URL(value);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return undefined;
+    if (url.username || url.password || url.hash) return undefined;
+    if (environment === 'production' && url.protocol !== 'https:') return undefined;
     return url.origin;
   } catch {
     return undefined;
@@ -22,8 +24,8 @@ export function buildSecurityHeaders(
     'https://oauth2.googleapis.com',
     'https://www.googleapis.com',
     'https://horizon.stellar.org',
-    originFrom(apiUrl),
-    originFrom(socketUrl),
+    originFrom(apiUrl, environment),
+    originFrom(socketUrl, environment),
   ]);
   connectSources.delete(undefined);
 

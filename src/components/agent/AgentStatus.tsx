@@ -14,10 +14,38 @@ import {
   CheckCircle,
   XCircle,
   AlertCircle,
+  HelpCircle,
   Loader2
 } from 'lucide-react';
 import apiService from '@/services/api';
-import { AgentStatus as AgentStatusType, AgentCapabilities } from '@/types/agent';
+import { AgentStatus as AgentStatusType, AgentCapabilitiesResult, ServiceStatus } from '@/types/agent';
+import { isCapabilitiesStale } from '@/services/agentService';
+
+const UNAVAILABLE = 'Unavailable';
+
+/** Format a metric that may be unknown (#271). */
+export function formatUptime(seconds: number | null): string {
+  if (seconds === null) return UNAVAILABLE;
+  const hours = Math.floor(seconds / 3600);
+  if (hours >= 1) return `${hours}h`;
+  return `${Math.floor(seconds / 60)}m`;
+}
+
+
+/** Explanation shown when capability data can't be trusted as live (#270). */
+export function capabilityNotice(result: AgentCapabilitiesResult | null, now = Date.now()): string | null {
+  if (!result) return null;
+  if (result.availability === 'unavailable') {
+    return "Capabilities are unavailable right now: the agent couldn't be reached. Actions are disabled until it responds.";
+  }
+  if (result.availability === 'unsupported') {
+    return "This agent doesn't report its capabilities. The actions below are the app's defaults and may not be enabled in this environment.";
+  }
+  if (isCapabilitiesStale(result, now)) {
+    return 'Capability data may be out of date. Refresh to check again.';
+  }
+  return null;
+}
 
 interface AgentStatusProps {
   className?: string;
@@ -28,7 +56,7 @@ export default function AgentStatus({ className = '', showDetails = false }: Age
   const dispatch = useAppDispatch();
   const { agentStatus } = useAppSelector((state) => state.chat);
   const [status, setStatus] = useState<AgentStatusType | null>(null);
-  const [capabilities, setCapabilities] = useState<AgentCapabilities | null>(null);
+  const [capabilities, setCapabilities] = useState<AgentCapabilitiesResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [lastCheck, setLastCheck] = useState<Date | null>(null);
 
@@ -47,8 +75,8 @@ export default function AgentStatus({ className = '', showDetails = false }: Age
       setStatus(status);
       setCapabilities(capabilities);
       
-      // If we got at least one response, consider the agent connected
-      const isConnected = statusData.status === 'fulfilled' || capabilitiesData.status === 'fulfilled';
+      // Online only when a real health probe says so; capabilities are local and prove nothing (#271)
+      const isConnected = status?.isOnline === true;
       
       dispatch(updateAgentStatus({
         isConnected,
@@ -128,12 +156,14 @@ export default function AgentStatus({ className = '', showDetails = false }: Age
     }
   };
 
-  const getServiceStatus = (service: any) => {
-    if (service.isHealthy) {
-      return <CheckCircle className="h-3 w-3 text-green-400" />;
-    } else {
-      return <AlertCircle className="h-3 w-3 text-yellow-400" />;
+  const getServiceStatus = (service: ServiceStatus) => {
+    if (service.isHealthy === true) {
+      return <CheckCircle className="h-3 w-3 text-green-400" aria-label="Healthy" />;
     }
+    if (service.isHealthy === false) {
+      return <AlertCircle className="h-3 w-3 text-yellow-400" aria-label="Unhealthy" />;
+    }
+    return <HelpCircle className="h-3 w-3 text-gray-500" aria-label="Unknown" />;
   };
 
   if (!showDetails) {
@@ -169,40 +199,85 @@ export default function AgentStatus({ className = '', showDetails = false }: Age
 
       {status && (
         <div className="space-y-3">
-          <div className="text-xs text-gray-400">
-            Version: {status.version} | Uptime: {Math.floor(status.uptime / 3600)}h
+          <div className="text-xs text-gray-400" data-testid="agent-metrics">
+            Version: {status.version ?? UNAVAILABLE} | Uptime: {formatUptime(status.uptime)} | Connections:{' '}
+            {status.activeConnections ?? UNAVAILABLE}
           </div>
-          
+
+          {status.health && (
+            <div className="text-xs text-gray-400" data-testid="agent-health">
+              {status.health.responseTimeMs !== null ? `Response time: ${status.health.responseTimeMs} ms` : 'Response time: no response'}
+              {status.health.probe === 'connectivity' && ' (connectivity check only)'}
+            </div>
+          )}
+
           <div className="space-y-2">
             <div className="text-xs font-medium text-gray-300">Services</div>
-            <div className="grid grid-cols-2 gap-2">
-              {Object.entries(status.services).map(([name, service]) => (
-                <div key={name} className="flex items-center justify-between p-2 bg-gray-800/50 rounded">
-                  <div className="flex items-center space-x-2">
-                    {getServiceIcon(name)}
-                    <span className="text-xs text-gray-300 capitalize">{name}</span>
+            {Object.keys(status.services).length === 0 ? (
+              <p className="text-xs text-gray-500">
+                Protocol health is unavailable: the agent backend doesn&apos;t report it yet.
+              </p>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                {Object.entries(status.services).map(([name, service]) => (
+                  <div key={name} className="flex items-center justify-between p-2 bg-gray-800/50 rounded">
+                    <div className="flex items-center space-x-2">
+                      {getServiceIcon(name)}
+                      <span className="text-xs text-gray-300 capitalize">{name}</span>
+                    </div>
+                    {getServiceStatus(service)}
                   </div>
-                  {getServiceStatus(service)}
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
           {capabilities && (
-            <div className="space-y-2">
-              <div className="text-xs font-medium text-gray-300">Capabilities</div>
-              <div className="flex flex-wrap gap-1">
-                {Object.entries(capabilities.features)
-                  .filter(([_, enabled]) => enabled)
-                  .map(([feature, _]) => (
-                    <span
-                      key={feature}
-                      className="px-2 py-1 bg-purple-600/20 text-purple-300 text-xs rounded"
-                    >
-                      {feature}
-                    </span>
-                  ))}
+            <div className="space-y-2" data-testid="agent-capabilities" data-availability={capabilities.availability}>
+              <div className="flex items-center justify-between text-xs">
+                <span className="font-medium text-gray-300">Capabilities</span>
+                <span className="text-gray-500">
+                  {capabilities.source === 'backend'
+                    ? 'Reported by agent'
+                    : capabilities.source === 'local_fallback'
+                      ? 'App defaults (not confirmed)'
+                      : 'Unknown'}
+                  {' · '}
+                  <time dateTime={capabilities.fetchedAt}>
+                    checked {new Date(capabilities.fetchedAt).toLocaleTimeString()}
+                  </time>
+                </span>
               </div>
+              {capabilityNotice(capabilities) && (
+                <p role="note" className="text-xs text-yellow-300">
+                  {capabilityNotice(capabilities)}
+                </p>
+              )}
+              {capabilities.capabilities ? (
+                <div className="flex flex-wrap gap-1">
+                  {Object.entries(capabilities.capabilities.features)
+                    .filter(([, enabled]) => enabled)
+                    .map(([feature]) => {
+                      const confirmed = capabilities.availability === 'available';
+                      return (
+                        <span
+                          key={feature}
+                          aria-disabled={!confirmed}
+                          title={confirmed ? undefined : 'Not confirmed for this environment'}
+                          className={`px-2 py-1 text-xs rounded ${
+                            confirmed
+                              ? 'bg-purple-600/20 text-purple-300'
+                              : 'bg-gray-800 text-gray-500 line-through decoration-gray-600'
+                          }`}
+                        >
+                          {feature}
+                        </span>
+                      );
+                    })}
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500">No capabilities to show.</p>
+              )}
             </div>
           )}
 

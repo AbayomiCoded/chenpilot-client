@@ -37,12 +37,15 @@ export function usePresenceManagement() {
     };
 
     // Listen for user leaving
-    const handleUserLeave = (userId: string) => {
-      dispatch(removePresence(userId));
+    const handleUserLeave = (...args: unknown[]) => {
+      const [userId] = args;
+      if (typeof userId === 'string') dispatch(removePresence(userId));
     };
 
     // Listen for bulk presence updates
-    const handlePresenceList = (presences: any[]) => {
+    const handlePresenceList = (...args: unknown[]) => {
+      const [presences] = args;
+      if (!Array.isArray(presences)) return;
       presences.forEach((presence) => {
         dispatch(addOrUpdatePresence(presence));
       });

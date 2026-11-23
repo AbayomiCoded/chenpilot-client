@@ -21,17 +21,27 @@ This guide covers common setup failures, environmental errors, socket disconnect
 
 ### Missing `NEXT_PUBLIC_API_BASE_URL`
 
-* **Symptom**: Application fails to start or throws an unhandled exception at import time:
+* **Symptom (development)**: No error on startup — the app automatically falls back to `http://localhost:2333` when `NEXT_PUBLIC_API_BASE_URL` is not set. This is intentional so the dev server starts without a `.env.local` file. All API calls will go to `localhost:2333`; make sure your backend is running on that port.
+
+* **Symptom (production)**: The server fails to start and throws at module initialisation time:
   ```
   Error: [Env Config Error] Missing required environment variable(s): NEXT_PUBLIC_API_BASE_URL.
   ```
-* **Cause**: `.env.local` is missing or does not define `NEXT_PUBLIC_API_BASE_URL`.
+  Or, if the URL is set but is not a valid HTTP/HTTPS URL:
+  ```
+  Error: [Env Config Error] NEXT_PUBLIC_API_BASE_URL is not a valid HTTP or HTTPS URL: "<value>".
+  ```
+* **Cause**: In production `NEXT_PUBLIC_API_BASE_URL` must be explicitly set; the localhost fallback is disabled to prevent accidental production traffic to a local server. The URL must be an absolute HTTP or HTTPS URL, must not contain credentials or fragments, and must use HTTPS in production. HTTP origins are allowed only for local development.
 * **Exact Fix Commands**:
   Copy the example environment file to `.env.local` and set `NEXT_PUBLIC_API_BASE_URL`:
   ```bash
   cp .env.example .env.local
   ```
-  Ensure `.env.local` contains:
+  Ensure `.env.local` (or the deployment platform's environment configuration) contains:
+  ```env
+  NEXT_PUBLIC_API_BASE_URL=https://api.your-domain.com
+  ```
+  For local development the default is fine:
   ```env
   NEXT_PUBLIC_API_BASE_URL=http://localhost:2333
   ```
@@ -85,7 +95,7 @@ This guide covers common setup failures, environmental errors, socket disconnect
 ### Husky Hooks Not Running or Pre-Commit Failures
 
 * **Symptom**: Git commits fail with `.husky/pre-commit: line 2: eslint: command not found` or Husky hooks fail to trigger.
-* **Cause**: Git hooks were not initialized during `npm install` or binary execution permissions are missing on `.husky/pre-commit`.
+* **Cause**: Git hooks were not initialized during `pnpm install` or binary execution permissions are missing on `.husky/pre-commit`.
 * **Exact Fix Commands**:
   1. Reinstall and re-initialize Husky hooks:
      ```bash

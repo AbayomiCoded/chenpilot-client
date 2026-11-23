@@ -17,7 +17,6 @@ export function SessionExpirationWarning() {
     // Handle warning trigger
     const unsubscribeWarning = sessionService.onWarning(() => {
       setIsVisible(true);
-      updateTimeDisplay();
     });
 
     // Handle expiration

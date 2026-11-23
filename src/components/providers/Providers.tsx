@@ -2,7 +2,7 @@
 
 import React, { useEffect } from "react";
 import { Provider } from "react-redux";
-import toast, { Toaster } from "react-hot-toast";
+import { Toaster } from "react-hot-toast";
 import { store } from "@/store";
 import { initializeAuth } from "@/store/slices/authSlice";
 import { initializeUI } from "@/store/slices/uiSlice";
@@ -10,8 +10,12 @@ import { ThemeProvider } from "./ThemeProvider";
 import { LanguageProvider } from "./LanguageProvider";
 import apiService from "@/services/api";
 import { SocketProvider } from "./SocketProvider";
+import { CHAT_MESSAGE_EVENT } from "@/hooks/useChatResync";
 import { TransactionToastListener } from "@/components/TransactionToastListener";
 import { ToastOverflowManager } from "@/components/providers/ToastOverflowManager";
+import { SessionManagementProvider } from "./SessionManagementProvider";
+import { PresenceProvider } from "./PresenceProvider";
+import { SessionExpirationWarning } from "@/components/auth/SessionExpirationWarning";
 
 interface ProvidersProps {
   children: React.ReactNode;
@@ -60,12 +64,18 @@ export function Providers({ children }: ProvidersProps) {
                     reconnectionAttempts: 5,
                     timeout: 20000,
                   },
+                  // Catch up on chat events missed while disconnected (#277)
+                  resync: {
+                    events: [CHAT_MESSAGE_EVENT],
+                    fetchMissed: (cursor) => apiService.getMissedChatEvents(cursor),
+                  },
                 }}
                 autoConnect={true}
               >
                 {children}
                 <SessionExpirationWarning />
                 <TransactionToastListener />
+                <ToastOverflowManager />
                 <Toaster
                   position="top-right"
                   toastOptions={{

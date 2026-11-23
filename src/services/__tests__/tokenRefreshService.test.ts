@@ -1,17 +1,46 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { TokenRefreshService, TokenRefreshResult } from '../tokenRefreshService';
-import { mockAxios, resetAxiosMocks } from '@/test/mocks/axios';
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import {
+  TokenRefreshService,
+  TokenRefreshResult,
+} from "../tokenRefreshService";
 
-vi.mock('axios', () => mockAxios);
+const { mockAxios } = vi.hoisted(() => ({
+  mockAxios: {
+    get: vi.fn(),
+    post: vi.fn(),
+    put: vi.fn(),
+    delete: vi.fn(),
+    patch: vi.fn(),
+    create: vi.fn(),
+    default: null as unknown,
+    interceptors: {
+      request: { use: vi.fn() },
+      response: { use: vi.fn() },
+    },
+  },
+}));
 
-describe('TokenRefreshService - Single-Flight Behaviour', () => {
+vi.mock("axios", () => ({ ...mockAxios, default: mockAxios }));
+
+const resetAxiosMocks = () => {
+  mockAxios.get.mockReset();
+  mockAxios.post.mockReset();
+  mockAxios.put.mockReset();
+  mockAxios.delete.mockReset();
+  mockAxios.patch.mockReset();
+  mockAxios.create.mockReset();
+};
+
+describe("TokenRefreshService - Single-Flight Behaviour", () => {
   let service: TokenRefreshService;
-  const mockApiBaseUrl = 'http://localhost:2333';
+  const mockApiBaseUrl = "http://localhost:2333";
 
   beforeEach(() => {
     resetAxiosMocks();
     // Reset singleton instance for each test
-    (TokenRefreshService as { instance: TokenRefreshService | null }).instance = null;
+    (
+      TokenRefreshService as unknown as { instance: TokenRefreshService | null }
+    ).instance = null;
     service = TokenRefreshService.getInstance();
   });
 
@@ -19,8 +48,8 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
     resetAxiosMocks();
   });
 
-  describe('single-flight queue behaviour', () => {
-    it('queues concurrent refresh requests while one is in-flight', async () => {
+  describe("single-flight queue behaviour", () => {
+    it("queues concurrent refresh requests while one is in-flight", async () => {
       // Mock axios to delay the first request
       let resolveFirstRequest: ((value: unknown) => void) | null = null;
       mockAxios.post.mockImplementation(() => {
@@ -43,7 +72,7 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
       expect(service.isTokenRefreshing()).toBe(true);
 
       // Resolve the first request
-      const mockResponse: TokenRefreshResult = { token: 'new-token-123' };
+      const mockResponse: TokenRefreshResult = { token: "new-token-123" };
       resolveFirstRequest!({ data: mockResponse });
 
       // All requests should resolve with the same token
@@ -53,17 +82,17 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
         thirdRequest,
       ]);
 
-      expect(firstResult.token).toBe('new-token-123');
-      expect(secondResult.token).toBe('new-token-123');
-      expect(thirdResult.token).toBe('new-token-123');
+      expect(firstResult.token).toBe("new-token-123");
+      expect(secondResult.token).toBe("new-token-123");
+      expect(thirdResult.token).toBe("new-token-123");
 
       // Queue should be empty after all resolve
       expect(service.queueLength()).toBe(0);
       expect(service.isTokenRefreshing()).toBe(false);
     });
 
-    it('handles successful refresh and resolves all queued requests', async () => {
-      const mockToken = 'refreshed-token-abc';
+    it("handles successful refresh and resolves all queued requests", async () => {
+      const mockToken = "refreshed-token-abc";
       mockAxios.post.mockResolvedValue({
         data: { token: mockToken },
       });
@@ -86,8 +115,8 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
       expect(mockAxios.post).toHaveBeenCalledTimes(1);
     });
 
-    it('propagates error to all queued requests on failure', async () => {
-      const mockError = new Error('Refresh token expired');
+    it("propagates error to all queued requests on failure", async () => {
+      const mockError = new Error("Refresh token expired");
       mockAxios.post.mockRejectedValue(mockError);
 
       // Start multiple concurrent requests
@@ -98,16 +127,18 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
       ];
 
       // All should reject with the same error
-      await expect(Promise.all(requests)).rejects.toThrow('Refresh token expired');
+      await expect(Promise.all(requests)).rejects.toThrow(
+        "Refresh token expired",
+      );
 
       // Queue should be empty after error
       expect(service.queueLength()).toBe(0);
       expect(service.isTokenRefreshing()).toBe(false);
     });
 
-    it('allows new refresh after previous completes', async () => {
-      const mockToken1 = 'token-1';
-      const mockToken2 = 'token-2';
+    it("allows new refresh after previous completes", async () => {
+      const mockToken1 = "token-1";
+      const mockToken2 = "token-2";
 
       mockAxios.post
         .mockResolvedValueOnce({ data: { token: mockToken1 } })
@@ -124,7 +155,7 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
       expect(mockAxios.post).toHaveBeenCalledTimes(2);
     });
 
-    it('handles rapid sequential requests correctly', async () => {
+    it("handles rapid sequential requests correctly", async () => {
       let callCount = 0;
       mockAxios.post.mockImplementation(() => {
         callCount++;
@@ -135,7 +166,7 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
 
       // Fire 5 requests in quick succession
       const requests = Array.from({ length: 5 }, () =>
-        service.refreshToken(mockApiBaseUrl)
+        service.refreshToken(mockApiBaseUrl),
       );
 
       const results = await Promise.all(requests);
@@ -148,9 +179,9 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
       expect(callCount).toBe(1);
     });
 
-    it('handles empty queue after all requests resolve', async () => {
+    it("handles empty queue after all requests resolve", async () => {
       mockAxios.post.mockResolvedValue({
-        data: { token: 'test-token' },
+        data: { token: "test-token" },
       });
 
       await service.refreshToken(mockApiBaseUrl);
@@ -159,8 +190,8 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
       expect(service.isTokenRefreshing()).toBe(false);
     });
 
-    it('resets isRefreshing flag even on error', async () => {
-      mockAxios.post.mockRejectedValue(new Error('Network error'));
+    it("resets isRefreshing flag even on error", async () => {
+      mockAxios.post.mockRejectedValue(new Error("Network error"));
 
       try {
         await service.refreshToken(mockApiBaseUrl);
@@ -171,13 +202,13 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
       expect(service.isTokenRefreshing()).toBe(false);
     });
 
-    it('processes queue with correct error/result distribution', async () => {
+    it("processes queue with correct error/result distribution", async () => {
       let shouldSucceed = true;
       mockAxios.post.mockImplementation(() => {
         if (shouldSucceed) {
-          return Promise.resolve({ data: { token: 'success-token' } });
+          return Promise.resolve({ data: { token: "success-token" } });
         }
-        return Promise.reject(new Error('Auth failed'));
+        return Promise.reject(new Error("Auth failed"));
       });
 
       // First batch - should succeed
@@ -193,29 +224,30 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
         service.refreshToken(mockApiBaseUrl),
         service.refreshToken(mockApiBaseUrl),
       ];
-      await expect(Promise.all(batch2)).rejects.toThrow('Auth failed');
+      await expect(Promise.all(batch2)).rejects.toThrow("Auth failed");
 
       // Third batch - should succeed again (flag reset)
       shouldSucceed = true;
       const batch3 = service.refreshToken(mockApiBaseUrl);
-      await expect(batch3).resolves.toEqual({ token: 'success-token' });
+      await expect(batch3).resolves.toEqual({ token: "success-token" });
     });
   });
 
-  describe('singleton behaviour', () => {
-    it('returns same instance across multiple calls', () => {
+  describe("singleton behaviour", () => {
+    it("returns same instance across multiple calls", () => {
       const instance1 = TokenRefreshService.getInstance();
       const instance2 = TokenRefreshService.getInstance();
 
       expect(instance1).toBe(instance2);
     });
 
-    it('maintains queue state across getInstance calls', async () => {
+    it("maintains queue state across getInstance calls", async () => {
       mockAxios.post.mockImplementation(
-        () => new Promise((resolve) => {
-          // Delay resolution
-          setTimeout(() => resolve({ data: { token: 'test' } }), 100);
-        })
+        () =>
+          new Promise((resolve) => {
+            // Delay resolution
+            setTimeout(() => resolve({ data: { token: "test" } }), 100);
+          }),
       );
 
       const instance1 = TokenRefreshService.getInstance();
@@ -232,26 +264,25 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
     });
   });
 
-  describe('edge cases', () => {
-    it('handles single request without queueing', async () => {
+  describe("edge cases", () => {
+    it("handles single request without queueing", async () => {
       mockAxios.post.mockResolvedValue({
-        data: { token: 'single-token' },
+        data: { token: "single-token" },
       });
 
       const result = await service.refreshToken(mockApiBaseUrl);
 
-      expect(result.token).toBe('single-token');
+      expect(result.token).toBe("single-token");
       expect(service.queueLength()).toBe(0);
     });
 
-    it('handles requests arriving after queue is processed', async () => {
+    it("handles requests arriving after queue is processed", async () => {
       let resolveFirst: ((value: unknown) => void) | null = null;
       mockAxios.post.mockImplementation(() => {
         return new Promise((resolve) => {
           if (!resolveFirst) {
             resolveFirst = resolve;
           }
-          return resolveFirst!({ data: { token: 'token-1' } });
         });
       });
 
@@ -261,10 +292,12 @@ describe('TokenRefreshService - Single-Flight Behaviour', () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       const request2 = service.refreshToken(mockApiBaseUrl);
 
+      resolveFirst!({ data: { token: "token-1" } });
+
       const [result1, result2] = await Promise.all([request1, request2]);
 
-      expect(result1.token).toBe('token-1');
-      expect(result2.token).toBe('token-1');
+      expect(result1.token).toBe("token-1");
+      expect(result2.token).toBe("token-1");
     });
   });
 });

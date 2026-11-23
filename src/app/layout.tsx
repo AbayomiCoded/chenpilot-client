@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Manrope } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/components/providers/Providers";
+import { OfflineServiceWorker } from "@/components/providers/OfflineServiceWorker";
 import { SkipLink } from "@/components/layout/SkipLink";
 
 const manrope = Manrope({
@@ -32,6 +33,7 @@ export default function RootLayout({
       <body className="font-sans antialiased bg-white dark:bg-gray-900 text-gray-900 dark:text-white transition-colors duration-300 h-full">
         <SkipLink />
         <Providers>{children}</Providers>
+        <OfflineServiceWorker />
       </body>
     </html>
   );

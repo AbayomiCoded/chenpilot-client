@@ -1,13 +1,26 @@
 'use client';
 
-import React, { createContext, useContext, useEffect, useCallback, useRef, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useCallback, useState, ReactNode } from 'react';
 import { Socket } from 'socket.io-client';
-import { SocketManager, SocketConfig, initializeSocketManager } from '@/services/socketManager';
+import {
+  SocketManager,
+  SocketConfig,
+  initializeSocketManager,
+} from '@/services/socketManager';
+import {
+  INITIAL_SOCKET_CONNECTION_STATE,
+  isSocketConnected,
+  type SocketConnectionState,
+} from '@/types/socket';
 
 interface SocketContextType {
   socket: Socket | null;
   socketManager: SocketManager | null;
   isConnected: boolean;
+  connectionState: SocketConnectionState;
+  reconnectAttempt: number;
+  maxReconnectAttempts: number;
+  retry: () => void;
   connect: () => void;
   disconnect: () => void;
   emit: (event: string, data?: unknown) => boolean;
@@ -28,55 +41,50 @@ interface SocketProviderProps {
 export function SocketProvider({ children, config, configKey, autoConnect = true }: SocketProviderProps) {
   const [socketManager, setSocketManager] = useState<SocketManager | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
-  const [isConnected, setIsConnected] = useState(false);
-
-  // Stable handler refs so the same function identity is used for on() and off().
-  // Using refs avoids declaring the handlers as useCallback dependencies and
-  // ensures off() can always remove exactly what on() registered.
-  const handleConnect = useRef(() => setIsConnected(true));
-  const handleDisconnect = useRef(() => setIsConnected(false));
-
-  /**
-   * Registers the connect/disconnect state handlers exactly once per manager.
-   * Calls off() before on() so repeated invocations are idempotent.
-   */
-  const registerStateHandlers = useCallback((manager: SocketManager) => {
-    manager.off('connect', handleConnect.current);
-    manager.off('disconnect', handleDisconnect.current);
-    manager.on('connect', handleConnect.current);
-    manager.on('disconnect', handleDisconnect.current);
-  }, []);
+  const [connectionState, setConnectionState] = useState<SocketConnectionState>(
+    INITIAL_SOCKET_CONNECTION_STATE,
+  );
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  // Derived from the single shared state, never tracked separately (#279).
+  const isConnected = isSocketConnected(connectionState);
 
   useEffect(() => {
     const manager = initializeSocketManager(config);
     setSocketManager(manager);
+    const unsubscribeState = manager.onStateChange((state, attempt) => {
+      setConnectionState(state);
+      setReconnectAttempt(attempt);
+    });
 
     if (autoConnect) {
       const socketInstance = manager.connect();
       setSocket(socketInstance);
-      setIsConnected(socketInstance.connected);
-      registerStateHandlers(manager);
     }
 
     return () => {
+      unsubscribeState();
       manager.disconnect();
     };
-  }, [config, configKey, autoConnect, registerStateHandlers]);
+  }, [config, configKey, autoConnect]);
 
   const connect = useCallback(() => {
     if (socketManager) {
       const socketInstance = socketManager.connect();
       setSocket(socketInstance);
-      setIsConnected(socketInstance.connected);
-      registerStateHandlers(socketManager);
     }
-  }, [socketManager, registerStateHandlers]);
+  }, [socketManager]);
+
+  const retry = () => {
+    if (socketManager) {
+      socketManager.retry();
+      setSocket(socketManager.getSocket());
+    }
+  };
 
   const disconnect = () => {
     if (socketManager) {
       socketManager.disconnect();
       setSocket(null);
-      setIsConnected(false);
     }
   };
 
@@ -100,6 +108,10 @@ export function SocketProvider({ children, config, configKey, autoConnect = true
     socket,
     socketManager,
     isConnected,
+    connectionState,
+    reconnectAttempt,
+    maxReconnectAttempts: socketManager?.getMaxReconnectAttempts() ?? 0,
+    retry,
     connect,
     disconnect,
     emit,
@@ -113,6 +125,14 @@ export function SocketProvider({ children, config, configKey, autoConnect = true
       {children}
     </SocketContext.Provider>
   );
+}
+
+/**
+ * Like `useSocket`, but returns `undefined` outside a SocketProvider so status
+ * UI that can render without a socket (e.g. OfflineIndicator) can opt in.
+ */
+export function useOptionalSocket(): SocketContextType | undefined {
+  return useContext(SocketContext);
 }
 
 export function useSocket(): SocketContextType {

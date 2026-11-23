@@ -49,11 +49,19 @@ export default function VoiceMessagePlayer({
   const [currentTime, setCurrentTime] = useState(0);
   const [actualDuration, setActualDuration] = useState(duration);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [hasMissingAudio, setHasMissingAudio] = useState(!audioUrl);
 
   const barHeights = buildBarHeights(audioUrl.slice(-40)); // use tail of URL as seed
 
   // ── Wire up audio element events ─────────────────────────────────────────────
   useEffect(() => {
+    if (!audioUrl || (!audioUrl.startsWith('data:audio/') && !/^https?:\/\//.test(audioUrl))) {
+      setHasMissingAudio(true);
+      setIsPlaying(false);
+      return;
+    }
+
+    setHasMissingAudio(false);
     const audio = new Audio(audioUrl);
     audioRef.current = audio;
 
@@ -65,7 +73,11 @@ export default function VoiceMessagePlayer({
       setIsPlaying(false);
       setCurrentTime(0);
     };
-    const onError = () => setIsPlaying(false);
+    const onError = () => {
+      setIsPlaying(false);
+      setHasMissingAudio(true);
+      setCurrentTime(0);
+    };
 
     audio.addEventListener('timeupdate', onTimeUpdate);
     audio.addEventListener('durationchange', onDurationChange);
@@ -111,6 +123,23 @@ export default function VoiceMessagePlayer({
   // ── Derived ──────────────────────────────────────────────────────────────────
   const progress = actualDuration > 0 ? currentTime / actualDuration : 0;
   const isUser = variant === 'user';
+
+  if (hasMissingAudio) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <div
+          className={cn(
+            'rounded-2xl px-4 py-3 text-sm max-w-xs border',
+            isUser
+              ? 'bg-[#7C3AED]/30 text-purple-100 border-purple-700/40'
+              : 'bg-gray-900/80 text-gray-300 border-gray-800',
+          )}
+        >
+          Voice message unavailable — browser storage was cleared or the audio file was evicted.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-1.5">

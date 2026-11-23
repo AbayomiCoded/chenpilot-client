@@ -10,12 +10,13 @@ export const Card: React.FC<CardProps> = ({
   children,
   className,
   actions,
+  ...props
 }) => {
   return (
     <div className={cn(
       'bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700',
       className
-    )}>
+    )} {...props}>
       {(title || subtitle || actions) && (
         <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center justify-between">
