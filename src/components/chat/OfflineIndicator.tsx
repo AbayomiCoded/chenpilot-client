@@ -2,7 +2,7 @@
 
 import React, { useEffect } from 'react';
 import { useAppDispatch, useAppSelector } from '@/store';
-import { setOnlineStatus, loadMessageQueue } from '@/store/slices/chatSlice';
+import { setOnlineStatus, loadMessageQueue, fetchChatHistory } from '@/store/slices/chatSlice';
 import { WifiOff, Wifi } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { useOptionalSocket } from '@/components/providers/SocketProvider';
@@ -30,6 +30,16 @@ export function describeSocketState(
   }
 }
 
+/** "last synced …" copy for cached conversations (#289). */
+export function describeLastSynced(lastSyncedAt: string | null, now: Date = new Date()): string {
+  if (!lastSyncedAt) return 'not synced yet';
+  const then = new Date(lastSyncedAt);
+  if (Number.isNaN(then.getTime())) return 'not synced yet';
+  const sameDay = then.toDateString() === now.toDateString();
+  const time = then.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return sameDay ? `last synced ${time}` : `last synced ${then.toLocaleDateString()} ${time}`;
+}
+
 interface OfflineIndicatorProps {
   canRetry?: boolean;
   onRetry?: () => void;
@@ -40,7 +50,7 @@ export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({
   onRetry,
 }) => {
   const dispatch = useAppDispatch();
-  const { isOnline, messageQueue } = useAppSelector((state) => state.chat);
+  const { isOnline, messageQueue, dataSource, lastSyncedAt } = useAppSelector((state) => state.chat);
   const [connectionRestored, setConnectionRestored] = React.useState(false);
   const socket = useOptionalSocket();
   const socketState: SocketConnectionState = socket?.connectionState ?? 'unknown';
@@ -59,6 +69,8 @@ export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({
     const handleOnline = () => {
       dispatch(setOnlineStatus(true));
       setConnectionRestored(true);
+      // Reconcile cached messages with the server; the merge is by message id, so no duplicates (#289)
+      dispatch(fetchChatHistory());
     };
 
     const handleOffline = () => {
@@ -125,8 +137,10 @@ export const OfflineIndicator: React.FC<OfflineIndicatorProps> = ({
       ) : (
         <>
           <WifiOff className="h-4 w-4" />
-          <span>
-            You are offline • network actions are paused{messageQueue.length > 0
+          <span data-testid="offline-status">
+            You are offline • network actions are paused
+            {dataSource === 'cached' && ` • showing saved messages, ${describeLastSynced(lastSyncedAt)}`}
+            {messageQueue.length > 0
               ? ` • ${messageQueue.length} message${messageQueue.length !== 1 ? 's' : ''} queued`
               : ''}
           </span>

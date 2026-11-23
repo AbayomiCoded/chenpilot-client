@@ -87,6 +87,7 @@ These are all the keys the client reads or writes. The source of truth is `STORA
 | `session_expiration` | localStorage | `services/sessionService.ts` | Until logout or session end | ✅ | Personal | Expiry timestamp for cross-tab session sync |
 | `refresh_token` | localStorage | `services/api.ts` | Legacy: never written, only removed | ✅ | Credential | Refresh tokens are HTTP-only cookies |
 | `chat_history` | localStorage | `store/slices/chatSlice.ts` | Until logout or chat deletion | ✅ | Personal | Messages per conversation; prompts can include wallet addresses and amounts |
+| `chat_last_synced_at` | localStorage | `store/slices/chatSlice.ts` | Until logout | ✅ | Personal | Time live chat data was last received (#289) |
 | `conversations` | localStorage | `store/slices/chatSlice.ts` | Until logout or conversation deletion | ✅ | Personal | Conversation titles and metadata |
 | `messageQueue` | localStorage | `store/slices/chatSlice.ts` | Until sent after reconnecting, or logout | ✅ | Personal | Prompts queued while offline |
 | `chat_drafts` | localStorage | `lib/accountDeletion.ts` | Until logout or account deletion | ✅ | Personal | Unsent chat drafts |

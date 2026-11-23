@@ -63,6 +63,15 @@ export const STORAGE_INVENTORY: readonly StorageKeyInfo[] = [
     contents: 'Chat messages per conversation; prompts can include wallet addresses and amounts',
   },
   {
+    key: 'chat_last_synced_at',
+    area: 'localStorage',
+    owner: 'src/store/slices/chatSlice.ts',
+    lifetime: 'Until logout',
+    userScoped: true,
+    sensitivity: 'personal',
+    contents: 'Time live chat data was last received, shown while offline',
+  },
+  {
     key: 'conversations',
     area: 'localStorage',
     owner: 'src/store/slices/chatSlice.ts',

@@ -220,3 +220,12 @@ Deleting a conversation while an agent reply is pending must not let that reply 
 - Code that later applies server or socket messages to a conversation should check `isConversationDeleted(conversationId)` first.
 
 Tests: `src/store/__tests__/conversationRequests.test.ts`, `src/store/slices/__tests__/chatSlice.deletion.test.ts` and `src/components/chat/DeleteConversationDialog.test.tsx`.
+
+## Cached vs Live Conversation Data (#289)
+
+`chat.dataSource` is `"live"` or `"cached"`, and `chat.lastSyncedAt` records when live data was last received. The time is persisted in `localStorage["chat_last_synced_at"]`, so it is still available after reloading while offline.
+
+- **Cached:** going offline (`setOnlineStatus(false)`) or loading a conversation from local storage (`loadChatHistory`).
+- **Live (and `lastSyncedAt` updated):** a successful `sendMessage`, server-delivered messages (`mergeSyncedMessages`) or a history fetch (`fetchChatHistory`).
+- **Offline banner:** "You are offline • showing saved messages, last synced HH:MM" while the data is cached.
+- **Reconnect:** coming back online dispatches `fetchChatHistory()`. Messages are merged by `id` (`mergeMessagesById`), so cached rows are not duplicated, and the state returns to live.
