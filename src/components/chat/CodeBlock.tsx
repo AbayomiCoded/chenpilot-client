@@ -88,7 +88,10 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ children, className, inlin
 
   if (inline) {
     return (
-      <code className="bg-gray-800 text-green-400 px-1.5 py-0.5 rounded text-sm font-mono">
+      <code
+        dir="ltr"
+        className="bidi-ltr-isolate bg-gray-800 text-green-400 px-1.5 py-0.5 rounded text-sm font-mono"
+      >
         {children}
       </code>
     );
@@ -131,9 +134,10 @@ export const CodeBlock: React.FC<CodeBlockProps> = ({ children, className, inlin
       </span>
 
       {/* Code Content */}
-      <pre className="overflow-x-auto p-4 text-sm select-text">
+      <pre dir="ltr" className="overflow-x-auto p-4 text-sm text-left select-text">
         <code
           ref={codeRef}
+          dir="ltr"
           className={`font-mono text-gray-100 ${language ? `hljs language-${language}` : 'hljs'}`}
           dangerouslySetInnerHTML={{ __html: highlightedCode }}
         />

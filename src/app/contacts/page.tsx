@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { formatAddress } from '@/utils/format';
 import { Contact, CreateContactRequest } from '@/types';
+import { BIDI_LTR_INPUT_PROPS, LtrText } from '@/components/ui/LtrText';
 import toast from 'react-hot-toast';
 
 export default function ContactsPage() {
@@ -256,12 +257,12 @@ export default function ContactsPage() {
               </p>
             </div>
             <div className="relative">
-              <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <Search className="absolute start-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
               <Input
                 placeholder="Search contacts..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-10 w-full sm:w-64"
+                className="ps-10 w-full sm:w-64"
               />
             </div>
 
@@ -308,10 +309,10 @@ export default function ContactsPage() {
                       {contact.name}
                     </h3>
                     <p className="text-sm text-gray-300">
-                      {contact.tokenType}
+                      <LtrText>{contact.tokenType}</LtrText>
                     </p>
                   </div>
-                  <div className="flex items-center space-x-1">
+                  <div className="flex items-center gap-1">
                     <Button
                       variant="ghost"
                       size="sm"
@@ -335,9 +336,12 @@ export default function ContactsPage() {
                     <p className="text-sm font-medium text-gray-300 mb-1">
                       Address
                     </p>
-                    <div className="flex items-center space-x-2">
-                      <code className="text-sm bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded flex-1">
-                        {formatAddress(contact.address)}
+                    <div className="flex items-center gap-2">
+                      <code
+                        dir="ltr"
+                        className="bidi-ltr-isolate text-sm bg-gray-100 dark:bg-gray-700 px-2 py-1 rounded flex-1 text-start"
+                      >
+                        <LtrText>{formatAddress(contact.address)}</LtrText>
                       </code>
                       <Button
                         type="button"
@@ -392,6 +396,8 @@ export default function ContactsPage() {
             placeholder="Enter Stellar address"
             value={formData.address}
             onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+            {...BIDI_LTR_INPUT_PROPS}
+            className="font-mono"
             required
           />
           
@@ -445,6 +451,8 @@ export default function ContactsPage() {
             placeholder="Enter Stellar address"
             value={formData.address}
             onChange={(e) => setFormData({ ...formData, address: e.target.value })}
+            {...BIDI_LTR_INPUT_PROPS}
+            className="font-mono"
             required
           />
           

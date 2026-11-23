@@ -429,8 +429,8 @@ export default function AgentMessage({
   };
 
   return (
-    <div className="text-white text-left group relative">
-      <div className="prose prose-invert prose-lg max-w-none leading-relaxed pr-8">
+    <div className="text-white text-start group relative">
+      <div className="prose prose-invert prose-lg max-w-none leading-relaxed pe-8">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={markdownComponents}

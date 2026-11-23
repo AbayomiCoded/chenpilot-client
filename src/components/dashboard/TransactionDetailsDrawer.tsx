@@ -7,6 +7,7 @@ import type { StellarTransaction } from "@/types";
 import { getStellarNetwork } from "@/config/stellarNetwork";
 import { formatTransactionFee } from "@/utils/format";
 import { Button } from "@/components/ui/Button";
+import { LtrText } from "@/components/ui/LtrText";
 
 export function getTransactionExplorerUrl(
   hash: string,
@@ -57,7 +58,7 @@ export default function TransactionDetailsDrawer({
       <section
         aria-labelledby="transaction-details-title"
         aria-modal="true"
-        className="h-full w-full max-w-lg overflow-y-auto border-l border-gray-700 bg-gray-950 p-6 text-white shadow-2xl"
+        className="h-full w-full max-w-lg overflow-y-auto border-s border-gray-700 bg-gray-950 p-6 text-white shadow-2xl"
         role="dialog"
       >
         <div className="flex items-start justify-between gap-4">
@@ -66,7 +67,7 @@ export default function TransactionDetailsDrawer({
               Transaction details
             </h2>
             <p className="mt-1 break-all font-mono text-xs text-gray-400">
-              {transaction.hash}
+              <LtrText>{transaction.hash}</LtrText>
             </p>
           </div>
           <button
@@ -89,11 +90,15 @@ export default function TransactionDetailsDrawer({
           </div>
           <div>
             <dt className="text-gray-400">Ledger</dt>
-            <dd>#{transaction.ledger}</dd>
+            <dd>
+              <LtrText>#{transaction.ledger}</LtrText>
+            </dd>
           </div>
           <div>
             <dt className="text-gray-400">Fee charged</dt>
-            <dd>{formatTransactionFee(transaction.fee_charged, { asset: "XLM" })}</dd>
+            <dd>
+              <LtrText>{formatTransactionFee(transaction.fee_charged, { asset: "XLM" })}</LtrText>
+            </dd>
           </div>
           <div>
             <dt className="text-gray-400">Memo</dt>
@@ -110,16 +115,34 @@ export default function TransactionDetailsDrawer({
                   {index + 1}. {operation.type.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase())}
                 </p>
                 <p className="mt-1 text-sm text-gray-300">
-                  {operation.amount ?? "Amount unavailable"} {operation.asset ?? ""}
+                  {operation.amount ? (
+                    <LtrText>
+                      {operation.amount}
+                      {operation.asset ? ` ${operation.asset}` : ""}
+                    </LtrText>
+                  ) : (
+                    "Amount unavailable"
+                  )}
                 </p>
                 {(operation.from || operation.to || operation.source_account) && (
                   <p className="mt-1 break-all text-xs text-gray-400">
-                    {operation.from ? `From: ${operation.from}` : ""}
+                    {operation.from && (
+                      <>
+                        From: <LtrText className="font-mono">{operation.from}</LtrText>
+                      </>
+                    )}
                     {operation.from && operation.to ? " · " : ""}
-                    {operation.to ? `To: ${operation.to}` : ""}
-                    {!operation.from && !operation.to
-                      ? `Counterparty: ${operation.source_account}`
-                      : ""}
+                    {operation.to && (
+                      <>
+                        To: <LtrText className="font-mono">{operation.to}</LtrText>
+                      </>
+                    )}
+                    {!operation.from && !operation.to && operation.source_account && (
+                      <>
+                        Counterparty:{" "}
+                        <LtrText className="font-mono">{operation.source_account}</LtrText>
+                      </>
+                    )}
                   </p>
                 )}
               </li>
