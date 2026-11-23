@@ -53,6 +53,21 @@ const presenceSlice = createSlice({
       }
     },
 
+    removePresences: (state, action: PayloadAction<string[]>) => {
+      action.payload.forEach((userId) => {
+        const presence = state.users[userId];
+        if (presence) {
+          if (presence.status === 'online') {
+            state.onlineCount = Math.max(0, state.onlineCount - 1);
+          } else if (presence.status === 'away') {
+            state.awayCount = Math.max(0, state.awayCount - 1);
+          }
+
+          delete state.users[userId];
+        }
+      });
+    },
+
     clearPresence: (state) => {
       state.users = {};
       state.onlineCount = 0;
@@ -103,6 +118,7 @@ const presenceSlice = createSlice({
 export const {
   addOrUpdatePresence,
   removePresence,
+  removePresences,
   clearPresence,
   updateUserStatus,
   setPresenceBatch,

@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { presenceService, DEFAULT_PRESENCE_CONFIG } from '../presenceService';
+import {
+  PresenceService,
+  presenceService,
+  DEFAULT_PRESENCE_CONFIG,
+  DEFAULT_LEASE_TIMEOUT_MS,
+  computeRemainingLeaseMs,
+  isPresenceExpired,
+  filterActivePresences,
+  type UserPresence,
+} from '../presenceService';
 
 describe('PresenceService', () => {
   beforeEach(() => {
@@ -351,6 +360,218 @@ describe('PresenceService', () => {
       presenceService.setUserOnline('user1', 'User 1');
       const presence = presenceService.getPresence('user1');
       expect(presence?.conversationId).toBeUndefined();
+    });
+  });
+
+  describe('lease expiry and stale presence recovery (#287)', () => {
+    it('computes remaining lease from server expiresAt and serverTime regardless of skewed client clock', () => {
+      // Simulate a client wall clock skewed 5 years into the future
+      vi.setSystemTime(new Date('2031-06-15T00:00:00.000Z'));
+
+      const record: UserPresence = {
+        userId: 'user-skew',
+        userName: 'Skewed Client',
+        status: 'online',
+        lastSeen: '2026-10-19T12:00:00.000Z',
+        serverTime: '2026-10-19T12:00:10.000Z',
+        expiresAt: '2026-10-19T12:01:10.000Z',
+      };
+
+      expect(computeRemainingLeaseMs(record)).toBe(60_000);
+      expect(isPresenceExpired(record)).toBe(false);
+    });
+
+    it('treats records with expiresAt <= serverTime as expired even when client clock is in the past', () => {
+      // Simulate a client wall clock skewed 5 years into the past
+      vi.setSystemTime(new Date('2021-01-01T00:00:00.000Z'));
+
+      const expiredRecord: UserPresence = {
+        userId: 'user-expired',
+        userName: 'Expired User',
+        status: 'online',
+        lastSeen: '2026-10-19T11:58:00.000Z',
+        serverTime: '2026-10-19T12:01:00.000Z',
+        expiresAt: '2026-10-19T12:00:00.000Z',
+      };
+
+      expect(computeRemainingLeaseMs(expiredRecord)).toBe(-60_000);
+      expect(isPresenceExpired(expiredRecord)).toBe(true);
+    });
+
+    it('supports explicit relative leaseTtlMs without client clock assumptions', () => {
+      vi.setSystemTime(new Date('2035-01-01T00:00:00.000Z'));
+
+      const active: UserPresence = {
+        userId: 'user-ttl',
+        userName: 'TTL User',
+        status: 'online',
+        lastSeen: '2026-10-19T12:00:00.000Z',
+        leaseTtlMs: 45_000,
+      };
+      const expired: UserPresence = {
+        userId: 'user-ttl-expired',
+        userName: 'Expired TTL User',
+        status: 'online',
+        lastSeen: '2026-10-19T12:00:00.000Z',
+        leaseTtlMs: 0,
+      };
+
+      expect(computeRemainingLeaseMs(active)).toBe(45_000);
+      expect(isPresenceExpired(active)).toBe(false);
+      expect(isPresenceExpired(expired)).toBe(true);
+    });
+
+    it('filters expired and offline records in filterActivePresences using envelope serverTime', () => {
+      const serverTime = '2026-10-19T12:00:00.000Z';
+      const records: UserPresence[] = [
+        {
+          userId: 'active-1',
+          userName: 'Active',
+          status: 'online',
+          lastSeen: '2026-10-19T11:59:50.000Z',
+          expiresAt: '2026-10-19T12:01:00.000Z',
+        },
+        {
+          userId: 'expired-1',
+          userName: 'Expired',
+          status: 'online',
+          lastSeen: '2026-10-19T11:55:00.000Z',
+          expiresAt: '2026-10-19T11:59:00.000Z',
+        },
+        {
+          userId: 'offline-1',
+          userName: 'Offline',
+          status: 'offline',
+          lastSeen: '2026-10-19T11:59:55.000Z',
+          expiresAt: '2026-10-19T12:05:00.000Z',
+        },
+      ];
+
+      const filtered = filterActivePresences(records, { serverTime });
+      expect(filtered.map((u) => u.userId)).toEqual(['active-1']);
+    });
+
+    it('prunes stale remote users on a monotonic clock after abrupt disconnect', () => {
+      let monotonic = 1_000;
+      const service = new PresenceService(() => monotonic);
+      const onLeave = vi.fn();
+      service.onUserLeave(onLeave);
+
+      // Client wall clock jumps wildly — should have zero effect on monotonic lease expiry
+      vi.setSystemTime(new Date('2032-01-01T00:00:00.000Z'));
+
+      service.upsertRemotePresence({
+        userId: 'remote-1',
+        userName: 'Remote User',
+        status: 'online',
+        lastSeen: '2026-10-19T12:00:00.000Z',
+        serverTime: '2026-10-19T12:00:00.000Z',
+        expiresAt: '2026-10-19T12:00:30.000Z',
+      });
+
+      expect(service.getPresence('remote-1')).toBeDefined();
+
+      // Advance 29s monotonically — still active
+      monotonic += 29_000;
+      expect(service.pruneExpired()).toEqual([]);
+      expect(service.getOnlineUsers()).toHaveLength(1);
+
+      // Advance past 30s lease — pruned as stale
+      monotonic += 1_000;
+      expect(service.pruneExpired()).toEqual(['remote-1']);
+      expect(service.getPresence('remote-1')).toBeUndefined();
+      expect(service.getOnlineUsers()).toHaveLength(0);
+      expect(onLeave).toHaveBeenCalledWith('remote-1');
+    });
+
+    it('renews lease deadline when recordHeartbeat is received', () => {
+      let monotonic = 1_000;
+      const service = new PresenceService(() => monotonic);
+
+      service.upsertRemotePresence({
+        userId: 'remote-hb',
+        userName: 'Heartbeat User',
+        status: 'online',
+        lastSeen: '2026-10-19T12:00:00.000Z',
+        leaseTtlMs: 30_000,
+      });
+
+      monotonic += 25_000;
+      service.recordHeartbeat({
+        userId: 'remote-hb',
+        lastSeen: '2026-10-19T12:00:25.000Z',
+        leaseTtlMs: 30_000,
+      });
+
+      // 20s later (45s total, beyond original 30s) — still alive thanks to heartbeat
+      monotonic += 20_000;
+      expect(service.pruneExpired()).toEqual([]);
+      expect(service.getPresence('remote-hb')).toBeDefined();
+
+      // 10s later (30s after heartbeat) — now expires
+      monotonic += 10_000;
+      expect(service.pruneExpired()).toEqual(['remote-hb']);
+      expect(service.getPresence('remote-hb')).toBeUndefined();
+    });
+
+    it('replaces snapshot on replaceRemotePresences, filtering expired entries and removing absent users', () => {
+      const monotonic = 5_000;
+      const service = new PresenceService(() => monotonic);
+      const onLeave = vi.fn();
+      service.onUserLeave(onLeave);
+
+      service.upsertRemotePresence({
+        userId: 'stale-user',
+        userName: 'Stale',
+        status: 'online',
+        lastSeen: '2026-10-19T11:50:00.000Z',
+        leaseTtlMs: 60_000,
+      });
+
+      const active = service.replaceRemotePresences({
+        serverTime: '2026-10-19T12:00:00.000Z',
+        users: [
+          {
+            userId: 'fresh-user',
+            userName: 'Fresh',
+            status: 'online',
+            lastSeen: '2026-10-19T11:59:55.000Z',
+            expiresAt: '2026-10-19T12:01:00.000Z',
+          },
+          {
+            userId: 'already-expired',
+            userName: 'Old',
+            status: 'away',
+            lastSeen: '2026-10-19T11:50:00.000Z',
+            expiresAt: '2026-10-19T11:59:00.000Z',
+          },
+        ],
+      });
+
+      expect(active.map((u) => u.userId)).toEqual(['fresh-user']);
+      expect(service.getAllUsers().map((u) => u.userId)).toEqual(['fresh-user']);
+      expect(onLeave).toHaveBeenCalledWith('stale-user');
+    });
+
+    it('anchors legacy payloads without serverTime/expiresAt using fallback monotonic lease', () => {
+      let monotonic = 10_000;
+      const service = new PresenceService(() => monotonic);
+
+      // Even if client wall clock is wildly skewed vs legacy lastSeen, do not immediately expire
+      vi.setSystemTime(new Date('2035-01-01T00:00:00.000Z'));
+
+      service.upsertRemotePresence({
+        userId: 'legacy-user',
+        userName: 'Legacy',
+        status: 'online',
+        lastSeen: '2026-10-19T12:00:00.000Z',
+      });
+
+      expect(service.getPresence('legacy-user')).toBeDefined();
+
+      monotonic += DEFAULT_LEASE_TIMEOUT_MS;
+      expect(service.pruneExpired()).toEqual(['legacy-user']);
+      expect(service.getPresence('legacy-user')).toBeUndefined();
     });
   });
 });
