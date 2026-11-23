@@ -3,7 +3,7 @@
 A modern, responsive web client for **ChenPilot** - a crypto wallet management system with AI agent capabilities. Built with Next.js, TypeScript, and Tailwind CSS.
 
 ## Getting Started
-///WIP
+
 > 💡 **Troubleshooting**: Having issues setting up locally? Check out our [Troubleshooting Guide](./docs/TROUBLESHOOTING.md) for solutions to common environment, port, socket, and git hook problems.
 
 ### Prerequisites
