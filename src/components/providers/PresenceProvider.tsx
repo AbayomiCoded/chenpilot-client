@@ -1,7 +1,11 @@
 'use client';
 
 import React from 'react';
-import { usePresenceManagement, useActivityPresenceTracking } from '@/hooks/usePresenceManagement';
+import {
+  usePresenceManagement,
+  useActivityPresenceTracking,
+  useBrowserPresenceTransitions,
+} from '@/hooks/usePresenceManagement';
 import { useAppSelector } from '@/store';
 
 interface PresenceProviderProps {
@@ -19,6 +23,9 @@ export function PresenceProvider({ children }: PresenceProviderProps) {
 
   // Track user activity to keep presence alive
   useActivityPresenceTracking(isAuthenticated);
+
+  // Debounced presence updates on tab visibility / connectivity changes (#288)
+  useBrowserPresenceTransitions(isAuthenticated);
 
   return <>{children}</>;
 }

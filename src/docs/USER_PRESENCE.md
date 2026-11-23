@@ -357,3 +357,16 @@ presenceService.getOnlineUsers(); // Check state
 - Implement pagination in ActiveUsersPanel
 - Increase cleanup timeout
 - Add filtering by conversation
+
+## Browser Event Presence Transitions (#288)
+
+`useBrowserPresenceTransitions` (mounted in `PresenceProvider`) emits `presence:status_change` with `{ userId, status }` for these browser events:
+
+| Event | Status | Timing |
+| --- | --- | --- |
+| `visibilitychange` (hidden) | `away` | Debounced 2s |
+| `visibilitychange` (visible) | `online` | Debounced 2s |
+| `online` | `online` | Debounced 2s |
+| `offline` | `offline` | Immediate (cancels any pending update) |
+
+Repeated transitions inside the debounce window collapse to the final state, and repeating the last sent status is skipped. Listeners and timers are removed on unmount.
