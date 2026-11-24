@@ -7,8 +7,9 @@ import { SignInActivity } from "@/components/settings/SignInActivity";
 import { useReauthPrompt } from "@/components/auth/ReauthDialog";
 import { withRecentAuth } from "@/services/auth.service";
 import { describeSensitiveActionError } from "@/utils/sensitiveActionErrors";
-import { setLanguage, setTheme } from "@/store/slices/uiSlice";
+import { setLanguage, setTheme, setTranslationLanguage } from "@/store/slices/uiSlice";
 import { SettingsSectionNav } from "@/components/settings/SettingsSectionNav";
+import { TRANSLATION_LANGUAGE_NAMES, TranslationLanguage } from "@/lib/translation";
 import { ChatLayout } from "@/components/layout/ChatLayout";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -33,9 +34,10 @@ export default function SettingsPage() {
   const { isAuthenticated, user, isLoading } = useAppSelector(
     (state) => state.auth
   );
-  const { mode: themeMode, language } = useAppSelector((state) => state.ui) || {
+  const { mode: themeMode, language, translationLanguage } = useAppSelector((state) => state.ui) || {
     mode: "dark",
     language: "en",
+    translationLanguage: null,
   };
   const [passwordChangeStage, setPasswordChangeStage] = useState<
     "reauthenticate" | "change-password" | null
@@ -359,6 +361,26 @@ export default function SettingsPage() {
                       </Button>
                     ))}
                   </div>
+
+                  {/* Preferred language for on-demand message translation (#83) */}
+                  <label htmlFor="translation-language" className="mt-6 mb-2 block text-sm font-medium text-gray-300">
+                    Translate messages into
+                  </label>
+                  <select
+                    id="translation-language"
+                    value={translationLanguage ?? ""}
+                    onChange={(e) =>
+                      dispatch(setTranslationLanguage((e.target.value || null) as TranslationLanguage | null))
+                    }
+                    className="w-full rounded-md border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white"
+                  >
+                    <option value="">Same as app language</option>
+                    {(Object.keys(TRANSLATION_LANGUAGE_NAMES) as TranslationLanguage[]).map((code) => (
+                      <option key={code} value={code}>
+                        {TRANSLATION_LANGUAGE_NAMES[code]}
+                      </option>
+                    ))}
+                  </select>
                 </div>
               </Card>
 

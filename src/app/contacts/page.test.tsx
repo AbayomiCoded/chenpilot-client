@@ -5,6 +5,7 @@ import ContactsPage from './page';
 import type { Contact } from '@/types';
 
 const mockPush = vi.fn();
+const { mockGetContacts } = vi.hoisted(() => ({ mockGetContacts: vi.fn() }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: mockPush }),
@@ -16,6 +17,10 @@ vi.mock('react-hot-toast', () => ({
     success: vi.fn(),
     error: vi.fn(),
   },
+}));
+
+vi.mock('@/services/api', () => ({
+  default: { getContacts: mockGetContacts },
 }));
 
 vi.mock('@/components/layout/ChatLayout', () => ({
@@ -122,6 +127,26 @@ describe('#343 — ContactsPage Component Tests', () => {
 
     fireEvent.click(addBtn);
     expect(screen.getByRole('heading', { name: 'Add New Contact' })).toBeInTheDocument();
+  });
+
+  it('aborts the contacts request when the route unmounts', async () => {
+    mockGetContacts.mockImplementationOnce(
+      () => new Promise(() => {}),
+    );
+    mockDispatch.mockImplementation((action: unknown) => {
+      if (typeof action === 'function') {
+        return action(mockDispatch, () => mockState, undefined);
+      }
+      return action;
+    });
+
+    const { unmount } = render(<ContactsPage />);
+    await waitFor(() => expect(mockGetContacts).toHaveBeenCalled());
+    const signal = mockGetContacts.mock.calls[0][0] as AbortSignal;
+
+    expect(signal.aborted).toBe(false);
+    unmount();
+    expect(signal.aborted).toBe(true);
   });
 
   describe('Create Contact Workflow', () => {

@@ -30,6 +30,10 @@ interface ChatState {
   tags: { [userId: string]: string[] };
   selectedTags: string[];
   isOnline: boolean;
+  /** Whether `messages` came from the local cache or a live server response (#289). */
+  dataSource: "live" | "cached";
+  /** When live data was last received from the server (ISO 8601), or null (#289). */
+  lastSyncedAt: string | null;
   messageQueue: Array<{ id: string; query: string; timestamp: string }>;
   pendingMessages: Set<string>;
   optimisticUpdates: Map<string, ChatMessage>;
@@ -61,6 +65,8 @@ const initialState: ChatState = {
   tags: {},
   selectedTags: [],
   isOnline: typeof window !== "undefined" && navigator.onLine,
+  dataSource: "cached",
+  lastSyncedAt: readLastSyncedAt(),
   messageQueue: [],
   pendingMessages: new Set(),
   optimisticUpdates: new Map(),
@@ -201,6 +207,28 @@ export const sortMessagesChronologically = (messages: ChatMessage[]): ChatMessag
 /**
  * Merge server messages into the local list by message id; the server copy wins (#265).
  */
+/** Storage key for the last live sync time (#289). */
+export const LAST_SYNCED_AT_KEY = "chat_last_synced_at";
+
+function readLastSyncedAt(): string | null {
+  try {
+    return typeof window !== "undefined" ? window.localStorage.getItem("chat_last_synced_at") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Record that the visible conversation reflects a live server response (#289). */
+function markLive(state: ChatState): void {
+  state.dataSource = "live";
+  state.lastSyncedAt = new Date().toISOString();
+  try {
+    if (typeof window !== "undefined") window.localStorage.setItem("chat_last_synced_at", state.lastSyncedAt);
+  } catch {
+    // Storage denied: keep the in-memory time only
+  }
+}
+
 export const mergeMessagesById = (existing: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] => {
   const byId = new Map<string, ChatMessage>();
   for (const message of existing) byId.set(message.id, message);
@@ -789,6 +817,8 @@ const chatSlice = createSlice({
     },
     loadChatHistory: (state, action: PayloadAction<string>) => {
       const conversationId = action.payload;
+      // Loaded from local storage, not the server (#289)
+      state.dataSource = "cached";
       const conversation = state.conversations.find((item) => item.id === conversationId);
       state.currentConversation = conversation ?? state.currentConversation;
       const loadedMessages = state.chatHistory[conversationId] ?? conversation?.messages ?? [];
@@ -1079,6 +1109,8 @@ const chatSlice = createSlice({
     },
     setOnlineStatus: (state, action: PayloadAction<boolean>) => {
       state.isOnline = action.payload;
+      // Offline: whatever is on screen is cached until a live response arrives again (#289)
+      if (!action.payload) state.dataSource = "cached";
     },
     queueMessage: (
       state,
@@ -1178,6 +1210,7 @@ const chatSlice = createSlice({
     /** Merge server-delivered messages (live or resynced) with dedupe against local/optimistic copies (#277). */
     mergeSyncedMessages: (state, action: PayloadAction<ChatMessage[]>) => {
       state.messages = mergeIncomingMessages(state.messages, action.payload);
+      markLive(state);
       for (const message of action.payload) {
         const optimisticId = message.metadata?.optimisticId ?? message.metadata?.tempId;
         if (optimisticId) {
@@ -1215,6 +1248,8 @@ const chatSlice = createSlice({
         state.historyError = null;
       })
       .addCase(fetchChatHistory.fulfilled, (state, action) => {
+        // Reconciled with the server; messages are merged by id, so no duplicates (#289)
+        markLive(state);
         state.historyStatus = "succeeded";
         state.messages = mergeMessagesById(state.messages, action.payload.messages);
         state.historyCursor = action.payload.nextCursor;
@@ -1317,6 +1352,7 @@ const chatSlice = createSlice({
         state.pendingMessages.add(tempId);
       })
       .addCase(sendMessage.fulfilled, (state, action) => {
+        markLive(state);
         state.isLoading = false;
         state.isTyping = false;
         state.currentConversation = action.payload.conversation;

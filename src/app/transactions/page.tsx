@@ -23,6 +23,7 @@ import { Language } from "@/lib/i18n/i18n";
 import { RefreshCw, ReceiptText } from "lucide-react";
 import type { StellarTransaction } from "@/types";
 import TransactionDetailsDrawer from "@/components/dashboard/TransactionDetailsDrawer";
+import { LtrText } from "@/components/ui/LtrText";
 
 // ---------------------------------------------------------------------------
 // Memo rendering helpers
@@ -88,6 +89,7 @@ function formatLastUpdated(value: string | null): string | null {
 export default function TransactionsPage() {
   const [selectedTransaction, setSelectedTransaction] = useState<StellarTransaction | null>(null);
   const selectedTriggerRef = useRef<HTMLElement | null>(null);
+  const requestsControllerRef = useRef<AbortController | null>(null);
   const router = useRouter();
   const dispatch = useDispatch<AppDispatch>();
   const { status, transactions } = useSelector(
@@ -109,9 +111,29 @@ export default function TransactionsPage() {
   const [searchQuery, setSearchQuery] = useState("");
 
   useEffect(() => {
-    if (publicKey) {
-      dispatch(getTransactionHistory(publicKey));
-    }
+    if (!publicKey) return;
+
+    const controller = new AbortController();
+    requestsControllerRef.current = controller;
+    dispatch(getTransactionHistory(publicKey, { signal: controller.signal }));
+
+    return () => {
+      controller.abort();
+      if (requestsControllerRef.current === controller) {
+        requestsControllerRef.current = null;
+      }
+    };
+  }, [dispatch, publicKey]);
+
+  const handleRetry = useCallback(() => {
+    if (!publicKey) return;
+    const signal = requestsControllerRef.current?.signal;
+    dispatch(
+      getTransactionHistory(
+        publicKey,
+        signal ? { signal } : undefined,
+      ),
+    );
   }, [dispatch, publicKey]);
 
   /**
@@ -125,7 +147,11 @@ export default function TransactionsPage() {
     }
     void singleFlight
       .run(`transaction-history:${publicKey}`, () =>
-        dispatch(refreshTransactionHistory(publicKey)).unwrap(),
+        dispatch(
+          refreshTransactionHistory(publicKey, {
+            signal: requestsControllerRef.current?.signal,
+          }),
+        ).unwrap(),
       )
       .catch(() => {
         // The failure is surfaced through `transactions.refreshError`; it must
@@ -141,6 +167,8 @@ export default function TransactionsPage() {
       getOlderTransactionHistory({
         publicKey,
         cursor: transactions.nextCursor,
+      }, {
+        signal: requestsControllerRef.current?.signal,
       }),
     );
   }, [dispatch, publicKey, transactions.nextCursor]);
@@ -184,7 +212,7 @@ export default function TransactionsPage() {
             {publicKey && (
               <Button
                 type="button"
-                onClick={() => dispatch(getTransactionHistory(publicKey))}
+                onClick={handleRetry}
                 className="inline-flex items-center gap-2"
               >
                 <RefreshCw aria-hidden="true" className="h-4 w-4" />
@@ -298,7 +326,7 @@ export default function TransactionsPage() {
               <div className="flex justify-between items-start mb-2">
                 <div>
                   <h3 className="font-semibold">
-                    Transaction {tx.hash.slice(0, 8)}...
+                    Transaction <LtrText className="font-mono">{tx.hash.slice(0, 8)}...</LtrText>
                   </h3>
                   <p className="text-sm text-gray-600">
                     {formatTransactionDate(tx.created_at, { language })}
@@ -351,9 +379,9 @@ export default function TransactionsPage() {
                         {getOperationType(op.type)}
                       </span>
                       {op.amount && (
-                        <span className="ml-2 text-sm">
+                        <LtrText className="ms-2 text-sm">
                           {formatTransactionAmount(op.amount, { language, asset: op.asset || "XLM" })}
-                        </span>
+                        </LtrText>
                       )}
                     </div>
                     <div className={`font-semibold ${getStatusColor(tx.successful)}`}>
@@ -364,8 +392,11 @@ export default function TransactionsPage() {
               </div>
 
               <div className="mt-2 text-xs text-gray-500">
-                Fee: {formatTransactionFee(tx.fee_charged, { language, asset: "XLM" })} | Ledger:{" "}
-                {tx.ledger}
+                Fee:{" "}
+                <LtrText>
+                  {formatTransactionFee(tx.fee_charged, { language, asset: "XLM" })}
+                </LtrText>{" "}
+                | Ledger: <LtrText>{tx.ledger}</LtrText>
               </div>
             </Card>
             </article>

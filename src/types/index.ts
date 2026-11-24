@@ -78,7 +78,7 @@ export interface LoginRequest {
 }
 
 export interface RegisterResponse {
-  success: boolean;
+  success: true;
   message: string;
   data: {
     user: User;
@@ -103,7 +103,7 @@ export interface RegisterResponse {
 }
 
 export interface LoginResponse {
-  success: boolean;
+  success: true;
   message: string;
   data: {
     user: User;
@@ -200,7 +200,7 @@ export interface ContactExportEnvelope {
 
 // Balance and Wallet Types
 export interface BalanceResponse {
-  success: boolean;
+  success: true;
   data: {
     hasBalance: boolean;
     balance: string;
@@ -530,6 +530,11 @@ export interface PromptVersion {
 export interface ApiError {
   success: false;
   status: number;
+  message: string;
+}
+
+export interface BackendResponseValidationIssue {
+  path: string;
   message: string;
 }
 

@@ -13,6 +13,7 @@ import { useAppDispatch } from "@/store";
 import { setMessageFeedback } from "@/store/slices/chatSlice";
 import { submitFeedback } from "@/services/feedbackService";
 import type { MessageFeedback } from "@/types";
+import { MessageTranslation } from "./MessageTranslation";
 
 type DataRecord = Record<string, unknown>;
 
@@ -429,8 +430,8 @@ export default function AgentMessage({
   };
 
   return (
-    <div className="text-white text-left group relative">
-      <div className="prose prose-invert prose-lg max-w-none leading-relaxed pr-8">
+    <div className="text-white text-start group relative">
+      <div className="prose prose-invert prose-lg max-w-none leading-relaxed pe-8">
         <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={markdownComponents}
@@ -439,6 +440,9 @@ export default function AgentMessage({
         </ReactMarkdown>
         <AgentMarkdown>{renderContent()}</AgentMarkdown>
       </div>
+
+      {/* On-demand translation for replies in another language (#83) */}
+      {typeof message.content === "string" && <MessageTranslation text={message.content} />}
 
       {/* Execution Trace */}
       {message.metadata?.executionTrace && (

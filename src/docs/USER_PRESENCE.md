@@ -7,12 +7,17 @@ Real-time presence indicators show which users are online, away, or offline in t
 
 ### Services
 
-**presenceService.ts** - Core presence tracking
-- `setUserOnline()` - Mark user online
+**presenceService.ts** - Core presence tracking & lease expiry
+- `setUserOnline()` - Mark user online (local tracking)
 - `setUserAway()` - Mark user away (after idle timeout)
 - `setUserOffline()` - Remove user from tracking
 - `recordActivity()` - Reset idle timer on activity
-- `getOnlineUsers()`, `getAwayUsers()` - Query users by status
+- `upsertRemotePresence()` - Validate lease/expiry and upsert a server-delivered presence record
+- `replaceRemotePresences()` - Reconcile a full `presence:list` snapshot, filtering expired/offline records and removing absent users
+- `recordHeartbeat()` - Renew a tracked user's lease from a `presence:heartbeat` payload
+- `pruneExpired()` - Remove tracked users whose monotonic lease deadlines have elapsed
+- `computeRemainingLeaseMs()`, `isPresenceExpired()`, `filterActivePresences()` - Server-relative lease helpers (no client wall-clock assumptions)
+- `getOnlineUsers()`, `getAwayUsers()`, `getAllUsers()` - Query active, non-expired users
 
 **Socket Events**
 - `presence:join` - User came online
@@ -58,14 +63,66 @@ interface PresenceState {
 
 ## Configuration
 
-Idle timeout and cleanup settings in `presenceService.ts`:
+Idle timeout, cleanup, and lease expiry settings in `presenceService.ts`:
 
 ```typescript
+export const DEFAULT_LEASE_TIMEOUT_MS = 90 * 1000;   // 90 seconds (3x 30s heartbeat)
+export const DEFAULT_SWEEP_INTERVAL_MS = 15 * 1000;  // 15 seconds between stale sweeps
+
 export const DEFAULT_PRESENCE_CONFIG: PresenceConfig = {
   idleTimeout: 5 * 60 * 1000,      // 5 minutes before 'away'
   cleanupTimeout: 30 * 60 * 1000,  // 30 minutes before removal
+  leaseTimeout: DEFAULT_LEASE_TIMEOUT_MS,
+  sweepInterval: DEFAULT_SWEEP_INTERVAL_MS,
 };
 ```
+
+## Lease Expiry & Stale Presence Recovery (#287)
+
+When a remote client disconnects unexpectedly (browser crash, tab killed, network drop), no `presence:leave` event may reach other clients. Without lease expiry, those entries linger indefinitely in the `ActiveUsersPanel`.
+
+### Server-Relative Lease Model (No Client Wall-Clock Assumptions)
+
+The client never compares a server timestamp (`lastSeen` or `expiresAt`) against the local `Date.now()` wall clock, because client clocks can be skewed or jump due to NTP/system changes. Instead, `computeRemainingLeaseMs()` derives remaining lease duration in priority order:
+
+1. **`leaseTtlMs`** (relative duration in ms from the server) — used directly.
+2. **`expiresAt` paired with `serverTime`** (from the record, the `presence:list` envelope, or the monotonic server-time anchor) — computes `expiresAt - serverTime` purely in server clock space.
+3. **`lastSeen` paired with `serverTime`** — computes `fallbackLeaseMs - max(0, serverTime - lastSeen)` in server clock space.
+4. **`expiresAt` paired with `lastSeen`** — computes `expiresAt - lastSeen` in server clock space.
+5. **Fallback for legacy payloads** (no `leaseTtlMs`, `expiresAt`, or `serverTime`) — anchors `DEFAULT_LEASE_TIMEOUT_MS` (90 s) from receipt time on the local monotonic clock (`performance.now()`).
+
+Once computed, each user's deadline is stored on the monotonic clock (`monotonicNow() + remainingMs`). Any record with `status === 'offline'` or `remainingMs <= 0` is filtered out immediately before reaching Redux state.
+
+### Periodic Sweep, Abrupt Disconnect, and Reconnect
+
+- **Stale lease sweep**: `usePresenceManagement()` runs a periodic sweep (default every 15 s) via `presenceService.pruneExpired()` and dispatches `removePresences(expiredIds)` so stale users are removed from `ActiveUsersPanel` even if `presence:leave` was never delivered.
+- **Heartbeat renewal**: Incoming `presence:heartbeat` events renew the user's monotonic lease deadline. Active clients emit heartbeats every 30 s while connected (3× faster than the 90 s default lease).
+- **Local abrupt unload**: `usePresenceManagement()` registers `pagehide` and `beforeunload` handlers to best-effort emit `presence:leave`.
+- **Socket disconnect / reconnect**:
+  - While `reconnecting`, monotonic lease expiration continues so entries that expire during the outage are pruned.
+  - On `disconnected` or `exhausted`, local presence state is cleared (`clearPresence()`) so `ActiveUsersPanel` does not display frozen phantom users.
+  - On `connected` (initial connect or after reconnect) and on socket `reconnect`, `usePresenceManagement()` re-emits `presence:join` so the server restores the user's lease and sends a fresh `presence:list`.
+  - Incoming `presence:list` payloads replace the Redux snapshot via `setPresenceBatch()` (filtering expired/offline entries and removing users who disconnected while offline).
+
+### Backend API Contract Notes
+
+The client remains backwards-compatible with existing payloads and supports optional server lease fields (confirm backend support before relying on optional fields):
+
+- **`presence:join` / `presence:status_change` payload** (existing fields required; lease fields optional/proposed):
+  ```json
+  {
+    "userId": "user-1",
+    "userName": "Alice",
+    "status": "online",
+    "lastSeen": "2026-10-19T12:00:00.000Z",
+    "serverTime": "2026-10-19T12:00:05.000Z",
+    "expiresAt": "2026-10-19T12:01:35.000Z",
+    "leaseTtlMs": 90000
+  }
+  ```
+- **`presence:list` payload**: accepts either a raw `UserPresence[]` array (existing) or an envelope `{ "users": UserPresence[], "serverTime": "2026-10-19T12:00:05.000Z" }` (optional/proposed).
+- **`presence:heartbeat` payload**: accepts `{ "userId": "user-1", "lastSeen"?: "...", "serverTime"?: "...", "expiresAt"?: "...", "leaseTtlMs"?: 90000 }`.
+- **`presence:leave` payload**: accepts either `"user-1"` (string) or `{ "userId": "user-1" }` (object).
 
 ## Usage
 
@@ -357,3 +414,16 @@ presenceService.getOnlineUsers(); // Check state
 - Implement pagination in ActiveUsersPanel
 - Increase cleanup timeout
 - Add filtering by conversation
+
+## Browser Event Presence Transitions (#288)
+
+`useBrowserPresenceTransitions` (mounted in `PresenceProvider`) emits `presence:status_change` with `{ userId, status }` for these browser events:
+
+| Event | Status | Timing |
+| --- | --- | --- |
+| `visibilitychange` (hidden) | `away` | Debounced 2s |
+| `visibilitychange` (visible) | `online` | Debounced 2s |
+| `online` | `online` | Debounced 2s |
+| `offline` | `offline` | Immediate (cancels any pending update) |
+
+Repeated transitions inside the debounce window collapse to the final state, and repeating the last sent status is skipped. Listeners and timers are removed on unmount.

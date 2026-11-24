@@ -56,6 +56,16 @@ html:not(.rtl) .rtl-only {
   display: none;
 }
 
+/* Bidirectional isolation for LTR wallet values (keys, hashes, amounts, tickers) in RTL (#293) */
+.bidi-ltr-isolate {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+.bidi-plaintext {
+  unicode-bidi: plaintext;
+}
+
 /* RTL spacing utilities */
 html.rtl [class*="ml-"],
 html.rtl [class*="mr-"],

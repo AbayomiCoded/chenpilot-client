@@ -2,6 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { useSocket as useSocketContext } from '@/components/providers/SocketProvider';
 import type { SocketConnectionState, SocketResyncState } from '@/services/socketManager';
 
+/**
+ * Access the Socket.IO context, connection state, and event helpers (`emit`, `on`, `off`, `once`).
+ * When using `on()` directly, callers must pass the same handler reference to `off(event, handler)`
+ * during cleanup. See `src/services/README.md` for the full socket event contract.
+ */
 export function useSocket() {
   const context = useSocketContext();
   const connectionState: SocketConnectionState =
@@ -26,6 +31,10 @@ export function useSocket() {
   };
 }
 
+/**
+ * Subscribe to a Socket.IO event with automatic cleanup on unmount or socket/event change.
+ * Uses a ref-backed stable listener so inline callbacks do not trigger resubscriptions.
+ */
 export function useSocketEvent(event: string, callback: (...args: unknown[]) => void) {
   const { socket, on, off } = useSocket();
   const callbackRef = useRef(callback);

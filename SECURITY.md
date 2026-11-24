@@ -87,12 +87,14 @@ These are all the keys the client reads or writes. The source of truth is `STORA
 | `session_expiration` | localStorage | `services/sessionService.ts` | Until logout or session end | ✅ | Personal | Expiry timestamp for cross-tab session sync |
 | `refresh_token` | localStorage | `services/api.ts` | Legacy: never written, only removed | ✅ | Credential | Refresh tokens are HTTP-only cookies |
 | `chat_history` | localStorage | `store/slices/chatSlice.ts` | Until logout or chat deletion | ✅ | Personal | Messages per conversation; prompts can include wallet addresses and amounts |
+| `chat_last_synced_at` | localStorage | `store/slices/chatSlice.ts` | Until logout | ✅ | Personal | Time live chat data was last received (#289) |
 | `conversations` | localStorage | `store/slices/chatSlice.ts` | Until logout or conversation deletion | ✅ | Personal | Conversation titles and metadata |
 | `messageQueue` | localStorage | `store/slices/chatSlice.ts` | Until sent after reconnecting, or logout | ✅ | Personal | Prompts queued while offline |
 | `chat_drafts` | localStorage | `lib/accountDeletion.ts` | Until logout or account deletion | ✅ | Personal | Unsent chat drafts |
 | `mfa_secret` | localStorage + sessionStorage | `services/auth.service.ts` | Never written; removed defensively when MFA setup is cancelled | ✅ | Credential | Must never hold an MFA secret |
 | `mfa_recovery_codes` | localStorage + sessionStorage | `services/auth.service.ts` | Never written; removed defensively when MFA setup is cancelled | ✅ | Credential | Must never hold MFA recovery codes |
 | `theme` | localStorage | `store/slices/uiSlice.ts`, `ThemeProvider` | Persistent | ❌ | Preference | `light` / `dark` |
+| `translation_language` | localStorage | `store/slices/uiSlice.ts` | Persistent | ❌ | Preference | Language messages are translated into (#83) |
 | `language` | localStorage | `store/slices/uiSlice.ts`, `lib/i18n` | Persistent | ❌ | Preference | UI language code |
 | *(all keys)* | sessionStorage | none currently | Tab | ✅ (`sessionStorage.clear()`) | — | — |
 

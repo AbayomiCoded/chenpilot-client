@@ -163,6 +163,11 @@ export class SocketManager {
     this.stateListeners.forEach((l) => l(state, attempt));
   }
 
+  /**
+   * Emit a socket event if the socket is currently connected.
+   * Returns `true` when emitted, or `false` (dropping the event without buffering) when disconnected.
+   * See `src/services/README.md` for the full socket event contract.
+   */
   public emit(event: string, data?: unknown): boolean {
     if (this.socket && this.socket.connected) {
         this.socket.emit(event, data);
@@ -171,14 +176,25 @@ export class SocketManager {
       return false;
     }
 
+  /**
+   * Register an event listener on the underlying socket.
+   * Callers are responsible for calling `off(event, callback)` with the same reference on cleanup.
+   */
   public on(event: string, callback: (...args: unknown[]) => void): void {
     this.socket?.on(event, callback);
   }
 
+  /**
+   * Remove a specific event listener (preferred) or all listeners for `event` when `callback` is omitted.
+   */
   public off(event: string, callback?: (...args: unknown[]) => void): void {
     this.socket?.off(event, callback);
   }
 
+  /**
+   * Register a one-time event listener. If the caller may unmount before the event fires,
+   * still call `off(event, callback)` during cleanup.
+   */
   public once(event: string, callback: (...args: unknown[]) => void): void {
     this.socket?.once(event, callback);
     }
